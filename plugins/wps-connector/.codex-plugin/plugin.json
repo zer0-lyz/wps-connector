@@ -1,0 +1,26 @@
+{
+  "name": "wps-connector",
+  "version": "0.1.0+codex.20260630022900",
+  "description": "Connect Codex to open WPS Writer and Spreadsheet documents through a local WPS bridge.",
+  "author": { "name": "WPS Connector" },
+  "license": "UNLICENSED",
+  "keywords": ["wps", "writer", "spreadsheet", "mcp", "local-bridge"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "WPS Connector",
+    "shortDescription": "Control bound WPS Writer and Spreadsheet sessions from Codex.",
+    "longDescription": "WPS Connector bundles a Codex skill, MCP server, and local runtime installer for connecting Codex to open WPS Writer and Spreadsheet documents through a local bridge.",
+    "developerName": "WPS Connector",
+    "category": "Productivity",
+    "capabilities": ["MCP", "Local", "WPS", "Writer", "Spreadsheet", "Write"],
+    "brandColor": "#1F6FEB",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
+    "defaultPrompt": [
+      "Confirm the current WPS Connector session.",
+      "Read the current WPS Writer selection.",
+      "Read and verify the selected WPS Spreadsheet range."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

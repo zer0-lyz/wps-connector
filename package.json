@@ -1,0 +1,22 @@
+{
+  "name": "wps-connector",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local WPS bridge for Codex-style MCP tools.",
+  "type": "module",
+  "scripts": {
+    "bridge": "node apps/bridge/server.js",
+    "mcp": "node apps/mcp/server.js",
+    "simulator": "node apps/wps-addin/simulator.js",
+    "check": "node --check apps/bridge/server.js && node --check apps/mcp/server.js && node --check apps/shared/toolSchemas.js && node --check apps/wps-addin/main.js && node --check apps/wps-addin/simulator.js && node --check scripts/sync-codex-catalog.js && node --check tests/e2e.js",
+    "test": "node tests/e2e.js",
+    "test:et": "node scripts/regression-et.js",
+    "deploy": "bash scripts/deploy-runtime-mac.sh",
+    "runtime:start": "bash scripts/start-runtime-mac.sh",
+    "runtime:stop": "bash scripts/stop-runtime-mac.sh",
+    "launchd:install": "bash scripts/install-launch-agent-mac.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

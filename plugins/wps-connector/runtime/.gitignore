@@ -1,0 +1,11 @@
+.DS_Store
+node_modules/
+logs/
+test_logs/
+*.log
+project-bindings.local.json
+codex-catalog.snapshot.json
+plugins/wps-connector/runtime/logs/
+plugins/wps-connector/runtime/test_logs/
+plugins/wps-connector/runtime/project-bindings.local.json
+plugins/wps-connector/runtime/codex-catalog.snapshot.json
