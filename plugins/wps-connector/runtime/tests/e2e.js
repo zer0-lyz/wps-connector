@@ -85,7 +85,7 @@ function assert(condition, message) {
 }
 
 async function main() {
-  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port) });
+  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json` });
   bridge.on("exit", (code) => {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
@@ -115,15 +115,30 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "et.read_range"), "MCP tools/list missed et.read_range.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_document_text"), "MCP tools/list missed wpp.read_document_text.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.find_text"), "MCP tools/list missed wpp.find_text.");
+  for (const name of ["wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.replace_text"), "MCP tools/list missed wpp.replace_text.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_cell"), "MCP tools/list missed wpp.read_table_cell.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.write_table_cell"), "MCP tools/list missed wpp.write_table_cell.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.save_document"), "MCP tools/list missed wpp.save_document.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.add_comment"), "MCP tools/list missed wpp.add_comment.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_rows"), "MCP tools/list missed wpp.insert_table_rows.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_image"), "MCP tools/list missed wpp.insert_image.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_format"), "MCP tools/list missed wpp.read_table_format.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.copy_table_style"), "MCP tools/list missed wpp.copy_table_style.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.duplicate_table_appearance"), "MCP tools/list missed wpp.duplicate_table_appearance.");
+  assert(listedTools.tools.some((tool) => tool.name === "wps.connection_status"), "MCP tools/list missed wps.connection_status.");
+  assert(listedTools.tools.some((tool) => tool.name === "wps_connection_status"), "MCP tools/list missed underscore alias wps_connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_list_sessions"), "MCP tools/list missed underscore alias wps_list_sessions.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp_add_comment"), "MCP tools/list missed underscore alias wpp_add_comment.");
   const mcpSessions = await mcpClient.request("tools/call", { name: "wps.list_sessions", arguments: {} });
   assert(mcpSessions.content?.[0]?.text?.includes("test-et-session"), "MCP tools/call did not return registered sessions.");
   const mcpSessionsAlias = await mcpClient.request("tools/call", { name: "wps_list_sessions", arguments: { onlyOnline: true } });
   assert(mcpSessionsAlias.content?.[0]?.text?.includes("test-wpp-session"), "MCP underscore tools/call did not return registered sessions.");
+  const mcpConnectionStatus = await mcpClient.request("tools/call", { name: "wps_connection_status", arguments: { onlyOnline: true, host: "wpp" } });
+  const mcpConnectionPayload = JSON.parse(mcpConnectionStatus.content?.[0]?.text || "{}");
+  assert(mcpConnectionPayload.counts?.online >= 1, "MCP connection_status did not report online sessions.");
+  assert(mcpConnectionPayload.agentUsage?.dottedAndUnderscoreNamesSupported === true, "MCP connection_status missed agent usage metadata.");
 
   const bindEt = await request("/api/sessions/test-et-session/binding", {
     method: "POST",
@@ -135,6 +150,9 @@ async function main() {
     body: JSON.stringify({ binding: { projectId: "project-b", projectName: "Project B", projectPath: "/tmp/project-b", threadId: "thread-b" } }),
   });
   assert(bindWpp.binding?.threadId === "thread-b", "WPP binding was not saved.");
+
+  const bridgeConnectionStatus = await request("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
+  assert(bridgeConnectionStatus.counts?.online >= 1 && bridgeConnectionStatus.agentUsage?.dottedAndUnderscoreNamesSupported === true, "Bridge connection_status did not return agent diagnostics.");
 
   const onlineSessions = await request("/api/tools/wps/list_sessions", { method: "POST", body: JSON.stringify({ onlyOnline: true }) });
   assert(onlineSessions.sessions.every((session) => session.status === "online"), "wps.list_sessions onlyOnline returned non-online session.");
@@ -305,11 +323,193 @@ async function main() {
   });
   assert(wppSelectRange.selected === true && wppSelectRange.resolvedText === "测试" && wppSelectRange.exactMatch === true, "WPP select_range returned unexpected resolved selection.");
 
+
+
+
+  await request("/api/tools/wpp/insert_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", text: "\nQW-5 原问题五\nQW-6 原问题六\nQW-7 原问题七" }),
+  });
+
+  const wppParagraphs = await request("/api/tools/wpp/list_paragraphs", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", maxCount: 20 }),
+  });
+  const qw5 = wppParagraphs.paragraphs.find((p) => p.text.includes("QW-5"));
+  const qw6 = wppParagraphs.paragraphs.find((p) => p.text.includes("QW-6"));
+  const qw7 = wppParagraphs.paragraphs.find((p) => p.text.includes("QW-7"));
+  assert(qw5 && qw6 && qw7 && qw6.paragraphIndex === qw5.paragraphIndex + 1, "WPP list_paragraphs did not return stable QW paragraph indexes.");
+
+  const wppQw6Range = await request("/api/tools/wpp/get_paragraph_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", index: qw6.paragraphIndex }),
+  });
+  assert(wppQw6Range.resolvedTextPreview.includes("QW-6"), "WPP get_paragraph_range did not return QW-6 preview.");
+
+  const wppFindQw6 = await request("/api/tools/wpp/find_block", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", anchorText: "QW-6", options: { blockType: "paragraph" } }),
+  });
+  assert(wppFindQw6.affectedParagraphIndex === qw6.paragraphIndex && wppFindQw6.exactMatch === true, "WPP find_block did not locate QW-6 paragraph.");
+
+  const wppReplaceQw6 = await request("/api/tools/wpp/replace_block", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", anchorText: "QW-6", text: "QW-6 替换后的问题六", options: { blockType: "paragraph" } }),
+  });
+  assert(wppReplaceQw6.applied === true && wppReplaceQw6.affectedParagraphIndex === qw6.paragraphIndex && wppReplaceQw6.afterText.includes("替换后的问题六"), "WPP replace_block did not replace QW-6 only.");
+
+  const wppInsertTableAfterQw5 = await request("/api/tools/wpp/insert_table_after_paragraph", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", index: qw5.paragraphIndex, rowCount: 2, columnCount: 2, values: [["字段", "值"], ["A", "B"]], border: true }),
+  });
+  assert(wppInsertTableAfterQw5.insertedTable === true && wppInsertTableAfterQw5.affectedParagraphIndex === qw5.paragraphIndex, "WPP insert_table_after_paragraph did not anchor after QW-5.");
+
+  const wppFindQw6AfterTable = await request("/api/tools/wpp/find_block", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", anchorText: "QW-6", options: { blockType: "paragraph" } }),
+  });
+  const wppFindQw7AfterTable = await request("/api/tools/wpp/find_block", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", anchorText: "QW-7", options: { blockType: "paragraph" } }),
+  });
+  assert(wppFindQw6AfterTable.affectedParagraphIndex === qw6.paragraphIndex && wppFindQw7AfterTable.affectedParagraphIndex === qw7.paragraphIndex, "WPP paragraph anchors drifted after table insertion.");
+
+  await request("/api/tools/wpp/select_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2 }),
+  });
+
+  const wppSelectionRange = await request("/api/tools/wpp/get_selection_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppSelectionRange.selection?.text === "测试", "WPP get_selection_range returned unexpected selection text.");
+
+  const wppApplyTextFormat = await request("/api/tools/wpp/apply_text_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2, format: { fontName: "宋体", fontSize: 18, bold: true, italic: true, underline: true, color: "#FF0000", highlightColor: "#FFFF00" } }),
+  });
+  assert(wppApplyTextFormat.applied === true && wppApplyTextFormat.hostAcceptedFields.includes("bold"), "WPP apply_text_format did not accept bold formatting.");
+
+  const wppReadTextFormat = await request("/api/tools/wpp/read_text_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2 }),
+  });
+  assert(wppReadTextFormat.effectiveFormat?.bold === true && wppReadTextFormat.effectiveFormat?.fontSize === 18, "WPP read_text_format did not return applied font state.");
+
+  const wppSetParagraphRich = await request("/api/tools/wpp/set_paragraph", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2, format: { alignment: "center", lineSpacing: 1.5, spaceAfter: 6, firstLineIndent: 12, keepWithNext: true, pageBreakBefore: false } }),
+  });
+  assert(wppSetParagraphRich.applied === true && wppSetParagraphRich.hostAcceptedFields.includes("alignment"), "WPP set_paragraph rich format did not apply alignment.");
+
+  const wppReadParagraphFormat = await request("/api/tools/wpp/read_paragraph_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2 }),
+  });
+  assert(wppReadParagraphFormat.effectiveFormat?.alignment === "center" || wppReadParagraphFormat.effectiveFormat?.alignment === 1, "WPP read_paragraph_format did not return paragraph state.");
+
+  const wppParagraphPage = await request("/api/tools/wpp/list_paragraphs", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 1, maxCount: 2, includeFormatSummary: true }),
+  });
+  assert(wppParagraphPage.count === 2 && wppParagraphPage.nextStartIndex === 3, "WPP list_paragraphs pagination did not return the next paragraph cursor.");
+
+  const wppBatchParagraphFormat = await request("/api/tools/wpp/apply_paragraph_format_by_indexes", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", paragraphIndexes: [1], format: { alignment: "left", firstLineIndent: 24, lineSpacing: 1.4, spaceBefore: 0, spaceAfter: 6 } }),
+  });
+  assert(wppBatchParagraphFormat.applied === true && wppBatchParagraphFormat.affectedParagraphs?.[0]?.effectiveFormat?.firstLineIndent === 24, "WPP apply_paragraph_format_by_indexes did not apply firstLineIndent.");
+
+  const wppCopyParagraphFormat = await request("/api/tools/wpp/copy_paragraph_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", sourceParagraphIndex: 1, targetParagraphIndexes: [2, 3] }),
+  });
+  assert(wppCopyParagraphFormat.copied === true && wppCopyParagraphFormat.perParagraphFormats?.every((p) => p.format.firstLineIndent === 24), "WPP copy_paragraph_format did not copy paragraph format to targets.");
+
+  const wppReadCopiedParagraphFormat = await request("/api/tools/wpp/read_paragraph_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", paragraphIndexes: [1, 2, 3] }),
+  });
+  assert(wppReadCopiedParagraphFormat.perParagraphFormats?.length === 3 && wppReadCopiedParagraphFormat.mixedFields?.length === 0, "WPP read_paragraph_format did not return stable per-paragraph copied formats.");
+
+  const wppStyles = await request("/api/tools/wpp/list_styles", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppStyles.styles?.some((style) => style.name === "标题1"), "WPP list_styles missed 标题1.");
+
+  const wppApplyStyle = await request("/api/tools/wpp/apply_style", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2, styleName: "标题1" }),
+  });
+  assert(wppApplyStyle.applied === true && wppApplyStyle.effectiveFormat?.styleName === "标题1", "WPP apply_style did not apply 标题1.");
+
+  const wppSelectParagraph = await request("/api/tools/wpp/select_paragraph", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", index: 1 }),
+  });
+  assert(wppSelectParagraph.selected === true && wppSelectParagraph.paragraphIndex === 1, "WPP select_paragraph did not select paragraph 1.");
+
+  const wppCurrentParagraph = await request("/api/tools/wpp/select_current_paragraph", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppCurrentParagraph.selected === true, "WPP select_current_paragraph did not confirm selection.");
+
+  const wppParagraphBreak = await request("/api/tools/wpp/insert_paragraph_break", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppParagraphBreak.inserted === true && wppParagraphBreak.breakType === "paragraph", "WPP insert_paragraph_break did not confirm insertion.");
+
+  const wppPageBreak = await request("/api/tools/wpp/insert_page_break", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppPageBreak.inserted === true && wppPageBreak.breakType === "page", "WPP insert_page_break did not confirm insertion.");
+
+  const wppCleanBlanks = await request("/api/tools/wpp/delete_extra_blank_paragraphs", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(typeof wppCleanBlanks.deletedCount === "number", "WPP delete_extra_blank_paragraphs did not return deletedCount.");
+
+  const wppFindText = await request("/api/tools/wpp/find_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", query: "测试" }),
+  });
+  assert(wppFindText.count >= 1 && wppFindText.results?.[0]?.text === "测试", "WPP find_text did not find inserted document text.");
+
+  const wppReplaceText = await request("/api/tools/wpp/replace_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", findText: "测试", replaceText: "验收", occurrence: "first" }),
+  });
+  assert(wppReplaceText.replacedCount === 1 && wppReplaceText.replacements?.[0]?.before === "测试", "WPP replace_text did not replace the first occurrence.");
+
+  const wppFindAfterReplace = await request("/api/tools/wpp/find_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", query: "验收" }),
+  });
+  assert(wppFindAfterReplace.count >= 1, "WPP find_text did not find replacement text.");
+
+  const wppMissingText = await rawRequest("/api/tools/wpp/replace_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", findText: "不存在文本", replaceText: "X" }),
+  });
+  assert(wppMissingText.ok === false && wppMissingText.error?.code === "TEXT_NOT_FOUND", "WPP missing replace text did not return TEXT_NOT_FOUND.");
+
+  const wppReselectForComment = await request("/api/tools/wpp/select_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2 }),
+  });
+  assert(wppReselectForComment.resolvedText === "验收", "WPP reselect before comment returned unexpected text.");
+
   const wppCommentSelection = await request("/api/tools/wpp/add_comment", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", text: "当前选区批注", author: "Codex Test" }),
   });
-  assert(wppCommentSelection.added === true && wppCommentSelection.rangeText === "测试", "WPP add_comment did not comment current selection.");
+  assert(wppCommentSelection.added === true && wppCommentSelection.rangeText === "验收", "WPP add_comment did not comment current selection.");
 
   const wppCommentRange = await request("/api/tools/wpp/add_comment", {
     method: "POST",
@@ -417,6 +617,25 @@ async function main() {
   });
   assert(wppReadTable.rowCount === 2 && wppReadTable.values?.[1]?.[1] === "D", "WPP read_table returned unexpected values.");
 
+
+  const wppReadTableCell = await request("/api/tools/wpp/read_table_cell", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, row: 2, column: 2 }),
+  });
+  assert(wppReadTableCell.text === "D" && wppReadTableCell.format, "WPP read_table_cell returned unexpected cell data.");
+
+  const wppWriteTableCell = await request("/api/tools/wpp/write_table_cell", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, row: 2, column: 2, text: "评分80", preserveStyle: true }),
+  });
+  assert(wppWriteTableCell.written === true && wppWriteTableCell.beforeText === "D" && wppWriteTableCell.afterText === "评分80", "WPP write_table_cell did not return expected before/after text.");
+
+  const wppReadTableCellAfter = await request("/api/tools/wpp/read_table_cell", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, row: 2, column: 2 }),
+  });
+  assert(wppReadTableCellAfter.text === "评分80", "WPP read_table_cell did not verify written text.");
+
   const wppInsertRows = await request("/api/tools/wpp/insert_table_rows", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, rowIndex: 1, count: 1, position: "after" }),
@@ -459,6 +678,48 @@ async function main() {
   });
   assert(wppBadMerge.ok === false && wppBadMerge.error?.code === "INVALID_ARGUMENT", "WPP invalid merge range did not return INVALID_ARGUMENT.");
   assert(wppBadMerge.httpStatus === 400, "INVALID_ARGUMENT table merge did not return HTTP 400.");
+
+  const wppTableFormat = await request("/api/tools/wpp/read_table_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1 }),
+  });
+  assert(wppTableFormat.format?.cells?.length >= 1, "WPP read_table_format did not return cell formats.");
+
+  const wppRowHeights = await request("/api/tools/wpp/read_row_heights", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1 }),
+  });
+  assert(Array.isArray(wppRowHeights.rowHeights), "WPP read_row_heights did not return row heights.");
+
+  const wppSetWidths = await request("/api/tools/wpp/set_column_widths", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, columnWidths: [{ column: 1, width: 88 }, { column: 2, width: 99 }] }),
+  });
+  assert(wppSetWidths.appliedColumns?.length === 2, "WPP set_column_widths did not apply widths.");
+
+  const wppSecondTable = await request("/api/tools/wpp/insert_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", rowCount: 2, columnCount: 2, values: [["T2A", "T2B"], ["T2C", "T2D"]], border: false }),
+  });
+  assert(wppSecondTable.tableIndex === 2, "WPP second insert_table did not create table 2.");
+
+  const wppDuplicateAppearance = await request("/api/tools/wpp/duplicate_table_appearance", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", sourceTableIndex: 1, targetTableIndex: 2, keepContent: true }),
+  });
+  assert(wppDuplicateAppearance.duplicatedAppearance === true && wppDuplicateAppearance.keepContent === true, "WPP duplicate_table_appearance did not confirm copy.");
+
+  const wppSecondRead = await request("/api/tools/wpp/read_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 2 }),
+  });
+  assert(wppSecondRead.values?.[0]?.[0] === "T2A" && wppSecondRead.values?.[1]?.[1] === "T2D", "WPP duplicate_table_appearance changed target table content.");
+
+  const wppSecondFormat = await request("/api/tools/wpp/read_table_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 2 }),
+  });
+  assert(wppSecondFormat.format?.table?.alignment === wppTableFormat.format?.table?.alignment, "WPP copied table format did not match source alignment.");
 
   const wppImage = await request("/api/tools/wpp/insert_image", {
     method: "POST",
@@ -504,6 +765,13 @@ async function main() {
   });
   assert(wppImagesAfterDelete.count === 0, "WPP read_images still returned deleted image.");
 
+
+  const wppSave = await request("/api/tools/wpp/save_document", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppSave.saved === true && wppSave.path && wppSave.savedAt, "WPP save_document did not return save metadata.");
+
   const wppBadTable = await rawRequest("/api/tools/wpp/insert_table", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", rowCount: 0, columnCount: 2 }),
@@ -513,6 +781,7 @@ async function main() {
   console.log(JSON.stringify({
     ok: true,
     sessions: sessions.map((session) => ({ sessionId: session.sessionId, host: session.host })),
+    connectionStatus: { matched: bridgeConnectionStatus.counts?.matched, recommended: bridgeConnectionStatus.recommendedSession?.sessionId || null },
     bindingRouting: { etSessionId: boundEtSelection.sessionId, mismatchCode: wrongExplicitBinding.error?.code, missingCode: missingBoundEt.error?.code },
     operationScope: { etScopedAddress: etScopedRead.address, wppInsertScope: wppInsert.operationScope?.mode },
     etSelection: { address: etSelection.address, firstCell: etSelection.values[0][0] },
@@ -521,13 +790,16 @@ async function main() {
     etFind: { count: etFind.count },
     wppSelection: { text: wppSelection.text },
     wppInsert: { insertedLength: wppInsert.insertedLength },
-    wppText: { length: wppText.length },
+    wppText: { length: wppText.length, findCount: wppFindText.count, replacedCount: wppReplaceText.replacedCount },
+    wppLayout: { textAccepted: wppApplyTextFormat.hostAcceptedFields.length, paragraphAccepted: wppSetParagraphRich.hostAcceptedFields.length, batchParagraphs: wppCopyParagraphFormat.affectedParagraphIndexes.length, style: wppApplyStyle.effectiveFormat?.styleName, pageBreak: wppPageBreak.inserted },
+    wppParagraphBlocks: { qw6: wppFindQw6.affectedParagraphIndex, replaced: wppReplaceQw6.applied, tableAfterQw5: wppInsertTableAfterQw5.insertedTable, qw7AfterTable: wppFindQw7AfterTable.affectedParagraphIndex },
     wppComments: { beforeDelete: wppCommentsBeforeDelete.count, afterDelete: wppCommentsAfterDelete.count },
     wppRevisions: { beforeAcceptAll: wppRevisions.count },
     wppTable: { rowCount: wppTable.rowCount, columnCount: wppTable.columnCount },
     wppReadTable: { rowCount: wppReadTable.rowCount, columnCount: wppReadTable.columnCount },
-    wppTableOps: { rows: wppDeleteRows.rowCount, columns: wppDeleteColumns.columnCount, merged: wppMergeCells.merged },
+    wppTableOps: { rows: wppDeleteRows.rowCount, columns: wppDeleteColumns.columnCount, merged: wppMergeCells.merged, cellAfter: wppReadTableCellAfter.text },
     wppImages: { inserted: wppImage.insertedImage, afterDelete: wppImagesAfterDelete.count },
+    wppSave: { saved: wppSave.saved, path: wppSave.path },
   }, null, 2));
 }
 

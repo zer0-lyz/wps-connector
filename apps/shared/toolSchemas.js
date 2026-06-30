@@ -11,6 +11,26 @@ export const tools = [
     inputSchema: { type: "object", properties: { onlyOnline: { type: "boolean" }, onlyBound: { type: "boolean" }, host: { type: "string" }, projectId: { type: "string" }, threadId: { type: "string" }, binding: { type: "object", additionalProperties: true } }, additionalProperties: false },
   },
   {
+    name: "wps.connection_status",
+    description: "Diagnose WPS Connector bridge, add-in, sessions, binding, and recommended session routing for other models or agents before calling Writer/Spreadsheet tools.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        onlyOnline: { type: "boolean" },
+        onlyBound: { type: "boolean" },
+        host: { type: "string" },
+        sessionId: { type: "string" },
+        projectId: { type: "string" },
+        projectName: { type: "string" },
+        projectPath: { type: "string" },
+        threadId: { type: "string" },
+        conversationId: { type: "string" },
+        binding: { type: "object", additionalProperties: true }
+      },
+      additionalProperties: false
+    },
+  },
+  {
     name: "et.read_selection",
     description: "Read the current WPS Spreadsheet selection.",
     inputSchema: {
@@ -211,8 +231,8 @@ export const tools = [
 
   {
     name: "wpp.list_paragraphs",
-    description: "List WPS Writer paragraphs with stable paragraph indexes, text previews, ranges, and style metadata.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, maxCount: { type: "number" } }, additionalProperties: false },
+    description: "List WPS Writer paragraphs with stable pagination, text previews, ranges, style metadata, and optional paragraph format summaries.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, startIndex: { type: "number" }, endIndex: { type: "number" }, rangeMode: { type: "string" }, maxCount: { type: "number" }, includeFormatSummary: { type: "boolean" } }, additionalProperties: false },
   },
   {
     name: "wpp.get_paragraph_range",
@@ -297,8 +317,18 @@ export const tools = [
   },
   {
     name: "wpp.read_paragraph_format",
-    description: "Read paragraph formatting from the current selection or optional normalized start/end range.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" } }, additionalProperties: false },
+    description: "Read paragraph formatting from the current selection, explicit range, or paragraph indexes. Multi-paragraph reads return perParagraphFormats and mixedFields.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_paragraph_format_by_indexes",
+    description: "Apply paragraph formatting to one or more one-based WPS Writer paragraph indexes without relying on the current selection.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.copy_paragraph_format",
+    description: "Copy paragraph formatting from one source paragraph to target paragraph indexes or a paragraph range without changing document text.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, fields: { type: "array", items: { type: "string" } }, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, required: ["sourceParagraphIndex"], additionalProperties: false },
   },
   {
     name: "wpp.read_table",

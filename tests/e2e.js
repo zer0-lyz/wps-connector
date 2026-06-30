@@ -116,7 +116,7 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_document_text"), "MCP tools/list missed wpp.read_document_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.find_text"), "MCP tools/list missed wpp.find_text.");
-  for (const name of ["wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
+  for (const name of ["wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wpp.replace_text"), "MCP tools/list missed wpp.replace_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_cell"), "MCP tools/list missed wpp.read_table_cell.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.write_table_cell"), "MCP tools/list missed wpp.write_table_cell.");
@@ -127,12 +127,18 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_format"), "MCP tools/list missed wpp.read_table_format.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.copy_table_style"), "MCP tools/list missed wpp.copy_table_style.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.duplicate_table_appearance"), "MCP tools/list missed wpp.duplicate_table_appearance.");
+  assert(listedTools.tools.some((tool) => tool.name === "wps.connection_status"), "MCP tools/list missed wps.connection_status.");
+  assert(listedTools.tools.some((tool) => tool.name === "wps_connection_status"), "MCP tools/list missed underscore alias wps_connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_list_sessions"), "MCP tools/list missed underscore alias wps_list_sessions.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp_add_comment"), "MCP tools/list missed underscore alias wpp_add_comment.");
   const mcpSessions = await mcpClient.request("tools/call", { name: "wps.list_sessions", arguments: {} });
   assert(mcpSessions.content?.[0]?.text?.includes("test-et-session"), "MCP tools/call did not return registered sessions.");
   const mcpSessionsAlias = await mcpClient.request("tools/call", { name: "wps_list_sessions", arguments: { onlyOnline: true } });
   assert(mcpSessionsAlias.content?.[0]?.text?.includes("test-wpp-session"), "MCP underscore tools/call did not return registered sessions.");
+  const mcpConnectionStatus = await mcpClient.request("tools/call", { name: "wps_connection_status", arguments: { onlyOnline: true, host: "wpp" } });
+  const mcpConnectionPayload = JSON.parse(mcpConnectionStatus.content?.[0]?.text || "{}");
+  assert(mcpConnectionPayload.counts?.online >= 1, "MCP connection_status did not report online sessions.");
+  assert(mcpConnectionPayload.agentUsage?.dottedAndUnderscoreNamesSupported === true, "MCP connection_status missed agent usage metadata.");
 
   const bindEt = await request("/api/sessions/test-et-session/binding", {
     method: "POST",
@@ -144,6 +150,9 @@ async function main() {
     body: JSON.stringify({ binding: { projectId: "project-b", projectName: "Project B", projectPath: "/tmp/project-b", threadId: "thread-b" } }),
   });
   assert(bindWpp.binding?.threadId === "thread-b", "WPP binding was not saved.");
+
+  const bridgeConnectionStatus = await request("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
+  assert(bridgeConnectionStatus.counts?.online >= 1 && bridgeConnectionStatus.agentUsage?.dottedAndUnderscoreNamesSupported === true, "Bridge connection_status did not return agent diagnostics.");
 
   const onlineSessions = await request("/api/tools/wps/list_sessions", { method: "POST", body: JSON.stringify({ onlyOnline: true }) });
   assert(onlineSessions.sessions.every((session) => session.status === "online"), "wps.list_sessions onlyOnline returned non-online session.");
@@ -399,6 +408,30 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2 }),
   });
   assert(wppReadParagraphFormat.effectiveFormat?.alignment === "center" || wppReadParagraphFormat.effectiveFormat?.alignment === 1, "WPP read_paragraph_format did not return paragraph state.");
+
+  const wppParagraphPage = await request("/api/tools/wpp/list_paragraphs", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 1, maxCount: 2, includeFormatSummary: true }),
+  });
+  assert(wppParagraphPage.count === 2 && wppParagraphPage.nextStartIndex === 3, "WPP list_paragraphs pagination did not return the next paragraph cursor.");
+
+  const wppBatchParagraphFormat = await request("/api/tools/wpp/apply_paragraph_format_by_indexes", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", paragraphIndexes: [1], format: { alignment: "left", firstLineIndent: 24, lineSpacing: 1.4, spaceBefore: 0, spaceAfter: 6 } }),
+  });
+  assert(wppBatchParagraphFormat.applied === true && wppBatchParagraphFormat.affectedParagraphs?.[0]?.effectiveFormat?.firstLineIndent === 24, "WPP apply_paragraph_format_by_indexes did not apply firstLineIndent.");
+
+  const wppCopyParagraphFormat = await request("/api/tools/wpp/copy_paragraph_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", sourceParagraphIndex: 1, targetParagraphIndexes: [2, 3] }),
+  });
+  assert(wppCopyParagraphFormat.copied === true && wppCopyParagraphFormat.perParagraphFormats?.every((p) => p.format.firstLineIndent === 24), "WPP copy_paragraph_format did not copy paragraph format to targets.");
+
+  const wppReadCopiedParagraphFormat = await request("/api/tools/wpp/read_paragraph_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", paragraphIndexes: [1, 2, 3] }),
+  });
+  assert(wppReadCopiedParagraphFormat.perParagraphFormats?.length === 3 && wppReadCopiedParagraphFormat.mixedFields?.length === 0, "WPP read_paragraph_format did not return stable per-paragraph copied formats.");
 
   const wppStyles = await request("/api/tools/wpp/list_styles", {
     method: "POST",
@@ -748,6 +781,7 @@ async function main() {
   console.log(JSON.stringify({
     ok: true,
     sessions: sessions.map((session) => ({ sessionId: session.sessionId, host: session.host })),
+    connectionStatus: { matched: bridgeConnectionStatus.counts?.matched, recommended: bridgeConnectionStatus.recommendedSession?.sessionId || null },
     bindingRouting: { etSessionId: boundEtSelection.sessionId, mismatchCode: wrongExplicitBinding.error?.code, missingCode: missingBoundEt.error?.code },
     operationScope: { etScopedAddress: etScopedRead.address, wppInsertScope: wppInsert.operationScope?.mode },
     etSelection: { address: etSelection.address, firstCell: etSelection.values[0][0] },
@@ -757,7 +791,7 @@ async function main() {
     wppSelection: { text: wppSelection.text },
     wppInsert: { insertedLength: wppInsert.insertedLength },
     wppText: { length: wppText.length, findCount: wppFindText.count, replacedCount: wppReplaceText.replacedCount },
-    wppLayout: { textAccepted: wppApplyTextFormat.hostAcceptedFields.length, paragraphAccepted: wppSetParagraphRich.hostAcceptedFields.length, style: wppApplyStyle.effectiveFormat?.styleName, pageBreak: wppPageBreak.inserted },
+    wppLayout: { textAccepted: wppApplyTextFormat.hostAcceptedFields.length, paragraphAccepted: wppSetParagraphRich.hostAcceptedFields.length, batchParagraphs: wppCopyParagraphFormat.affectedParagraphIndexes.length, style: wppApplyStyle.effectiveFormat?.styleName, pageBreak: wppPageBreak.inserted },
     wppParagraphBlocks: { qw6: wppFindQw6.affectedParagraphIndex, replaced: wppReplaceQw6.applied, tableAfterQw5: wppInsertTableAfterQw5.insertedTable, qw7AfterTable: wppFindQw7AfterTable.affectedParagraphIndex },
     wppComments: { beforeDelete: wppCommentsBeforeDelete.count, afterDelete: wppCommentsAfterDelete.count },
     wppRevisions: { beforeAcceptAll: wppRevisions.count },

@@ -21,6 +21,7 @@ const state = {
     selectionEnd: 3,
     insertedText: "",
     format: { font: {}, paragraph: {} },
+    paragraphFormats: {},
     tables: [],
     comments: [],
     nextCommentId: 1,
@@ -52,7 +53,7 @@ function activeContext() {
 }
 
 async function register() {
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.read_format", "wpp.read_table", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
   await request("/api/sessions/register", {
     method: "POST",
     body: JSON.stringify({
@@ -79,6 +80,20 @@ function execute(command) {
     error.details = details;
     throw error;
   }
+
+  function simParagraphs() { return state.wpp.insertedText ? state.wpp.insertedText.split(/\n/) : [""]; }
+  function simSetParagraphs(paragraphs) { state.wpp.insertedText = paragraphs.join("\n"); }
+  function simParagraphItem(index) {
+    const paragraphs = simParagraphs();
+    const n = simIndex(index, "index");
+    if (n > paragraphs.length) fail("PARAGRAPH_NOT_FOUND", "Paragraph not found: " + n, { index: n, paragraphCount: paragraphs.length });
+    let start = 0;
+    for (let i = 0; i < n - 1; i += 1) start += paragraphs[i].length + 1;
+    const text = paragraphs[n - 1];
+    const formatSummary = state.wpp.paragraphFormats[n] || state.wpp.format.paragraph || {};
+    return { index: n, paragraphIndex: n, paragraphCount: paragraphs.length, text, preview: text.slice(0, 240), range: { start, end: start + text.length, normalizedStart: start, normalizedEnd: start + text.length, nativeStart: start, nativeEnd: start + text.length, text, selectedText: text, length: text.length, paragraphIndex: n, isInsideTable: false, tableIndex: null, cellRow: null, cellColumn: null }, styleName: state.wpp.styleName || "正文", formatSummary, isInsideTable: false, tableIndex: null, cellRow: null, cellColumn: null };
+  }
+
   function requireSheet(name) {
     const sheetName = name || state.et.sheetName;
     if (!state.et.worksheets.includes(sheetName)) fail("SHEET_NOT_FOUND", `Worksheet not found: ${sheetName}`, { sheetName, availableSheets: state.et.worksheets });
@@ -156,6 +171,144 @@ function execute(command) {
     state.wpp.selectionText = state.wpp.insertedText.slice(start, end);
     return { host: "wpp", selected: true, start, end, text: state.wpp.selectionText, requestedStart: start, requestedEnd: end, resolvedStart: start, resolvedEnd: end, resolvedText: state.wpp.selectionText, exactMatch: true, attempts: [{ label: "simulated", start, end, resolvedText: state.wpp.selectionText, exactMatch: true }] };
   }
+
+
+  if (command.toolName === "wpp.get_selection_range") return { host: "wpp", selection: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, normalizedStart: state.wpp.selectionStart, normalizedEnd: state.wpp.selectionEnd, nativeStart: state.wpp.selectionStart, nativeEnd: state.wpp.selectionEnd, text: state.wpp.selectionText, selectedText: state.wpp.selectionText, length: state.wpp.selectionText.length, paragraphIndex: 1, isInsideTable: false, tableIndex: null, cellRow: null, cellColumn: null } };
+  if (command.toolName === "wpp.select_paragraph") {
+    const index = simIndex(command.input.index, "index");
+    const paragraphs = state.wpp.insertedText.split(/\n+/);
+    if (index > paragraphs.length) fail("PARAGRAPH_NOT_FOUND", "Paragraph not found: " + index, { index, paragraphCount: paragraphs.length });
+    let start = 0;
+    for (let i = 0; i < index - 1; i += 1) start += paragraphs[i].length + 1;
+    const text = paragraphs[index - 1];
+    state.wpp.selectionStart = start; state.wpp.selectionEnd = start + text.length; state.wpp.selectionText = text;
+    return { host: "wpp", selected: true, paragraphIndex: index, paragraphCount: paragraphs.length, affectedRange: { start, end: start + text.length, normalizedStart: start, normalizedEnd: start + text.length, nativeStart: start, nativeEnd: start + text.length, text, length: text.length } };
+  }
+  if (command.toolName === "wpp.select_current_paragraph") return { host: "wpp", selected: true, affectedRange: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, normalizedStart: state.wpp.selectionStart, normalizedEnd: state.wpp.selectionEnd, nativeStart: state.wpp.selectionStart, nativeEnd: state.wpp.selectionEnd, text: state.wpp.selectionText, length: state.wpp.selectionText.length } };
+
+
+  if (command.toolName === "wpp.list_paragraphs") {
+    const paragraphs = simParagraphs().map((_, i) => simParagraphItem(i + 1));
+    const maxCount = command.input.maxCount || 100;
+    const startIndex = command.input.startIndex || command.input.start || 1;
+    const endIndex = command.input.endIndex || command.input.end || paragraphs.length;
+    const page = paragraphs.filter((p) => p.paragraphIndex >= startIndex && p.paragraphIndex <= endIndex).slice(0, maxCount);
+    const last = page[page.length - 1]?.paragraphIndex || startIndex - 1;
+    const nextStartIndex = last < Math.min(endIndex, paragraphs.length) ? last + 1 : null;
+    return { host: "wpp", paragraphCount: paragraphs.length, count: page.length, startIndex, endIndex, maxCount, nextStartIndex, truncated: nextStartIndex !== null, paragraphs: page };
+  }
+  if (command.toolName === "wpp.get_paragraph_range") {
+    const item = simParagraphItem(command.input.index);
+    return { host: "wpp", paragraphIndex: item.paragraphIndex, affectedRange: item.range, resolvedTextPreview: item.preview, styleName: item.styleName, isInsideTable: false, tableIndex: null, cellRow: null, cellColumn: null };
+  }
+  if (command.toolName === "wpp.find_block") {
+    const anchorText = String(command.input.anchorText || "").trim();
+    if (!anchorText) fail("INVALID_ARGUMENT", "anchorText is required.", { field: "anchorText" });
+    const item = simParagraphs().map((_, i) => simParagraphItem(i + 1)).find((p) => command.input.options?.matchWholeParagraph ? p.text.trim() === anchorText : p.text.includes(anchorText));
+    if (!item) fail("BLOCK_NOT_FOUND", "Block anchor not found: " + anchorText, { anchorText });
+    return { host: "wpp", found: true, blockType: command.input.options?.blockType || "paragraph", anchorText, affectedParagraphIndex: item.paragraphIndex, startParagraphIndex: item.paragraphIndex, endParagraphIndex: item.paragraphIndex, affectedRange: item.range, resolvedTextPreview: item.preview, exactMatch: item.text.includes(anchorText), hostAcceptedFields: [], hostRejectedFields: [] };
+  }
+
+  if (command.toolName === "wpp.find_text") {
+    const query = String(command.input.query || "");
+    if (!query) fail("INVALID_ARGUMENT", "query is required.", { field: "query" });
+    const maxResults = command.input.maxResults || 50;
+    const text = state.wpp.insertedText;
+    const haystack = command.input.matchCase ? text : text.toLowerCase();
+    const needle = command.input.matchCase ? query : query.toLowerCase();
+    const results = [];
+    let pos = 0;
+    while (results.length < maxResults) {
+      const index = haystack.indexOf(needle, pos);
+      if (index < 0) break;
+      const end = index + query.length;
+      results.push({ index: results.length + 1, text: text.slice(index, end), start: index, end, normalizedStart: index, normalizedEnd: end, nativeStart: index, nativeEnd: end, preview: { before: text.slice(Math.max(0, index - 40), index), match: text.slice(index, end), after: text.slice(end, end + 40) } });
+      pos = Math.max(index + 1, end);
+    }
+    return { host: "wpp", query, count: results.length, truncated: results.length >= maxResults, textModel: "normalized-wps-range-v1", results };
+  }
+  if (command.toolName === "wpp.replace_text") {
+    const findText = String(command.input.findText || "");
+    if (!findText) fail("INVALID_ARGUMENT", "findText is required.", { field: "findText" });
+    const found = execute({ toolName: "wpp.find_text", input: { query: findText, matchCase: command.input.matchCase, matchWholeWord: command.input.matchWholeWord, maxResults: 1000 } }).results;
+    if (!found.length) fail("TEXT_NOT_FOUND", "Text not found: " + findText, { findText });
+    const occurrence = command.input.occurrence === undefined ? "first" : command.input.occurrence;
+    let targets = [];
+    if (occurrence === "all") targets = found;
+    else if (occurrence === "last") targets = [found[found.length - 1]];
+    else if (occurrence === "first") targets = [found[0]];
+    else {
+      const wanted = occurrence === "index" ? simIndex(command.input.index, "index") : simIndex(occurrence, "occurrence");
+      if (wanted > found.length) fail("TEXT_NOT_FOUND", "Text occurrence not found: " + wanted, { findText, occurrence: wanted, count: found.length });
+      targets = [found[wanted - 1]];
+    }
+    const replaceText = String(command.input.replaceText ?? "");
+    const replacements = [];
+    for (const target of [...targets].sort((a, b) => b.start - a.start)) {
+      state.wpp.insertedText = state.wpp.insertedText.slice(0, target.start) + replaceText + state.wpp.insertedText.slice(target.end);
+      replacements.unshift({ index: target.index, start: target.start, end: target.end, nativeStart: target.nativeStart, nativeEnd: target.nativeEnd, before: target.text, after: replaceText, beforePreview: target.preview });
+    }
+    return { host: "wpp", replaced: replacements.length > 0, replacedCount: replacements.length, findText, replaceText, replacements };
+  }
+
+
+  if (command.toolName === "wpp.read_text_format") return { host: "wpp", affectedRange: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: state.wpp.format.font || {} };
+  if (command.toolName === "wpp.apply_text_format") {
+    const format = command.input.format || {};
+    state.wpp.format.font = { ...(state.wpp.format.font || {}), ...format };
+    return { host: "wpp", applied: Object.keys(format).length > 0, affectedRange: { start: command.input.start ?? state.wpp.selectionStart, end: command.input.end ?? state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: state.wpp.format.font, hostAcceptedFields: Object.keys(format), hostRejectedFields: [] };
+  }
+  if (command.toolName === "wpp.read_paragraph_format") {
+    const indexes = command.input.paragraphIndexes || [];
+    const per = indexes.length ? indexes.map((index) => ({ paragraphIndex: index, affectedRange: simParagraphItem(index).range, textPreview: simParagraphItem(index).preview, styleName: "正文", format: state.wpp.paragraphFormats[index] || state.wpp.format.paragraph || {} })) : [{ paragraphIndex: 1, affectedRange: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, text: state.wpp.selectionText }, textPreview: state.wpp.selectionText, styleName: "正文", format: state.wpp.format.paragraph || {} }];
+    return { host: "wpp", affectedRange: per[0].affectedRange, effectiveFormat: per[0].format, mixedFields: [], perParagraphFormats: per };
+  }
+  if (command.toolName === "wpp.apply_paragraph_format_by_indexes") {
+    const indexes = command.input.paragraphIndexes || [];
+    const format = command.input.format || {};
+    const dryRun = Boolean(command.input.dryRun);
+    const affectedParagraphs = indexes.map((index) => {
+      const before = state.wpp.paragraphFormats[index] || {};
+      if (!dryRun) state.wpp.paragraphFormats[index] = { ...before, ...format };
+      const item = simParagraphItem(index);
+      return { paragraphIndex: index, ok: true, dryRun, affectedRange: item.range, textPreview: item.preview, styleName: item.styleName, beforeFormat: before, effectiveFormat: dryRun ? before : state.wpp.paragraphFormats[index], hostAcceptedFields: dryRun ? [] : Object.keys(format), hostRejectedFields: [] };
+    });
+    return { host: "wpp", applied: !dryRun && affectedParagraphs.length > 0, dryRun, affectedParagraphIndexes: indexes, affectedParagraphs, perParagraphFormats: affectedParagraphs.map((p) => ({ paragraphIndex: p.paragraphIndex, affectedRange: p.affectedRange, textPreview: p.textPreview, styleName: p.styleName, format: p.effectiveFormat })), hostAcceptedFields: Object.keys(format), hostRejectedFields: [] };
+  }
+  if (command.toolName === "wpp.copy_paragraph_format") {
+    const source = simIndex(command.input.sourceParagraphIndex, "sourceParagraphIndex");
+    const format = state.wpp.paragraphFormats[source] || state.wpp.format.paragraph || {};
+    const result = execute({ toolName: "wpp.apply_paragraph_format_by_indexes", input: { paragraphIndexes: command.input.targetParagraphIndexes || [], format, dryRun: command.input.dryRun } });
+    return { ...result, copied: !result.dryRun && result.applied, sourceParagraphIndex: source, sourceFormat: format, copiedFields: Object.keys(format), targetParagraphIndexes: command.input.targetParagraphIndexes || [] };
+  }
+
+
+  if (command.toolName === "wpp.replace_paragraph") {
+    const item = simParagraphItem(command.input.index);
+    const paragraphs = simParagraphs();
+    paragraphs[item.paragraphIndex - 1] = String(command.input.text ?? "");
+    simSetParagraphs(paragraphs);
+    const after = simParagraphItem(item.paragraphIndex);
+    return { host: "wpp", applied: true, exactMatch: after.text === String(command.input.text ?? ""), affectedParagraphIndex: item.paragraphIndex, affectedRange: after.range, beforeText: item.text, afterText: after.text, resolvedTextPreview: after.preview, hostAcceptedFields: ["text"], hostRejectedFields: [] };
+  }
+  if (command.toolName === "wpp.replace_current_paragraph") return execute({ toolName: "wpp.replace_paragraph", input: { index: 1, text: command.input.text } });
+  if (command.toolName === "wpp.replace_block") {
+    const block = execute({ toolName: "wpp.find_block", input: { anchorText: command.input.anchorText, options: command.input.options || {} } });
+    return execute({ toolName: "wpp.replace_paragraph", input: { index: block.affectedParagraphIndex, text: command.input.text } });
+  }
+  if (command.toolName === "wpp.insert_after_paragraph" || command.toolName === "wpp.insert_before_paragraph") {
+    const item = simParagraphItem(command.input.index);
+    const paragraphs = simParagraphs();
+    const insertAt = command.toolName === "wpp.insert_before_paragraph" ? item.paragraphIndex - 1 : item.paragraphIndex;
+    paragraphs.splice(insertAt, 0, String(command.input.text ?? ""));
+    simSetParagraphs(paragraphs);
+    return { host: "wpp", applied: true, exactMatch: true, affectedParagraphIndex: item.paragraphIndex, position: command.toolName.includes("before") ? "before" : "after", affectedRange: simParagraphItem(insertAt + 1).range, resolvedTextPreview: String(command.input.text ?? "").slice(0, 500), hostAcceptedFields: ["text"], hostRejectedFields: [] };
+  }
+  if (command.toolName === "wpp.insert_table_after_paragraph" || command.toolName === "wpp.insert_table_before_paragraph") {
+    const item = simParagraphItem(command.input.index);
+    return { host: "wpp", insertedTable: true, tableIndex: state.wpp.tables.length + 1, rowCount: Number(command.input.rowCount), columnCount: Number(command.input.columnCount), applied: true, exactMatch: true, affectedParagraphIndex: item.paragraphIndex, position: command.toolName.includes("before") ? "before" : "after", affectedRange: item.range, hostAcceptedFields: ["table"], hostRejectedFields: [] };
+  }
+
   if (command.toolName === "wpp.read_format") return { host: "wpp", ...state.wpp.format };
   if (command.toolName === "wpp.insert_text") {
     const inserted = command.input.text || "";
@@ -167,7 +320,7 @@ function execute(command) {
     return { host: "wpp", insertedLength: String(command.input.text || "").length, text: state.wpp.selectionText, operationScope: command.input.operationScope || null };
   }
   if (command.toolName === "wpp.format_selection") { state.wpp.format = { font: { name: command.input.fontName || "", size: command.input.fontSize, bold: Boolean(command.input.bold), italic: Boolean(command.input.italic), color: command.input.fontColor }, paragraph: { alignment: command.input.alignment, spaceBefore: command.input.spaceBefore, spaceAfter: command.input.spaceAfter, lineSpacing: command.input.lineSpacing } }; return { host: "wpp", formatted: true }; }
-  if (command.toolName === "wpp.set_paragraph") { state.wpp.format.paragraph = { alignment: command.input.alignment, spaceBefore: command.input.spaceBefore, spaceAfter: command.input.spaceAfter, lineSpacing: command.input.lineSpacing }; return { host: "wpp", paragraphFormatted: true }; }
+  if (command.toolName === "wpp.set_paragraph") { const format = { ...(command.input.format || {}) }; for (const key of ["alignment", "spaceBefore", "spaceAfter", "lineSpacing", "firstLineIndent", "leftIndent", "rightIndent", "keepWithNext", "pageBreakBefore"]) if (command.input[key] !== undefined) format[key] = command.input[key]; state.wpp.format.paragraph = { ...(state.wpp.format.paragraph || {}), ...format }; return { host: "wpp", paragraphFormatted: Object.keys(format).length > 0, applied: Object.keys(format).length > 0, affectedRange: { start: command.input.start ?? state.wpp.selectionStart, end: command.input.end ?? state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: state.wpp.format.paragraph, hostAcceptedFields: Object.keys(format), hostRejectedFields: [] }; }
 
   if (command.toolName === "wpp.set_track_changes") {
     if (typeof command.input.enabled !== "boolean") fail("INVALID_ARGUMENT", "enabled must be boolean.", { field: "enabled", value: command.input.enabled });
@@ -189,6 +342,23 @@ function execute(command) {
     return { host: "wpp", [command.toolName === "wpp.accept_all_revisions" ? "acceptedAll" : "rejectedAll"]: true, before };
   }
 
+
+
+  if (command.toolName === "wpp.list_styles") return { host: "wpp", count: 6, styles: ["标题1", "标题2", "标题3", "正文", "项目符号", "编号列表"].map((name, index) => ({ index: index + 1, name })), builtIn: ["标题1", "标题2", "标题3", "正文", "项目符号", "编号列表"] };
+  if (command.toolName === "wpp.apply_style") {
+    const styleName = String(command.input.styleName || "").trim();
+    if (!styleName) fail("INVALID_ARGUMENT", "styleName is required.", { field: "styleName" });
+    state.wpp.styleName = styleName;
+    return { host: "wpp", applied: true, styleName, affectedRange: { start: command.input.start ?? state.wpp.selectionStart, end: command.input.end ?? state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: { styleName }, hostAcceptedFields: ["styleName"], hostRejectedFields: [] };
+  }
+  if (command.toolName === "wpp.insert_page_break") { state.wpp.insertedText += "\f"; return { host: "wpp", inserted: true, breakType: "page", affectedRange: { start: command.input.start ?? state.wpp.selectionEnd } }; }
+  if (command.toolName === "wpp.insert_paragraph_break") { state.wpp.insertedText += "\n"; return { host: "wpp", inserted: true, breakType: "paragraph", affectedRange: { start: command.input.start ?? state.wpp.selectionEnd } }; }
+  if (command.toolName === "wpp.delete_extra_blank_paragraphs") { const before = state.wpp.insertedText; state.wpp.insertedText = before.replace(/\n{3,}/g, "\n\n"); return { host: "wpp", applied: before !== state.wpp.insertedText, deletedCount: before.length - state.wpp.insertedText.length, paragraphCountBefore: before.split(/\n/).length }; }
+
+  if (command.toolName === "wpp.save_document") {
+    return { host: "wpp", saved: true, path: "/tmp/" + state.wpp.documentName, savedAt: new Date().toISOString(), documentIdentity: { name: state.wpp.documentName, fullPath: "/tmp/" + state.wpp.documentName } };
+  }
+
   if (command.toolName === "wpp.insert_table") {
     const rowCount = Number(command.input.rowCount);
     const columnCount = Number(command.input.columnCount);
@@ -196,6 +366,7 @@ function execute(command) {
     if (!Number.isInteger(columnCount) || columnCount < 1) fail("INVALID_ARGUMENT", "columnCount must be an integer >= 1.", { field: "columnCount", value: command.input.columnCount });
     const values = command.input.values !== undefined ? requireMatrix(command.input.values, "values") : [];
     const table = { rowCount, columnCount, values, headerRowBold: Boolean(command.input.headerRowBold), border: command.input.border !== false, alignment: command.input.alignment || "" };
+    table.format = { table: { alignment: table.alignment, borders: { enable: table.border ? 1 : 0, items: [] } }, rowHeights: Array.from({ length: rowCount }, (_, i) => ({ row: i + 1, height: 18, heightRule: 0 })), columnWidths: Array.from({ length: columnCount }, (_, i) => ({ column: i + 1, width: 72 })), mergedCells: [], cells: Array.from({ length: rowCount }, (_, r) => Array.from({ length: columnCount }, (_, c) => ({ row: r + 1, column: c + 1, font: { bold: table.headerRowBold && r === 0 }, paragraph: { alignment: table.alignment }, shading: {}, borders: { enable: table.border ? 1 : 0, items: [] } }))).flat() };
     state.wpp.tables.push(table);
     return { host: "wpp", insertedTable: true, tableIndex: state.wpp.tables.length, ...table };
   }
@@ -216,6 +387,27 @@ function execute(command) {
     if (!Number.isInteger(n) || n < min) fail("INVALID_ARGUMENT", `${field} must be an integer >= ${min}.`, { field, value });
     return n;
   }
+
+  if (command.toolName === "wpp.read_table_cell") {
+    const { table, tableIndex } = simTable(command.input);
+    const row = simIndex(command.input.row, "row");
+    const column = simIndex(command.input.col ?? command.input.column, "column");
+    if (row > table.rowCount || column > table.columnCount) fail("INVALID_ARGUMENT", "cell index is outside table bounds.", { row, column, rowCount: table.rowCount, columnCount: table.columnCount });
+    const mergeRegion = (simFormat(table).mergedCells || table.merged || []).find((item) => row >= item.startRow && row <= item.endRow && column >= item.startColumn && column <= item.endColumn) || null;
+    return { host: "wpp", tableIndex, row, column, text: table.values?.[row - 1]?.[column - 1] ?? "", merged: Boolean(mergeRegion), mergeAnchor: mergeRegion ? { row: mergeRegion.startRow, column: mergeRegion.startColumn } : { row, column }, mergeRegion, isMergeAnchor: !mergeRegion || (mergeRegion.startRow === row && mergeRegion.startColumn === column), format: (simFormat(table).cells || []).find((cell) => cell.row === row && cell.column === column) || { row, column } };
+  }
+  if (command.toolName === "wpp.write_table_cell") {
+    const { table, tableIndex } = simTable(command.input);
+    const row = simIndex(command.input.row, "row");
+    const column = simIndex(command.input.col ?? command.input.column, "column");
+    if (row > table.rowCount || column > table.columnCount) fail("INVALID_ARGUMENT", "cell index is outside table bounds.", { row, column, rowCount: table.rowCount, columnCount: table.columnCount });
+    const beforeText = table.values?.[row - 1]?.[column - 1] ?? "";
+    table.values[row - 1] = table.values[row - 1] || [];
+    table.values[row - 1][column - 1] = String(command.input.text ?? "");
+    const readback = execute({ toolName: "wpp.read_table_cell", input: { tableIndex, row, column } });
+    return { host: "wpp", tableIndex, row, column, written: true, preserveStyle: command.input.preserveStyle !== false, beforeText, afterText: readback.text, merged: readback.merged, mergeAnchor: readback.mergeAnchor, mergeRegion: readback.mergeRegion };
+  }
+
   if (command.toolName === "wpp.insert_table_rows") {
     const { table, tableIndex } = simTable(command.input);
     const rowIndex = simIndex(command.input.rowIndex, "rowIndex");
@@ -270,6 +462,19 @@ function execute(command) {
     table.format = { ...(table.format || {}), border: command.input.border, alignment: command.input.alignment, headerRowBold: command.input.headerRowBold, autofit: command.input.autofit };
     return { host: "wpp", formattedTable: true, tableIndex, applied: Object.keys(table.format).filter((key) => table.format[key] !== undefined), rowCount: table.rowCount, columnCount: table.columnCount };
   }
+  function simClone(value) { return JSON.parse(JSON.stringify(value)); }
+  function simFormat(table) { table.format = table.format || { table: {}, rowHeights: [], columnWidths: [], mergedCells: [], cells: [] }; table.format.rowCount = table.rowCount; table.format.columnCount = table.columnCount; return table.format; }
+  if (command.toolName === "wpp.read_table_format") { const { table, tableIndex } = simTable(command.input); return { host: "wpp", tableIndex, format: simClone(simFormat(table)) }; }
+  if (command.toolName === "wpp.apply_table_format") { const { table, tableIndex } = simTable(command.input); table.format = simClone(command.input.format || {}); table.format.rowCount = table.rowCount; table.format.columnCount = table.columnCount; return { host: "wpp", tableIndex, applied: ["table_format"], rowCount: table.rowCount, columnCount: table.columnCount }; }
+  if (command.toolName === "wpp.copy_table_style" || command.toolName === "wpp.duplicate_table_appearance") { const source = simTable({ tableIndex: command.input.sourceTableIndex }).table; const targetInfo = simTable({ tableIndex: command.input.targetTableIndex }); targetInfo.table.format = simClone(simFormat(source)); targetInfo.table.format.rowCount = targetInfo.table.rowCount; targetInfo.table.format.columnCount = targetInfo.table.columnCount; return { host: "wpp", copied: true, duplicatedAppearance: command.toolName === "wpp.duplicate_table_appearance", keepContent: command.input.keepContent !== false, sourceTableIndex: command.input.sourceTableIndex, targetTableIndex: command.input.targetTableIndex, scope: command.input.scope || "all", applied: ["table_format"] }; }
+  if (command.toolName === "wpp.read_cell_format") { const { table, tableIndex } = simTable(command.input); const row = simIndex(command.input.row, "row"); const column = simIndex(command.input.col ?? command.input.column, "col"); const cell = simFormat(table).cells.find((item) => item.row === row && item.column === column) || { row, column }; return { host: "wpp", tableIndex, row, column, format: simClone(cell) }; }
+  if (command.toolName === "wpp.apply_cell_format") { const { table, tableIndex } = simTable(command.input); const row = simIndex(command.input.row, "row"); const column = simIndex(command.input.col ?? command.input.column, "col"); const format = simFormat(table); const index = format.cells.findIndex((item) => item.row === row && item.column === column); const next = { ...(command.input.format || {}), row, column }; if (index >= 0) format.cells[index] = next; else format.cells.push(next); return { host: "wpp", tableIndex, row, column, applied: ["cell_format"] }; }
+  if (command.toolName === "wpp.read_row_heights") { const { table, tableIndex } = simTable(command.input); return { host: "wpp", tableIndex, rowHeights: simClone(simFormat(table).rowHeights || []) }; }
+  if (command.toolName === "wpp.set_row_heights") { const { table, tableIndex } = simTable(command.input); simFormat(table).rowHeights = simClone(command.input.rowHeights || command.input.rows || []); return { host: "wpp", tableIndex, appliedRows: simFormat(table).rowHeights.map((r) => r.row || r.index) }; }
+  if (command.toolName === "wpp.read_column_widths") { const { table, tableIndex } = simTable(command.input); return { host: "wpp", tableIndex, columnWidths: simClone(simFormat(table).columnWidths || []) }; }
+  if (command.toolName === "wpp.set_column_widths") { const { table, tableIndex } = simTable(command.input); simFormat(table).columnWidths = simClone(command.input.columnWidths || command.input.columns || []); return { host: "wpp", tableIndex, appliedColumns: simFormat(table).columnWidths.map((c) => c.column || c.index) }; }
+  if (command.toolName === "wpp.read_merged_cells") { const { table, tableIndex } = simTable(command.input); return { host: "wpp", tableIndex, mergedCells: simClone(simFormat(table).mergedCells || table.merged || []) }; }
+  if (command.toolName === "wpp.apply_merged_cells") { const { table, tableIndex } = simTable(command.input); simFormat(table).mergedCells = simClone(command.input.mergedCells || []); return { host: "wpp", tableIndex, appliedMergedCells: simFormat(table).mergedCells.length, results: simFormat(table).mergedCells.map((item) => ({ ...item, ok: true })) }; }
   if (command.toolName === "wpp.insert_image") {
     const source = String(command.input.path || command.input.url || "").trim();
     if (!source) fail("INVALID_ARGUMENT", "path or url is required.", { fields: ["path", "url"] });

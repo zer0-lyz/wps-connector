@@ -1,11 +1,34 @@
 const scalarCellSchema = { type: ["string", "number", "boolean", "null"] };
 const matrixSchema = { type: "array", items: { type: "array", items: scalarCellSchema } };
+const tableFormatSchema = { type: "object", additionalProperties: true };
+const textFormatSchema = { type: "object", properties: { fontName: { type: "string" }, fontSize: { type: "number" }, bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" }, color: { type: "string" }, highlightColor: { type: "string" } }, additionalProperties: false };
+const paragraphFormatSchema = { type: "object", properties: { alignment: { type: "string" }, lineSpacing: { type: "number" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" } }, additionalProperties: false };
 
 export const tools = [
   {
     name: "wps.list_sessions",
     description: "List active WPS add-in sessions registered with the local bridge.",
     inputSchema: { type: "object", properties: { onlyOnline: { type: "boolean" }, onlyBound: { type: "boolean" }, host: { type: "string" }, projectId: { type: "string" }, threadId: { type: "string" }, binding: { type: "object", additionalProperties: true } }, additionalProperties: false },
+  },
+  {
+    name: "wps.connection_status",
+    description: "Diagnose WPS Connector bridge, add-in, sessions, binding, and recommended session routing for other models or agents before calling Writer/Spreadsheet tools.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        onlyOnline: { type: "boolean" },
+        onlyBound: { type: "boolean" },
+        host: { type: "string" },
+        sessionId: { type: "string" },
+        projectId: { type: "string" },
+        projectName: { type: "string" },
+        projectPath: { type: "string" },
+        threadId: { type: "string" },
+        conversationId: { type: "string" },
+        binding: { type: "object", additionalProperties: true }
+      },
+      additionalProperties: false
+    },
   },
   {
     name: "et.read_selection",
@@ -191,9 +214,121 @@ export const tools = [
     },
   },
   {
+    name: "wpp.select_paragraph",
+    description: "Select a one-based paragraph in the active WPS Writer document.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" } }, required: ["index"], additionalProperties: false },
+  },
+  {
+    name: "wpp.select_current_paragraph",
+    description: "Select the paragraph containing the current WPS Writer cursor or selection.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.get_selection_range",
+    description: "Return current WPS Writer selection native and normalized range information.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+
+  {
+    name: "wpp.list_paragraphs",
+    description: "List WPS Writer paragraphs with stable pagination, text previews, ranges, style metadata, and optional paragraph format summaries.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, startIndex: { type: "number" }, endIndex: { type: "number" }, rangeMode: { type: "string" }, maxCount: { type: "number" }, includeFormatSummary: { type: "boolean" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.get_paragraph_range",
+    description: "Return native and normalized range metadata for a one-based WPS Writer paragraph.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" } }, required: ["index"], additionalProperties: false },
+  },
+  {
+    name: "wpp.find_block",
+    description: "Find a paragraph/section/table block by anchor text and return whole-block range metadata.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, anchorText: { type: "string" }, options: { type: "object", properties: { blockType: { type: "string" }, includeFollowingParagraphs: { type: "number" }, stopAtNextAnchor: { type: "boolean" }, matchWholeParagraph: { type: "boolean" } }, additionalProperties: false } }, required: ["anchorText"], additionalProperties: false },
+  },
+  {
+    name: "wpp.find_text",
+    description: "Find text in a WPS Writer document using the normalized Writer text model.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, query: { type: "string" }, matchCase: { type: "boolean" }, matchWholeWord: { type: "boolean" }, maxResults: { type: "number" } },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.replace_text",
+    description: "Replace text in WPS Writer while preserving surrounding paragraph and table formatting where the host permits.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, findText: { type: "string" }, replaceText: { type: "string" }, occurrence: { type: ["string", "number"] }, index: { type: "number" }, matchCase: { type: "boolean" }, matchWholeWord: { type: "boolean" } },
+      required: ["findText", "replaceText"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "wpp.read_format",
     description: "Read font and paragraph formatting from the current WPS Writer selection.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+
+  {
+    name: "wpp.replace_paragraph",
+    description: "Replace one whole WPS Writer paragraph by one-based paragraph index without silently crossing into the next paragraph.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, text: { type: "string" } }, required: ["index", "text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.replace_current_paragraph",
+    description: "Replace the current WPS Writer paragraph containing the cursor or selection.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, text: { type: "string" } }, required: ["text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.replace_block",
+    description: "Replace a whole paragraph/section block found by anchor text.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, anchorText: { type: "string" }, text: { type: "string" }, options: { type: "object", additionalProperties: true } }, required: ["anchorText", "text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_after_paragraph",
+    description: "Insert text after a one-based WPS Writer paragraph index.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, text: { type: "string" } }, required: ["index", "text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_before_paragraph",
+    description: "Insert text before a one-based WPS Writer paragraph index.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, text: { type: "string" } }, required: ["index", "text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_table_after_paragraph",
+    description: "Insert a table after a one-based WPS Writer paragraph index without relying on character offsets.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, rowCount: { type: "number" }, columnCount: { type: "number" }, values: matrixSchema, headerRowBold: { type: "boolean" }, alignment: { type: "string" }, border: { type: "boolean" } }, required: ["index", "rowCount", "columnCount"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_table_before_paragraph",
+    description: "Insert a table before a one-based WPS Writer paragraph index without relying on character offsets.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, rowCount: { type: "number" }, columnCount: { type: "number" }, values: matrixSchema, headerRowBold: { type: "boolean" }, alignment: { type: "string" }, border: { type: "boolean" } }, required: ["index", "rowCount", "columnCount"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_text_format",
+    description: "Read text formatting from the current selection or optional normalized start/end range.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_text_format",
+    description: "Apply font formatting to the current selection or optional normalized start/end range.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, format: textFormatSchema }, required: ["format"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_paragraph_format",
+    description: "Read paragraph formatting from the current selection, explicit range, or paragraph indexes. Multi-paragraph reads return perParagraphFormats and mixedFields.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_paragraph_format_by_indexes",
+    description: "Apply paragraph formatting to one or more one-based WPS Writer paragraph indexes without relying on the current selection.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.copy_paragraph_format",
+    description: "Copy paragraph formatting from one source paragraph to target paragraph indexes or a paragraph range without changing document text.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, fields: { type: "array", items: { type: "string" } }, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, required: ["sourceParagraphIndex"], additionalProperties: false },
   },
   {
     name: "wpp.read_table",
@@ -201,6 +336,26 @@ export const tools = [
     inputSchema: {
       type: "object",
       properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.read_table_cell",
+    description: "Read one WPS Writer table cell by one-based table, row, and column, including merge and format metadata.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, row: { type: "number" }, column: { type: "number" }, col: { type: "number" } },
+      required: ["tableIndex", "row"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.write_table_cell",
+    description: "Write text to one WPS Writer table cell while preserving cell style by default.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, row: { type: "number" }, column: { type: "number" }, col: { type: "number" }, text: { type: "string" }, preserveStyle: { type: "boolean" } },
+      required: ["tableIndex", "row", "text"],
       additionalProperties: false,
     },
   },
@@ -262,6 +417,66 @@ export const tools = [
       properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, border: { type: "boolean" }, alignment: { type: "string" }, headerRowBold: { type: "boolean" }, autofit: { type: "boolean" } },
       additionalProperties: false,
     },
+  },
+  {
+    name: "wpp.read_table_format",
+    description: "Read complete WPS Writer table formatting, including table, cell, row height, column width, borders, padding, and merged-cell metadata.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_table_format",
+    description: "Apply a structured table format object to a WPS Writer table without changing cell text.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, format: tableFormatSchema }, required: ["tableIndex", "format"], additionalProperties: false },
+  },
+  {
+    name: "wpp.copy_table_style",
+    description: "Copy table appearance from one WPS Writer table to another. Scope: table_only, cell_style, row_height, col_width, merged_cells, or all.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceTableIndex: { type: "number" }, targetTableIndex: { type: "number" }, scope: { type: ["string", "array"], items: { type: "string" } } }, required: ["sourceTableIndex", "targetTableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.duplicate_table_appearance",
+    description: "Make a target WPS Writer table look like a source table while keeping target content by default.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceTableIndex: { type: "number" }, targetTableIndex: { type: "number" }, keepContent: { type: "boolean" } }, required: ["sourceTableIndex", "targetTableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_cell_format",
+    description: "Read formatting from one WPS Writer table cell.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, row: { type: "number" }, col: { type: "number" }, column: { type: "number" } }, required: ["tableIndex", "row"], additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_cell_format",
+    description: "Apply formatting to one WPS Writer table cell without changing its text.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, row: { type: "number" }, col: { type: "number" }, column: { type: "number" }, format: tableFormatSchema }, required: ["tableIndex", "row", "format"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_row_heights",
+    description: "Read WPS Writer table row heights.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.set_row_heights",
+    description: "Set WPS Writer table row heights.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, rowHeights: { type: "array", items: { type: "object", additionalProperties: true } }, rows: { type: "array", items: { type: "object", additionalProperties: true } } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_column_widths",
+    description: "Read WPS Writer table column widths.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.set_column_widths",
+    description: "Set WPS Writer table column widths.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, columnWidths: { type: "array", items: { type: "object", additionalProperties: true } }, columns: { type: "array", items: { type: "object", additionalProperties: true } } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_merged_cells",
+    description: "Read merged-cell regions from a WPS Writer table when exposed by the host.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_merged_cells",
+    description: "Apply merged-cell regions to a WPS Writer table.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, mergedCells: { type: "array", items: { type: "object", additionalProperties: true } } }, required: ["tableIndex", "mergedCells"], additionalProperties: false },
   },
   {
     name: "wpp.insert_image",
@@ -352,6 +567,38 @@ export const tools = [
   },
 
   {
+    name: "wpp.list_styles",
+    description: "List WPS Writer styles visible to the active document.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_style",
+    description: "Apply a named WPS Writer style to the current selection or optional normalized start/end range.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, styleName: { type: "string" } }, required: ["styleName"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_page_break",
+    description: "Insert a page break at the current selection or optional normalized start offset.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_paragraph_break",
+    description: "Insert a paragraph break at the current selection or optional normalized start offset.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.delete_extra_blank_paragraphs",
+    description: "Delete repeated blank paragraphs while preserving normal paragraph formatting.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+
+  {
+    name: "wpp.save_document",
+    description: "Save the active WPS Writer document.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+
+  {
     name: "wpp.insert_news_article",
     description: "Insert a formatted news article into WPS Writer.",
     inputSchema: {
@@ -391,10 +638,10 @@ export const tools = [
   },
   {
     name: "wpp.set_paragraph",
-    description: "Set paragraph formatting for the current WPS Writer selection.",
+    description: "Set paragraph formatting for the current selection or optional normalized start/end range. Supports legacy top-level fields and format object.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, alignment: { type: "string" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, lineSpacing: { type: "number" } },
+      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, format: paragraphFormatSchema, alignment: { type: "string" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, lineSpacing: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" } },
       additionalProperties: false,
     },
   },

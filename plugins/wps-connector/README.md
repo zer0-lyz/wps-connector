@@ -29,3 +29,7 @@ Health checks:
 curl http://127.0.0.1:40215/api/health
 curl http://127.0.0.1:3891/health
 ```
+
+## Agent Preflight
+
+Call `wps.connection_status` or `wps_connection_status` before Writer/Spreadsheet writes. Stop on non-empty `issues`; otherwise use `recommendedSession.sessionId` or pass the same binding selector to the target tool.

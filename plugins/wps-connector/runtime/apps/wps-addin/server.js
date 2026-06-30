@@ -1,10 +1,12 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 const host = process.env.WPS_CONNECTOR_ADDIN_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_ADDIN_PORT || 3891);
-const rootDir = join(process.cwd(), "apps/wps-addin");
+const runtimeRoot = process.env.WPS_CONNECTOR_RUNTIME_ROOT || join(homedir(), ".local/share/wps-connector/runtime");
+const rootDir = process.env.WPS_CONNECTOR_ADDIN_ROOT || join(runtimeRoot, "apps/wps-addin");
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -12,6 +14,7 @@ const mimeTypes = {
   ".xml": "application/xml; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".png": "image/png",
+  ".svg": "image/svg+xml",
 };
 
 function contentType(pathname) {
@@ -36,6 +39,8 @@ async function handle(req, res) {
     if (safeMethod && pathname === "/main.js") return sendAsset(res, "main.js");
     if (safeMethod && pathname === "/ribbon.xml") return sendAsset(res, "ribbon.xml");
     if (safeMethod && pathname === "/icon.png") return sendAsset(res, "icon.png");
+    if (safeMethod && pathname === "/images/connector.svg") return sendAsset(res, "images/connector.svg");
+    if (safeMethod && pathname === "/images/js-debug.svg") return sendAsset(res, "images/js-debug.svg");
     if (req.method === "GET" && pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*" });
       return res.end(JSON.stringify({ ok: true, name: "wps-connector-addin", time: new Date().toISOString() }, null, 2));

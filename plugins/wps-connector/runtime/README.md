@@ -57,6 +57,23 @@ curl -sS http://127.0.0.1:40215/api/tools/schema
 curl -sS http://127.0.0.1:3891/health
 ```
 
+
+## Agent Connection Flow
+
+For Codex sub-agents or other models, use this preflight before any document write:
+
+```bash
+node scripts/agent-connection-status.js --onlyOnline --host wpp
+node scripts/agent-connection-status.js --onlyOnline --host et --projectId <projectId> --threadId <threadId>
+```
+
+The same preflight is exposed as MCP tools with both naming styles:
+
+- `wps.connection_status`
+- `wps_connection_status`
+
+The JSON response includes bridge/add-in health, filtered sessions, binding match status, `recommendedSession`, structured `issues`, and `nextActions`. Agents should stop on non-empty `issues` instead of guessing a session. For multi-window work, pass `projectId` + `threadId` or the full `binding` selector so Writer and Spreadsheet calls cannot route to the wrong WPS pane.
+
 ## Use With WPS
 
 1. Open WPS Writer or WPS Spreadsheet.
@@ -99,14 +116,15 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.16`
-- clientBuild: `2026.06.30-mcp-range-revisions.1`
+- UI/clientVersion: `v1.0.23`
+- clientBuild: `2026.06.30-writer-paragraph-format-batch.1`
 
 ## Current Tool Surface
 
 Session:
 
 - `wps.list_sessions` / `wps_list_sessions`
+- `wps.connection_status` / `wps_connection_status`
 
 WPS Spreadsheet (`et`) tools:
 
@@ -118,6 +136,7 @@ WPS Writer (`wpp`) tools:
 
 - document identity, document text, selection and format reads;
 - stable range selection with resolved text verification;
+- paragraph-indexed formatting, batch paragraph format application, and paragraph format copying;
 - text/news insertion and paragraph formatting;
 - tables, images, comments;
 - track changes / revisions where the WPS host API supports them.

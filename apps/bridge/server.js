@@ -10,6 +10,7 @@ import { tools } from "../shared/toolSchemas.js";
 const host = process.env.WPS_CONNECTOR_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_PORT || 40215);
 const commandTimeoutMs = Number(process.env.WPS_CONNECTOR_COMMAND_TIMEOUT_MS || 60000);
+const addinUrl = (process.env.WPS_CONNECTOR_ADDIN_URL || "http://127.0.0.1:3891").replace(/\/$/, "");
 const runtimeRoot = process.env.WPS_CONNECTOR_RUNTIME_ROOT || join(homedir(), ".local/share/wps-connector/runtime");
 const catalogPath = process.env.WPS_CONNECTOR_CATALOG_PATH || join(runtimeRoot, "codex-catalog.snapshot.json");
 const bindingsPath = process.env.WPS_CONNECTOR_BINDINGS_PATH || join(runtimeRoot, "project-bindings.local.json");
@@ -154,8 +155,91 @@ function commandInputWithScope(session, toolName, input = {}) {
 }
 function enqueueCommand(session, toolName, input) { const commandId = randomUUID(); const command = { commandId, sessionId: session.sessionId, toolName, input: commandInputWithScope(session, toolName, input), status: "queued", createdAt: nowIso() }; commands.set(commandId, command); session.queue.push(commandId); return command; }
 function waitForCommand(command) { return new Promise((resolve, reject) => { const timer = setTimeout(() => { command.status = "timed_out"; command.timedOutAt = nowIso(); command.error = { code: "COMMAND_TIMEOUT", message: `Command timed out after ${commandTimeoutMs}ms.` }; reject(command.error); }, commandTimeoutMs); command.resolve = (result) => { clearTimeout(timer); resolve(result); }; command.reject = (error) => { clearTimeout(timer); reject(error); }; }); }
+async function probeJson(url) {
+  const started = Date.now();
+  try {
+    const response = await fetch(url);
+    const text = await response.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch {}
+    return { ok: response.ok, httpStatus: response.status, latencyMs: Date.now() - started, body: json || text.slice(0, 500) };
+  } catch (error) {
+    return { ok: false, latencyMs: Date.now() - started, error: { code: "PROBE_FAILED", message: error.message } };
+  }
+}
+function summarizeSessionForAgent(session) {
+  return {
+    sessionId: session.sessionId,
+    host: session.host,
+    status: session.status,
+    documentName: session.documentName,
+    documentKey: session.documentKey,
+    clientVersion: session.clientVersion || "",
+    clientBuild: session.clientBuild || "",
+    bound: Boolean(session.binding),
+    binding: session.binding || null,
+    operationScope: session.operationScope || { mode: "document" },
+    emptyDocumentName: Boolean(session.emptyDocumentName),
+    emptyDocumentPath: Boolean(session.emptyDocumentPath),
+    lastSeenAt: session.lastSeenAt
+  };
+}
+async function connectionStatus(input = {}) {
+  pruneOfflineSessions();
+  const { host: _hostFilter, sessionId: _sessionFilter, onlyOnline: _onlyOnline, onlyBound: _onlyBound, ...bindingInput } = input;
+  const requested = requestedBinding(bindingInput);
+  const sessionsList = listSessions({ ...input, onlyOnline: input.onlyOnline ?? false });
+  const filtered = sessionsList.map(summarizeSessionForAgent);
+  const candidates = filtered.filter((session) => {
+    if (input.sessionId && session.sessionId !== input.sessionId) return false;
+    if (input.host && !String(session.host || "").startsWith(normalizeHost(input.host))) return false;
+    if (input.onlyOnline && session.status !== "online") return false;
+    if (input.onlyBound && !session.bound) return false;
+    if (requested && !bindingMatches(session, requested)) return false;
+    return true;
+  });
+  const online = filtered.filter((session) => session.status === "online");
+  const onlineBound = online.filter((session) => session.bound);
+  const recommended = candidates.find((session) => session.status === "online" && (!input.onlyBound || session.bound)) || null;
+  const issues = [];
+  if (!online.length) issues.push({ code: "NO_ONLINE_SESSIONS", message: "No online WPS sessions are registered. Open or refresh the WPS Connector pane in Writer/Spreadsheet." });
+  if (input.host && !online.some((session) => String(session.host || "").startsWith(normalizeHost(input.host)))) issues.push({ code: "NO_ONLINE_HOST_SESSION", message: "No online session matches the requested host.", details: { host: input.host } });
+  if (requested && !onlineBound.some((session) => bindingMatches(session, requested))) issues.push({ code: "NO_BOUND_SESSION", message: "No online session is bound to the requested Codex project/thread.", details: { requestedBinding: requested } });
+  if (input.sessionId && !filtered.some((session) => session.sessionId === input.sessionId)) issues.push({ code: "SESSION_NOT_FOUND", message: "The requested sessionId is not registered.", details: { sessionId: input.sessionId } });
+  if (input.sessionId) {
+    const exact = filtered.find((session) => session.sessionId === input.sessionId);
+    if (exact && exact.status !== "online") issues.push({ code: "SESSION_OFFLINE", message: "The requested session is registered but offline.", details: { sessionId: input.sessionId, lastSeenAt: exact.lastSeenAt } });
+    if (exact && requested && !bindingMatches(exact, requested)) issues.push({ code: "SESSION_BINDING_MISMATCH", message: "The requested session is bound to a different Codex project/thread.", details: { sessionId: input.sessionId, requestedBinding: requested, actualBinding: exact.binding } });
+  }
+  const nextActions = [];
+  if (!issues.length && recommended) nextActions.push("Use recommendedSession.sessionId for tool calls, or pass the same binding selector to let the bridge route automatically.");
+  if (issues.some((issue) => issue.code === "NO_ONLINE_SESSIONS" || issue.code === "SESSION_OFFLINE" || issue.code === "NO_ONLINE_HOST_SESSION")) nextActions.push("Open WPS, show the WPS Connector pane, and confirm the pane version is current before retrying.");
+  if (issues.some((issue) => issue.code === "NO_BOUND_SESSION" || issue.code === "SESSION_BINDING_MISMATCH")) nextActions.push("Save the project/thread binding in the WPS Connector pane for the target document, then retry with the same binding selector.");
+  const bridgeHealth = { ok: true, url: `http://${host}:${port}/api/health`, time: nowIso() };
+  const addinHealth = await probeJson(`${addinUrl}/health`);
+  return {
+    ok: issues.length === 0,
+    bridge: bridgeHealth,
+    addin: { url: `${addinUrl}/health`, ...addinHealth },
+    requestedBinding: requested,
+    filters: { onlyOnline: Boolean(input.onlyOnline), onlyBound: Boolean(input.onlyBound), host: input.host || "", sessionId: input.sessionId || "" },
+    counts: { total: filtered.length, online: online.length, onlineBound: onlineBound.length, matched: candidates.length },
+    recommendedSession: recommended,
+    sessions: (candidates.length ? candidates : filtered).slice(0, 20),
+    truncated: (candidates.length ? candidates : filtered).length > 20,
+    issues,
+    nextActions,
+    agentUsage: {
+      recommendedFirstCall: "wps.connection_status",
+      listTools: ["wps.list_sessions", "wps.connection_status", "wpp.read_document_identity", "et.read_selection"],
+      dottedAndUnderscoreNamesSupported: true,
+      bindingSelectorFields: selectorBindingKeys
+    }
+  };
+}
 async function runTool(toolName, input) {
   if (toolName === "wps.list_sessions") return { sessions: listSessions(input) };
+  if (toolName === "wps.connection_status") return connectionStatus(input);
   const expectedHost = toolName.startsWith("et.") ? "et" : toolName.startsWith("wpp.") ? "wpp" : "";
   const session = selectSession(input, expectedHost, toolName);
   if (!session) throw { code: "SESSION_NOT_FOUND", message: `No online WPS session found for ${toolName}.` };
