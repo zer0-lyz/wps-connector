@@ -116,7 +116,7 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_document_text"), "MCP tools/list missed wpp.read_document_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.find_text"), "MCP tools/list missed wpp.find_text.");
-  for (const name of ["wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
+  for (const name of ["wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wpp.replace_text"), "MCP tools/list missed wpp.replace_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_cell"), "MCP tools/list missed wpp.read_table_cell.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.write_table_cell"), "MCP tools/list missed wpp.write_table_cell.");
@@ -315,6 +315,60 @@ async function main() {
   assert(wppSelectRange.selected === true && wppSelectRange.resolvedText === "测试" && wppSelectRange.exactMatch === true, "WPP select_range returned unexpected resolved selection.");
 
 
+
+
+  await request("/api/tools/wpp/insert_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", text: "\nQW-5 原问题五\nQW-6 原问题六\nQW-7 原问题七" }),
+  });
+
+  const wppParagraphs = await request("/api/tools/wpp/list_paragraphs", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", maxCount: 20 }),
+  });
+  const qw5 = wppParagraphs.paragraphs.find((p) => p.text.includes("QW-5"));
+  const qw6 = wppParagraphs.paragraphs.find((p) => p.text.includes("QW-6"));
+  const qw7 = wppParagraphs.paragraphs.find((p) => p.text.includes("QW-7"));
+  assert(qw5 && qw6 && qw7 && qw6.paragraphIndex === qw5.paragraphIndex + 1, "WPP list_paragraphs did not return stable QW paragraph indexes.");
+
+  const wppQw6Range = await request("/api/tools/wpp/get_paragraph_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", index: qw6.paragraphIndex }),
+  });
+  assert(wppQw6Range.resolvedTextPreview.includes("QW-6"), "WPP get_paragraph_range did not return QW-6 preview.");
+
+  const wppFindQw6 = await request("/api/tools/wpp/find_block", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", anchorText: "QW-6", options: { blockType: "paragraph" } }),
+  });
+  assert(wppFindQw6.affectedParagraphIndex === qw6.paragraphIndex && wppFindQw6.exactMatch === true, "WPP find_block did not locate QW-6 paragraph.");
+
+  const wppReplaceQw6 = await request("/api/tools/wpp/replace_block", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", anchorText: "QW-6", text: "QW-6 替换后的问题六", options: { blockType: "paragraph" } }),
+  });
+  assert(wppReplaceQw6.applied === true && wppReplaceQw6.affectedParagraphIndex === qw6.paragraphIndex && wppReplaceQw6.afterText.includes("替换后的问题六"), "WPP replace_block did not replace QW-6 only.");
+
+  const wppInsertTableAfterQw5 = await request("/api/tools/wpp/insert_table_after_paragraph", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", index: qw5.paragraphIndex, rowCount: 2, columnCount: 2, values: [["字段", "值"], ["A", "B"]], border: true }),
+  });
+  assert(wppInsertTableAfterQw5.insertedTable === true && wppInsertTableAfterQw5.affectedParagraphIndex === qw5.paragraphIndex, "WPP insert_table_after_paragraph did not anchor after QW-5.");
+
+  const wppFindQw6AfterTable = await request("/api/tools/wpp/find_block", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", anchorText: "QW-6", options: { blockType: "paragraph" } }),
+  });
+  const wppFindQw7AfterTable = await request("/api/tools/wpp/find_block", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", anchorText: "QW-7", options: { blockType: "paragraph" } }),
+  });
+  assert(wppFindQw6AfterTable.affectedParagraphIndex === qw6.paragraphIndex && wppFindQw7AfterTable.affectedParagraphIndex === qw7.paragraphIndex, "WPP paragraph anchors drifted after table insertion.");
+
+  await request("/api/tools/wpp/select_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2 }),
+  });
 
   const wppSelectionRange = await request("/api/tools/wpp/get_selection_range", {
     method: "POST",
@@ -704,6 +758,7 @@ async function main() {
     wppInsert: { insertedLength: wppInsert.insertedLength },
     wppText: { length: wppText.length, findCount: wppFindText.count, replacedCount: wppReplaceText.replacedCount },
     wppLayout: { textAccepted: wppApplyTextFormat.hostAcceptedFields.length, paragraphAccepted: wppSetParagraphRich.hostAcceptedFields.length, style: wppApplyStyle.effectiveFormat?.styleName, pageBreak: wppPageBreak.inserted },
+    wppParagraphBlocks: { qw6: wppFindQw6.affectedParagraphIndex, replaced: wppReplaceQw6.applied, tableAfterQw5: wppInsertTableAfterQw5.insertedTable, qw7AfterTable: wppFindQw7AfterTable.affectedParagraphIndex },
     wppComments: { beforeDelete: wppCommentsBeforeDelete.count, afterDelete: wppCommentsAfterDelete.count },
     wppRevisions: { beforeAcceptAll: wppRevisions.count },
     wppTable: { rowCount: wppTable.rowCount, columnCount: wppTable.columnCount },

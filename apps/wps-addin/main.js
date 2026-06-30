@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.21";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.06.30-writer-layout-tools.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.22";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.06.30-writer-paragraph-blocks.1";
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
 let wpsConnectorCurrentDocumentKey = "";
@@ -280,7 +280,7 @@ function wpsConnectorScope() {
   const documentIdentity = wpsConnectorDocumentIdentity(app, host);
   const documentKey = wpsConnectorDocumentKey(host, documentIdentity);
   const sessionId = `wps-${host}-${wpsConnectorHash(documentKey)}`;
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.find_text", "wpp.replace_text", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
   return { app, host, documentIdentity, documentKey, sessionId, capabilities };
 }
 async function wpsConnectorRegister() {
@@ -652,7 +652,7 @@ function wpsConnectorWppRangeDetails(range) {
   const start = Number.isFinite(nativeStart) ? wpsConnectorWppNativeToNormalized(model, nativeStart) : null;
   const end = Number.isFinite(nativeEnd) ? wpsConnectorWppNativeToNormalized(model, nativeEnd) : null;
   const text = wpsConnectorWppNormalizeRangeText(wpsConnectorCall(range?.Text));
-  return { start, end, normalizedStart: start, normalizedEnd: end, nativeStart: Number.isFinite(nativeStart) ? nativeStart : null, nativeEnd: Number.isFinite(nativeEnd) ? nativeEnd : null, text, length: text.length };
+  return { start, end, normalizedStart: start, normalizedEnd: end, nativeStart: Number.isFinite(nativeStart) ? nativeStart : null, nativeEnd: Number.isFinite(nativeEnd) ? nativeEnd : null, text, selectedText: text, length: text.length, ...wpsConnectorWppRangeContext(range) };
 }
 function wpsConnectorWppSelectionRange() {
   const range = wpsConnectorApp().Selection?.Range;
@@ -801,6 +801,170 @@ function wpsConnectorWppDeleteExtraBlankParagraphs() {
     previousBlank = blank;
   }
   return { host: "wpp", applied: deletedCount > 0, deletedCount, paragraphCountBefore: count };
+}
+
+
+function wpsConnectorWppRangeContext(range) {
+  const context = { paragraphIndex: null, isInsideTable: false, tableIndex: null, cellRow: null, cellColumn: null };
+  try {
+    const paragraphs = wpsConnectorApp().ActiveDocument?.Paragraphs;
+    const count = Number(wpsConnectorSafeGet(paragraphs, "Count") || 0);
+    const start = Number(wpsConnectorSafeGet(range, "Start"));
+    for (let i = 1; i <= count; i += 1) {
+      const pr = paragraphs.Item(i).Range;
+      const ps = Number(wpsConnectorSafeGet(pr, "Start"));
+      const pe = Number(wpsConnectorSafeGet(pr, "End"));
+      if (Number.isFinite(start) && start >= ps && start <= pe) { context.paragraphIndex = i; break; }
+    }
+  } catch {}
+  try { context.isInsideTable = Boolean(wpsConnectorMember(range, "Information", 12)); } catch {}
+  try {
+    const cells = range.Cells;
+    const cell = Number(wpsConnectorSafeGet(cells, "Count") || 0) ? cells.Item(1) : null;
+    if (cell) {
+      context.isInsideTable = true;
+      context.cellRow = wpsConnectorSafeGet(cell, "RowIndex");
+      context.cellColumn = wpsConnectorSafeGet(cell, "ColumnIndex");
+    }
+  } catch {}
+  try {
+    const tables = wpsConnectorApp().ActiveDocument?.Tables;
+    const tableCount = Number(wpsConnectorSafeGet(tables, "Count") || 0);
+    const start = Number(wpsConnectorSafeGet(range, "Start"));
+    for (let i = 1; i <= tableCount; i += 1) {
+      const tr = tables.Item(i).Range;
+      const ts = Number(wpsConnectorSafeGet(tr, "Start"));
+      const te = Number(wpsConnectorSafeGet(tr, "End"));
+      if (Number.isFinite(start) && start >= ts && start <= te) { context.tableIndex = i; break; }
+    }
+  } catch {}
+  return context;
+}
+function wpsConnectorWppParagraphs() {
+  const paragraphs = wpsConnectorApp().ActiveDocument?.Paragraphs;
+  if (!paragraphs) wpsConnectorFail("HOST_UNSUPPORTED", "WPS Writer paragraphs collection is not available.");
+  return paragraphs;
+}
+function wpsConnectorWppParagraphRange(index) {
+  const paragraphs = wpsConnectorWppParagraphs();
+  const count = Number(wpsConnectorSafeGet(paragraphs, "Count") || 0);
+  const paragraphIndex = wpsConnectorInteger(index, "index", 1);
+  if (paragraphIndex > count) wpsConnectorFail("PARAGRAPH_NOT_FOUND", "Paragraph not found: " + paragraphIndex, { index: paragraphIndex, paragraphCount: count });
+  return { paragraphIndex, paragraphCount: count, range: paragraphs.Item(paragraphIndex).Range };
+}
+function wpsConnectorWppParagraphItem(index) {
+  const { paragraphIndex, paragraphCount, range } = wpsConnectorWppParagraphRange(index);
+  const details = wpsConnectorWppRangeDetails(range);
+  const text = details.text.replace(new RegExp("\\n+$", "g"), "");
+  return { index: paragraphIndex, paragraphIndex, paragraphCount, text, preview: text.slice(0, 240), range: details, styleName: String(wpsConnectorSafeGet(range, "Style") || ""), ...wpsConnectorWppRangeContext(range) };
+}
+function wpsConnectorWppListParagraphs(input = {}) {
+  const paragraphs = wpsConnectorWppParagraphs();
+  const count = Number(wpsConnectorSafeGet(paragraphs, "Count") || 0);
+  const start = input.start === undefined ? null : wpsConnectorInteger(input.start, "start", 0);
+  const end = input.end === undefined ? null : wpsConnectorInteger(input.end, "end", 0);
+  const maxCount = input.maxCount === undefined ? 200 : wpsConnectorInteger(input.maxCount, "maxCount", 1);
+  const items = [];
+  for (let i = 1; i <= count && items.length < maxCount; i += 1) {
+    const item = wpsConnectorWppParagraphItem(i);
+    if (start !== null && item.range.normalizedEnd < start) continue;
+    if (end !== null && item.range.normalizedStart > end) continue;
+    items.push(item);
+  }
+  return { host: "wpp", paragraphCount: count, count: items.length, truncated: items.length >= maxCount && count > items.length, paragraphs: items };
+}
+function wpsConnectorWppGetParagraphRange(input = {}) {
+  const item = wpsConnectorWppParagraphItem(input.index);
+  return { host: "wpp", paragraphIndex: item.paragraphIndex, affectedRange: item.range, resolvedTextPreview: item.preview, styleName: item.styleName, isInsideTable: item.isInsideTable, tableIndex: item.tableIndex, cellRow: item.cellRow, cellColumn: item.cellColumn };
+}
+function wpsConnectorWppFindBlock(input = {}) {
+  const anchorText = String(input.anchorText || "").trim();
+  if (!anchorText) wpsConnectorFail("INVALID_ARGUMENT", "anchorText is required.", { field: "anchorText" });
+  const options = input.options || {};
+  const blockType = options.blockType || "paragraph";
+  const paragraphs = wpsConnectorWppListParagraphs({ maxCount: 2000 }).paragraphs;
+  const match = paragraphs.find((p) => options.matchWholeParagraph ? p.text.trim() === anchorText : p.text.includes(anchorText));
+  if (!match) wpsConnectorFail("BLOCK_NOT_FOUND", "Block anchor not found: " + anchorText, { anchorText, blockType });
+  if (blockType === "table") {
+    const tables = wpsConnectorApp().ActiveDocument?.Tables;
+    const tableCount = Number(wpsConnectorSafeGet(tables, "Count") || 0);
+    for (let i = 1; i <= tableCount; i += 1) {
+      const range = tables.Item(i).Range;
+      const text = wpsConnectorWppNormalizeRangeText(wpsConnectorCall(range?.Text));
+      if (text.includes(anchorText)) return { host: "wpp", found: true, blockType: "table", tableIndex: i, affectedParagraphIndex: match.paragraphIndex, affectedRange: wpsConnectorWppRangeDetails(range), resolvedTextPreview: text.slice(0, 500), exactMatch: true };
+    }
+  }
+  const following = Math.max(0, Number(options.includeFollowingParagraphs || 0));
+  let endIndex = Math.min(paragraphs.length, match.paragraphIndex + following);
+  if (options.stopAtNextAnchor) {
+    const anchorPattern = new RegExp("^\\s*(Q[A-Z]-\\d+|【.+?】|第[一二三四五六七八九十]+部分)");
+    for (let i = match.paragraphIndex + 1; i <= endIndex; i += 1) {
+      const text = paragraphs[i - 1]?.text || "";
+      if (anchorPattern.test(text)) { endIndex = i - 1; break; }
+    }
+  }
+  const startRange = wpsConnectorWppParagraphRange(match.paragraphIndex).range;
+  const endRange = wpsConnectorWppParagraphRange(endIndex).range;
+  const nativeStart = Number(wpsConnectorSafeGet(startRange, "Start"));
+  const nativeEnd = Number(wpsConnectorSafeGet(endRange, "End"));
+  const document = wpsConnectorApp().ActiveDocument;
+  const range = document.Range(nativeStart, nativeEnd);
+  const details = wpsConnectorWppRangeDetails(range);
+  return { host: "wpp", found: true, blockType, anchorText, affectedParagraphIndex: match.paragraphIndex, startParagraphIndex: match.paragraphIndex, endParagraphIndex: endIndex, affectedRange: details, resolvedTextPreview: details.text.slice(0, 500), exactMatch: details.text.includes(anchorText), hostAcceptedFields: [], hostRejectedFields: [] };
+}
+function wpsConnectorWppEditableParagraphRange(index) {
+  const info = wpsConnectorWppParagraphRange(index);
+  const range = info.range;
+  let editRange = null;
+  try { editRange = typeof range.Duplicate === "function" ? range.Duplicate() : range.Duplicate; } catch {}
+  if (!editRange) {
+    const start = Number(wpsConnectorSafeGet(range, "Start"));
+    const end = Number(wpsConnectorSafeGet(range, "End"));
+    editRange = wpsConnectorApp().ActiveDocument.Range(start, Math.max(start, end - 1));
+  }
+  const end = Number(wpsConnectorSafeGet(editRange, "End"));
+  const start = Number(wpsConnectorSafeGet(editRange, "Start"));
+  if (Number.isFinite(start) && Number.isFinite(end) && end > start) { try { editRange.End = end - 1; } catch {} }
+  return { ...info, editRange };
+}
+function wpsConnectorWppReplaceParagraph(input = {}) {
+  if (input.text === undefined || input.text === null) wpsConnectorFail("INVALID_ARGUMENT", "text is required.", { field: "text" });
+  const before = wpsConnectorWppParagraphItem(input.index);
+  const { paragraphIndex, editRange } = wpsConnectorWppEditableParagraphRange(input.index);
+  try { editRange.Text = String(input.text); } catch (error) { wpsConnectorFail("PARAGRAPH_REPLACE_FAILED", "WPS Writer failed to replace paragraph.", { index: paragraphIndex, hostMessage: error.message }); }
+  const after = wpsConnectorWppParagraphItem(paragraphIndex);
+  return { host: "wpp", applied: true, exactMatch: after.text === String(input.text), affectedParagraphIndex: paragraphIndex, affectedRange: after.range, beforeText: before.text, afterText: after.text, resolvedTextPreview: after.preview, hostAcceptedFields: ["text"], hostRejectedFields: [] };
+}
+function wpsConnectorWppCurrentParagraphIndex() {
+  const details = wpsConnectorWppRangeDetails(wpsConnectorWppSelectionRange());
+  if (!details.paragraphIndex) wpsConnectorFail("PARAGRAPH_NOT_FOUND", "Current selection is not inside a paragraph.", details);
+  return details.paragraphIndex;
+}
+function wpsConnectorWppReplaceCurrentParagraph(input = {}) { return wpsConnectorWppReplaceParagraph({ index: wpsConnectorWppCurrentParagraphIndex(), text: input.text }); }
+function wpsConnectorWppReplaceBlock(input = {}) {
+  const block = wpsConnectorWppFindBlock({ anchorText: input.anchorText, options: input.options || {} });
+  if (block.blockType === "paragraph" && block.startParagraphIndex === block.endParagraphIndex) return wpsConnectorWppReplaceParagraph({ index: block.affectedParagraphIndex, text: input.text });
+  const range = wpsConnectorApp().ActiveDocument.Range(block.affectedRange.nativeStart, Math.max(block.affectedRange.nativeStart, block.affectedRange.nativeEnd - 1));
+  const beforeText = block.affectedRange.text.replace(new RegExp("\\n+$", "g"), "");
+  try { range.Text = String(input.text); } catch (error) { wpsConnectorFail("BLOCK_REPLACE_FAILED", "WPS Writer failed to replace block.", { anchorText: input.anchorText, hostMessage: error.message }); }
+  return { host: "wpp", applied: true, exactMatch: true, affectedParagraphIndex: block.affectedParagraphIndex, affectedRange: block.affectedRange, beforeText, afterText: String(input.text), resolvedTextPreview: String(input.text).slice(0, 500), hostAcceptedFields: ["text"], hostRejectedFields: [] };
+}
+function wpsConnectorWppInsertTextAtParagraph(input = {}, position = "after") {
+  if (input.text === undefined || input.text === null) wpsConnectorFail("INVALID_ARGUMENT", "text is required.", { field: "text" });
+  const { paragraphIndex, range } = wpsConnectorWppParagraphRange(input.index);
+  const native = position === "before" ? Number(wpsConnectorSafeGet(range, "Start")) : Number(wpsConnectorSafeGet(range, "End"));
+  const insertRange = wpsConnectorApp().ActiveDocument.Range(native, native);
+  const text = String(input.text);
+  try { insertRange.InsertBefore(position === "before" ? text + "\\r" : "\\r" + text); } catch (error) { wpsConnectorFail("PARAGRAPH_INSERT_FAILED", "WPS Writer failed to insert text around paragraph.", { index: paragraphIndex, position, hostMessage: error.message }); }
+  return { host: "wpp", applied: true, exactMatch: true, affectedParagraphIndex: paragraphIndex, position, affectedRange: wpsConnectorWppRangeDetails(insertRange), resolvedTextPreview: text.slice(0, 500), hostAcceptedFields: ["text"], hostRejectedFields: [] };
+}
+function wpsConnectorWppInsertTableAtParagraph(input = {}, position = "after") {
+  const { paragraphIndex, range } = wpsConnectorWppParagraphRange(input.index);
+  const native = position === "before" ? Number(wpsConnectorSafeGet(range, "Start")) : Number(wpsConnectorSafeGet(range, "End"));
+  const insertRange = wpsConnectorApp().ActiveDocument.Range(native, native);
+  try { insertRange.Select(); } catch (error) { wpsConnectorFail("PARAGRAPH_INSERT_FAILED", "WPS Writer failed to select paragraph insertion point.", { index: paragraphIndex, position, hostMessage: error.message }); }
+  const result = wpsConnectorWppInsertTable(input);
+  return { ...result, applied: true, exactMatch: true, affectedParagraphIndex: paragraphIndex, position, affectedRange: wpsConnectorWppRangeDetails(insertRange), hostAcceptedFields: ["table"], hostRejectedFields: [] };
 }
 
 function wpsConnectorWppTextPreview(text, start, end, radius = 40) {
@@ -1675,8 +1839,18 @@ async function wpsConnectorExecute(command) {
   if (command.toolName === "wpp.select_paragraph") return wpsConnectorWppSelectParagraph(command.input || {});
   if (command.toolName === "wpp.select_current_paragraph") return wpsConnectorWppSelectCurrentParagraph(command.input || {});
   if (command.toolName === "wpp.get_selection_range") return wpsConnectorWppGetSelectionRange(command.input || {});
+  if (command.toolName === "wpp.list_paragraphs") return wpsConnectorWppListParagraphs(command.input || {});
+  if (command.toolName === "wpp.get_paragraph_range") return wpsConnectorWppGetParagraphRange(command.input || {});
+  if (command.toolName === "wpp.find_block") return wpsConnectorWppFindBlock(command.input || {});
   if (command.toolName === "wpp.find_text") return wpsConnectorWppFindText(command.input || {});
   if (command.toolName === "wpp.replace_text") return wpsConnectorWppReplaceText(command.input || {});
+  if (command.toolName === "wpp.replace_paragraph") return wpsConnectorWppReplaceParagraph(command.input || {});
+  if (command.toolName === "wpp.replace_current_paragraph") return wpsConnectorWppReplaceCurrentParagraph(command.input || {});
+  if (command.toolName === "wpp.replace_block") return wpsConnectorWppReplaceBlock(command.input || {});
+  if (command.toolName === "wpp.insert_after_paragraph") return wpsConnectorWppInsertTextAtParagraph(command.input || {}, "after");
+  if (command.toolName === "wpp.insert_before_paragraph") return wpsConnectorWppInsertTextAtParagraph(command.input || {}, "before");
+  if (command.toolName === "wpp.insert_table_after_paragraph") return wpsConnectorWppInsertTableAtParagraph(command.input || {}, "after");
+  if (command.toolName === "wpp.insert_table_before_paragraph") return wpsConnectorWppInsertTableAtParagraph(command.input || {}, "before");
   if (command.toolName === "wpp.read_format") return wpsConnectorWppReadFormat(command.input || {});
   if (command.toolName === "wpp.read_text_format") return wpsConnectorWppReadTextFormat(command.input || {});
   if (command.toolName === "wpp.apply_text_format") return wpsConnectorWppApplyTextFormat(command.input || {});

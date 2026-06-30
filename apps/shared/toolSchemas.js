@@ -208,6 +208,22 @@ export const tools = [
     description: "Return current WPS Writer selection native and normalized range information.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
   },
+
+  {
+    name: "wpp.list_paragraphs",
+    description: "List WPS Writer paragraphs with stable paragraph indexes, text previews, ranges, and style metadata.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, maxCount: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.get_paragraph_range",
+    description: "Return native and normalized range metadata for a one-based WPS Writer paragraph.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" } }, required: ["index"], additionalProperties: false },
+  },
+  {
+    name: "wpp.find_block",
+    description: "Find a paragraph/section/table block by anchor text and return whole-block range metadata.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, anchorText: { type: "string" }, options: { type: "object", properties: { blockType: { type: "string" }, includeFollowingParagraphs: { type: "number" }, stopAtNextAnchor: { type: "boolean" }, matchWholeParagraph: { type: "boolean" } }, additionalProperties: false } }, required: ["anchorText"], additionalProperties: false },
+  },
   {
     name: "wpp.find_text",
     description: "Find text in a WPS Writer document using the normalized Writer text model.",
@@ -232,6 +248,42 @@ export const tools = [
     name: "wpp.read_format",
     description: "Read font and paragraph formatting from the current WPS Writer selection.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+
+  {
+    name: "wpp.replace_paragraph",
+    description: "Replace one whole WPS Writer paragraph by one-based paragraph index without silently crossing into the next paragraph.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, text: { type: "string" } }, required: ["index", "text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.replace_current_paragraph",
+    description: "Replace the current WPS Writer paragraph containing the cursor or selection.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, text: { type: "string" } }, required: ["text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.replace_block",
+    description: "Replace a whole paragraph/section block found by anchor text.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, anchorText: { type: "string" }, text: { type: "string" }, options: { type: "object", additionalProperties: true } }, required: ["anchorText", "text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_after_paragraph",
+    description: "Insert text after a one-based WPS Writer paragraph index.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, text: { type: "string" } }, required: ["index", "text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_before_paragraph",
+    description: "Insert text before a one-based WPS Writer paragraph index.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, text: { type: "string" } }, required: ["index", "text"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_table_after_paragraph",
+    description: "Insert a table after a one-based WPS Writer paragraph index without relying on character offsets.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, rowCount: { type: "number" }, columnCount: { type: "number" }, values: matrixSchema, headerRowBold: { type: "boolean" }, alignment: { type: "string" }, border: { type: "boolean" } }, required: ["index", "rowCount", "columnCount"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_table_before_paragraph",
+    description: "Insert a table before a one-based WPS Writer paragraph index without relying on character offsets.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" }, rowCount: { type: "number" }, columnCount: { type: "number" }, values: matrixSchema, headerRowBold: { type: "boolean" }, alignment: { type: "string" }, border: { type: "boolean" } }, required: ["index", "rowCount", "columnCount"], additionalProperties: false },
   },
   {
     name: "wpp.read_text_format",

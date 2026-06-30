@@ -52,7 +52,7 @@ function activeContext() {
 }
 
 async function register() {
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.find_text", "wpp.replace_text", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
   await request("/api/sessions/register", {
     method: "POST",
     body: JSON.stringify({
@@ -79,6 +79,19 @@ function execute(command) {
     error.details = details;
     throw error;
   }
+
+  function simParagraphs() { return state.wpp.insertedText ? state.wpp.insertedText.split(/\n/) : [""]; }
+  function simSetParagraphs(paragraphs) { state.wpp.insertedText = paragraphs.join("\n"); }
+  function simParagraphItem(index) {
+    const paragraphs = simParagraphs();
+    const n = simIndex(index, "index");
+    if (n > paragraphs.length) fail("PARAGRAPH_NOT_FOUND", "Paragraph not found: " + n, { index: n, paragraphCount: paragraphs.length });
+    let start = 0;
+    for (let i = 0; i < n - 1; i += 1) start += paragraphs[i].length + 1;
+    const text = paragraphs[n - 1];
+    return { index: n, paragraphIndex: n, paragraphCount: paragraphs.length, text, preview: text.slice(0, 240), range: { start, end: start + text.length, normalizedStart: start, normalizedEnd: start + text.length, nativeStart: start, nativeEnd: start + text.length, text, selectedText: text, length: text.length, paragraphIndex: n, isInsideTable: false, tableIndex: null, cellRow: null, cellColumn: null }, styleName: state.wpp.styleName || "正文", isInsideTable: false, tableIndex: null, cellRow: null, cellColumn: null };
+  }
+
   function requireSheet(name) {
     const sheetName = name || state.et.sheetName;
     if (!state.et.worksheets.includes(sheetName)) fail("SHEET_NOT_FOUND", `Worksheet not found: ${sheetName}`, { sheetName, availableSheets: state.et.worksheets });
@@ -158,7 +171,7 @@ function execute(command) {
   }
 
 
-  if (command.toolName === "wpp.get_selection_range") return { host: "wpp", selection: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, normalizedStart: state.wpp.selectionStart, normalizedEnd: state.wpp.selectionEnd, nativeStart: state.wpp.selectionStart, nativeEnd: state.wpp.selectionEnd, text: state.wpp.selectionText, length: state.wpp.selectionText.length } };
+  if (command.toolName === "wpp.get_selection_range") return { host: "wpp", selection: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, normalizedStart: state.wpp.selectionStart, normalizedEnd: state.wpp.selectionEnd, nativeStart: state.wpp.selectionStart, nativeEnd: state.wpp.selectionEnd, text: state.wpp.selectionText, selectedText: state.wpp.selectionText, length: state.wpp.selectionText.length, paragraphIndex: 1, isInsideTable: false, tableIndex: null, cellRow: null, cellColumn: null } };
   if (command.toolName === "wpp.select_paragraph") {
     const index = simIndex(command.input.index, "index");
     const paragraphs = state.wpp.insertedText.split(/\n+/);
@@ -170,6 +183,24 @@ function execute(command) {
     return { host: "wpp", selected: true, paragraphIndex: index, paragraphCount: paragraphs.length, affectedRange: { start, end: start + text.length, normalizedStart: start, normalizedEnd: start + text.length, nativeStart: start, nativeEnd: start + text.length, text, length: text.length } };
   }
   if (command.toolName === "wpp.select_current_paragraph") return { host: "wpp", selected: true, affectedRange: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, normalizedStart: state.wpp.selectionStart, normalizedEnd: state.wpp.selectionEnd, nativeStart: state.wpp.selectionStart, nativeEnd: state.wpp.selectionEnd, text: state.wpp.selectionText, length: state.wpp.selectionText.length } };
+
+
+  if (command.toolName === "wpp.list_paragraphs") {
+    const paragraphs = simParagraphs().map((_, i) => simParagraphItem(i + 1));
+    const maxCount = command.input.maxCount || 200;
+    return { host: "wpp", paragraphCount: paragraphs.length, count: Math.min(maxCount, paragraphs.length), truncated: paragraphs.length > maxCount, paragraphs: paragraphs.slice(0, maxCount) };
+  }
+  if (command.toolName === "wpp.get_paragraph_range") {
+    const item = simParagraphItem(command.input.index);
+    return { host: "wpp", paragraphIndex: item.paragraphIndex, affectedRange: item.range, resolvedTextPreview: item.preview, styleName: item.styleName, isInsideTable: false, tableIndex: null, cellRow: null, cellColumn: null };
+  }
+  if (command.toolName === "wpp.find_block") {
+    const anchorText = String(command.input.anchorText || "").trim();
+    if (!anchorText) fail("INVALID_ARGUMENT", "anchorText is required.", { field: "anchorText" });
+    const item = simParagraphs().map((_, i) => simParagraphItem(i + 1)).find((p) => command.input.options?.matchWholeParagraph ? p.text.trim() === anchorText : p.text.includes(anchorText));
+    if (!item) fail("BLOCK_NOT_FOUND", "Block anchor not found: " + anchorText, { anchorText });
+    return { host: "wpp", found: true, blockType: command.input.options?.blockType || "paragraph", anchorText, affectedParagraphIndex: item.paragraphIndex, startParagraphIndex: item.paragraphIndex, endParagraphIndex: item.paragraphIndex, affectedRange: item.range, resolvedTextPreview: item.preview, exactMatch: item.text.includes(anchorText), hostAcceptedFields: [], hostRejectedFields: [] };
+  }
 
   if (command.toolName === "wpp.find_text") {
     const query = String(command.input.query || "");
@@ -221,6 +252,33 @@ function execute(command) {
     return { host: "wpp", applied: Object.keys(format).length > 0, affectedRange: { start: command.input.start ?? state.wpp.selectionStart, end: command.input.end ?? state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: state.wpp.format.font, hostAcceptedFields: Object.keys(format), hostRejectedFields: [] };
   }
   if (command.toolName === "wpp.read_paragraph_format") return { host: "wpp", affectedRange: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: state.wpp.format.paragraph || {} };
+
+
+  if (command.toolName === "wpp.replace_paragraph") {
+    const item = simParagraphItem(command.input.index);
+    const paragraphs = simParagraphs();
+    paragraphs[item.paragraphIndex - 1] = String(command.input.text ?? "");
+    simSetParagraphs(paragraphs);
+    const after = simParagraphItem(item.paragraphIndex);
+    return { host: "wpp", applied: true, exactMatch: after.text === String(command.input.text ?? ""), affectedParagraphIndex: item.paragraphIndex, affectedRange: after.range, beforeText: item.text, afterText: after.text, resolvedTextPreview: after.preview, hostAcceptedFields: ["text"], hostRejectedFields: [] };
+  }
+  if (command.toolName === "wpp.replace_current_paragraph") return execute({ toolName: "wpp.replace_paragraph", input: { index: 1, text: command.input.text } });
+  if (command.toolName === "wpp.replace_block") {
+    const block = execute({ toolName: "wpp.find_block", input: { anchorText: command.input.anchorText, options: command.input.options || {} } });
+    return execute({ toolName: "wpp.replace_paragraph", input: { index: block.affectedParagraphIndex, text: command.input.text } });
+  }
+  if (command.toolName === "wpp.insert_after_paragraph" || command.toolName === "wpp.insert_before_paragraph") {
+    const item = simParagraphItem(command.input.index);
+    const paragraphs = simParagraphs();
+    const insertAt = command.toolName === "wpp.insert_before_paragraph" ? item.paragraphIndex - 1 : item.paragraphIndex;
+    paragraphs.splice(insertAt, 0, String(command.input.text ?? ""));
+    simSetParagraphs(paragraphs);
+    return { host: "wpp", applied: true, exactMatch: true, affectedParagraphIndex: item.paragraphIndex, position: command.toolName.includes("before") ? "before" : "after", affectedRange: simParagraphItem(insertAt + 1).range, resolvedTextPreview: String(command.input.text ?? "").slice(0, 500), hostAcceptedFields: ["text"], hostRejectedFields: [] };
+  }
+  if (command.toolName === "wpp.insert_table_after_paragraph" || command.toolName === "wpp.insert_table_before_paragraph") {
+    const item = simParagraphItem(command.input.index);
+    return { host: "wpp", insertedTable: true, tableIndex: state.wpp.tables.length + 1, rowCount: Number(command.input.rowCount), columnCount: Number(command.input.columnCount), applied: true, exactMatch: true, affectedParagraphIndex: item.paragraphIndex, position: command.toolName.includes("before") ? "before" : "after", affectedRange: item.range, hostAcceptedFields: ["table"], hostRejectedFields: [] };
+  }
 
   if (command.toolName === "wpp.read_format") return { host: "wpp", ...state.wpp.format };
   if (command.toolName === "wpp.insert_text") {
