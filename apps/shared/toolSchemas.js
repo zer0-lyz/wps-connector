@@ -1,6 +1,8 @@
 const scalarCellSchema = { type: ["string", "number", "boolean", "null"] };
 const matrixSchema = { type: "array", items: { type: "array", items: scalarCellSchema } };
 const tableFormatSchema = { type: "object", additionalProperties: true };
+const textFormatSchema = { type: "object", properties: { fontName: { type: "string" }, fontSize: { type: "number" }, bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" }, color: { type: "string" }, highlightColor: { type: "string" } }, additionalProperties: false };
+const paragraphFormatSchema = { type: "object", properties: { alignment: { type: "string" }, lineSpacing: { type: "number" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" } }, additionalProperties: false };
 
 export const tools = [
   {
@@ -192,6 +194,21 @@ export const tools = [
     },
   },
   {
+    name: "wpp.select_paragraph",
+    description: "Select a one-based paragraph in the active WPS Writer document.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, index: { type: "number" } }, required: ["index"], additionalProperties: false },
+  },
+  {
+    name: "wpp.select_current_paragraph",
+    description: "Select the paragraph containing the current WPS Writer cursor or selection.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.get_selection_range",
+    description: "Return current WPS Writer selection native and normalized range information.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+  {
     name: "wpp.find_text",
     description: "Find text in a WPS Writer document using the normalized Writer text model.",
     inputSchema: {
@@ -215,6 +232,21 @@ export const tools = [
     name: "wpp.read_format",
     description: "Read font and paragraph formatting from the current WPS Writer selection.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.read_text_format",
+    description: "Read text formatting from the current selection or optional normalized start/end range.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_text_format",
+    description: "Apply font formatting to the current selection or optional normalized start/end range.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, format: textFormatSchema }, required: ["format"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_paragraph_format",
+    description: "Read paragraph formatting from the current selection or optional normalized start/end range.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" } }, additionalProperties: false },
   },
   {
     name: "wpp.read_table",
@@ -453,6 +485,32 @@ export const tools = [
   },
 
   {
+    name: "wpp.list_styles",
+    description: "List WPS Writer styles visible to the active document.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_style",
+    description: "Apply a named WPS Writer style to the current selection or optional normalized start/end range.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, styleName: { type: "string" } }, required: ["styleName"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_page_break",
+    description: "Insert a page break at the current selection or optional normalized start offset.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_paragraph_break",
+    description: "Insert a paragraph break at the current selection or optional normalized start offset.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.delete_extra_blank_paragraphs",
+    description: "Delete repeated blank paragraphs while preserving normal paragraph formatting.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+
+  {
     name: "wpp.save_document",
     description: "Save the active WPS Writer document.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
@@ -498,10 +556,10 @@ export const tools = [
   },
   {
     name: "wpp.set_paragraph",
-    description: "Set paragraph formatting for the current WPS Writer selection.",
+    description: "Set paragraph formatting for the current selection or optional normalized start/end range. Supports legacy top-level fields and format object.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, alignment: { type: "string" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, lineSpacing: { type: "number" } },
+      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, format: paragraphFormatSchema, alignment: { type: "string" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, lineSpacing: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" } },
       additionalProperties: false,
     },
   },

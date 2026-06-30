@@ -116,6 +116,7 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_document_text"), "MCP tools/list missed wpp.read_document_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.find_text"), "MCP tools/list missed wpp.find_text.");
+  for (const name of ["wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wpp.replace_text"), "MCP tools/list missed wpp.replace_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_cell"), "MCP tools/list missed wpp.read_table_cell.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.write_table_cell"), "MCP tools/list missed wpp.write_table_cell.");
@@ -314,6 +315,79 @@ async function main() {
   assert(wppSelectRange.selected === true && wppSelectRange.resolvedText === "测试" && wppSelectRange.exactMatch === true, "WPP select_range returned unexpected resolved selection.");
 
 
+
+  const wppSelectionRange = await request("/api/tools/wpp/get_selection_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppSelectionRange.selection?.text === "测试", "WPP get_selection_range returned unexpected selection text.");
+
+  const wppApplyTextFormat = await request("/api/tools/wpp/apply_text_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2, format: { fontName: "宋体", fontSize: 18, bold: true, italic: true, underline: true, color: "#FF0000", highlightColor: "#FFFF00" } }),
+  });
+  assert(wppApplyTextFormat.applied === true && wppApplyTextFormat.hostAcceptedFields.includes("bold"), "WPP apply_text_format did not accept bold formatting.");
+
+  const wppReadTextFormat = await request("/api/tools/wpp/read_text_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2 }),
+  });
+  assert(wppReadTextFormat.effectiveFormat?.bold === true && wppReadTextFormat.effectiveFormat?.fontSize === 18, "WPP read_text_format did not return applied font state.");
+
+  const wppSetParagraphRich = await request("/api/tools/wpp/set_paragraph", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2, format: { alignment: "center", lineSpacing: 1.5, spaceAfter: 6, firstLineIndent: 12, keepWithNext: true, pageBreakBefore: false } }),
+  });
+  assert(wppSetParagraphRich.applied === true && wppSetParagraphRich.hostAcceptedFields.includes("alignment"), "WPP set_paragraph rich format did not apply alignment.");
+
+  const wppReadParagraphFormat = await request("/api/tools/wpp/read_paragraph_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2 }),
+  });
+  assert(wppReadParagraphFormat.effectiveFormat?.alignment === "center" || wppReadParagraphFormat.effectiveFormat?.alignment === 1, "WPP read_paragraph_format did not return paragraph state.");
+
+  const wppStyles = await request("/api/tools/wpp/list_styles", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppStyles.styles?.some((style) => style.name === "标题1"), "WPP list_styles missed 标题1.");
+
+  const wppApplyStyle = await request("/api/tools/wpp/apply_style", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2, styleName: "标题1" }),
+  });
+  assert(wppApplyStyle.applied === true && wppApplyStyle.effectiveFormat?.styleName === "标题1", "WPP apply_style did not apply 标题1.");
+
+  const wppSelectParagraph = await request("/api/tools/wpp/select_paragraph", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", index: 1 }),
+  });
+  assert(wppSelectParagraph.selected === true && wppSelectParagraph.paragraphIndex === 1, "WPP select_paragraph did not select paragraph 1.");
+
+  const wppCurrentParagraph = await request("/api/tools/wpp/select_current_paragraph", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppCurrentParagraph.selected === true, "WPP select_current_paragraph did not confirm selection.");
+
+  const wppParagraphBreak = await request("/api/tools/wpp/insert_paragraph_break", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppParagraphBreak.inserted === true && wppParagraphBreak.breakType === "paragraph", "WPP insert_paragraph_break did not confirm insertion.");
+
+  const wppPageBreak = await request("/api/tools/wpp/insert_page_break", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppPageBreak.inserted === true && wppPageBreak.breakType === "page", "WPP insert_page_break did not confirm insertion.");
+
+  const wppCleanBlanks = await request("/api/tools/wpp/delete_extra_blank_paragraphs", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(typeof wppCleanBlanks.deletedCount === "number", "WPP delete_extra_blank_paragraphs did not return deletedCount.");
+
   const wppFindText = await request("/api/tools/wpp/find_text", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", query: "测试" }),
@@ -338,11 +412,17 @@ async function main() {
   });
   assert(wppMissingText.ok === false && wppMissingText.error?.code === "TEXT_NOT_FOUND", "WPP missing replace text did not return TEXT_NOT_FOUND.");
 
+  const wppReselectForComment = await request("/api/tools/wpp/select_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 0, end: 2 }),
+  });
+  assert(wppReselectForComment.resolvedText === "验收", "WPP reselect before comment returned unexpected text.");
+
   const wppCommentSelection = await request("/api/tools/wpp/add_comment", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", text: "当前选区批注", author: "Codex Test" }),
   });
-  assert(wppCommentSelection.added === true && wppCommentSelection.rangeText === "测试", "WPP add_comment did not comment current selection.");
+  assert(wppCommentSelection.added === true && wppCommentSelection.rangeText === "验收", "WPP add_comment did not comment current selection.");
 
   const wppCommentRange = await request("/api/tools/wpp/add_comment", {
     method: "POST",
@@ -623,6 +703,7 @@ async function main() {
     wppSelection: { text: wppSelection.text },
     wppInsert: { insertedLength: wppInsert.insertedLength },
     wppText: { length: wppText.length, findCount: wppFindText.count, replacedCount: wppReplaceText.replacedCount },
+    wppLayout: { textAccepted: wppApplyTextFormat.hostAcceptedFields.length, paragraphAccepted: wppSetParagraphRich.hostAcceptedFields.length, style: wppApplyStyle.effectiveFormat?.styleName, pageBreak: wppPageBreak.inserted },
     wppComments: { beforeDelete: wppCommentsBeforeDelete.count, afterDelete: wppCommentsAfterDelete.count },
     wppRevisions: { beforeAcceptAll: wppRevisions.count },
     wppTable: { rowCount: wppTable.rowCount, columnCount: wppTable.columnCount },

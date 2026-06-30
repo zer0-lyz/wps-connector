@@ -52,7 +52,7 @@ function activeContext() {
 }
 
 async function register() {
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.find_text", "wpp.replace_text", "wpp.read_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.find_text", "wpp.replace_text", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
   await request("/api/sessions/register", {
     method: "POST",
     body: JSON.stringify({
@@ -157,6 +157,20 @@ function execute(command) {
     return { host: "wpp", selected: true, start, end, text: state.wpp.selectionText, requestedStart: start, requestedEnd: end, resolvedStart: start, resolvedEnd: end, resolvedText: state.wpp.selectionText, exactMatch: true, attempts: [{ label: "simulated", start, end, resolvedText: state.wpp.selectionText, exactMatch: true }] };
   }
 
+
+  if (command.toolName === "wpp.get_selection_range") return { host: "wpp", selection: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, normalizedStart: state.wpp.selectionStart, normalizedEnd: state.wpp.selectionEnd, nativeStart: state.wpp.selectionStart, nativeEnd: state.wpp.selectionEnd, text: state.wpp.selectionText, length: state.wpp.selectionText.length } };
+  if (command.toolName === "wpp.select_paragraph") {
+    const index = simIndex(command.input.index, "index");
+    const paragraphs = state.wpp.insertedText.split(/\n+/);
+    if (index > paragraphs.length) fail("PARAGRAPH_NOT_FOUND", "Paragraph not found: " + index, { index, paragraphCount: paragraphs.length });
+    let start = 0;
+    for (let i = 0; i < index - 1; i += 1) start += paragraphs[i].length + 1;
+    const text = paragraphs[index - 1];
+    state.wpp.selectionStart = start; state.wpp.selectionEnd = start + text.length; state.wpp.selectionText = text;
+    return { host: "wpp", selected: true, paragraphIndex: index, paragraphCount: paragraphs.length, affectedRange: { start, end: start + text.length, normalizedStart: start, normalizedEnd: start + text.length, nativeStart: start, nativeEnd: start + text.length, text, length: text.length } };
+  }
+  if (command.toolName === "wpp.select_current_paragraph") return { host: "wpp", selected: true, affectedRange: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, normalizedStart: state.wpp.selectionStart, normalizedEnd: state.wpp.selectionEnd, nativeStart: state.wpp.selectionStart, nativeEnd: state.wpp.selectionEnd, text: state.wpp.selectionText, length: state.wpp.selectionText.length } };
+
   if (command.toolName === "wpp.find_text") {
     const query = String(command.input.query || "");
     if (!query) fail("INVALID_ARGUMENT", "query is required.", { field: "query" });
@@ -199,6 +213,15 @@ function execute(command) {
     return { host: "wpp", replaced: replacements.length > 0, replacedCount: replacements.length, findText, replaceText, replacements };
   }
 
+
+  if (command.toolName === "wpp.read_text_format") return { host: "wpp", affectedRange: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: state.wpp.format.font || {} };
+  if (command.toolName === "wpp.apply_text_format") {
+    const format = command.input.format || {};
+    state.wpp.format.font = { ...(state.wpp.format.font || {}), ...format };
+    return { host: "wpp", applied: Object.keys(format).length > 0, affectedRange: { start: command.input.start ?? state.wpp.selectionStart, end: command.input.end ?? state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: state.wpp.format.font, hostAcceptedFields: Object.keys(format), hostRejectedFields: [] };
+  }
+  if (command.toolName === "wpp.read_paragraph_format") return { host: "wpp", affectedRange: { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: state.wpp.format.paragraph || {} };
+
   if (command.toolName === "wpp.read_format") return { host: "wpp", ...state.wpp.format };
   if (command.toolName === "wpp.insert_text") {
     const inserted = command.input.text || "";
@@ -210,7 +233,7 @@ function execute(command) {
     return { host: "wpp", insertedLength: String(command.input.text || "").length, text: state.wpp.selectionText, operationScope: command.input.operationScope || null };
   }
   if (command.toolName === "wpp.format_selection") { state.wpp.format = { font: { name: command.input.fontName || "", size: command.input.fontSize, bold: Boolean(command.input.bold), italic: Boolean(command.input.italic), color: command.input.fontColor }, paragraph: { alignment: command.input.alignment, spaceBefore: command.input.spaceBefore, spaceAfter: command.input.spaceAfter, lineSpacing: command.input.lineSpacing } }; return { host: "wpp", formatted: true }; }
-  if (command.toolName === "wpp.set_paragraph") { state.wpp.format.paragraph = { alignment: command.input.alignment, spaceBefore: command.input.spaceBefore, spaceAfter: command.input.spaceAfter, lineSpacing: command.input.lineSpacing }; return { host: "wpp", paragraphFormatted: true }; }
+  if (command.toolName === "wpp.set_paragraph") { const format = { ...(command.input.format || {}) }; for (const key of ["alignment", "spaceBefore", "spaceAfter", "lineSpacing", "firstLineIndent", "leftIndent", "rightIndent", "keepWithNext", "pageBreakBefore"]) if (command.input[key] !== undefined) format[key] = command.input[key]; state.wpp.format.paragraph = { ...(state.wpp.format.paragraph || {}), ...format }; return { host: "wpp", paragraphFormatted: Object.keys(format).length > 0, applied: Object.keys(format).length > 0, affectedRange: { start: command.input.start ?? state.wpp.selectionStart, end: command.input.end ?? state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: state.wpp.format.paragraph, hostAcceptedFields: Object.keys(format), hostRejectedFields: [] }; }
 
   if (command.toolName === "wpp.set_track_changes") {
     if (typeof command.input.enabled !== "boolean") fail("INVALID_ARGUMENT", "enabled must be boolean.", { field: "enabled", value: command.input.enabled });
@@ -232,6 +255,18 @@ function execute(command) {
     return { host: "wpp", [command.toolName === "wpp.accept_all_revisions" ? "acceptedAll" : "rejectedAll"]: true, before };
   }
 
+
+
+  if (command.toolName === "wpp.list_styles") return { host: "wpp", count: 6, styles: ["标题1", "标题2", "标题3", "正文", "项目符号", "编号列表"].map((name, index) => ({ index: index + 1, name })), builtIn: ["标题1", "标题2", "标题3", "正文", "项目符号", "编号列表"] };
+  if (command.toolName === "wpp.apply_style") {
+    const styleName = String(command.input.styleName || "").trim();
+    if (!styleName) fail("INVALID_ARGUMENT", "styleName is required.", { field: "styleName" });
+    state.wpp.styleName = styleName;
+    return { host: "wpp", applied: true, styleName, affectedRange: { start: command.input.start ?? state.wpp.selectionStart, end: command.input.end ?? state.wpp.selectionEnd, text: state.wpp.selectionText }, effectiveFormat: { styleName }, hostAcceptedFields: ["styleName"], hostRejectedFields: [] };
+  }
+  if (command.toolName === "wpp.insert_page_break") { state.wpp.insertedText += "\f"; return { host: "wpp", inserted: true, breakType: "page", affectedRange: { start: command.input.start ?? state.wpp.selectionEnd } }; }
+  if (command.toolName === "wpp.insert_paragraph_break") { state.wpp.insertedText += "\n"; return { host: "wpp", inserted: true, breakType: "paragraph", affectedRange: { start: command.input.start ?? state.wpp.selectionEnd } }; }
+  if (command.toolName === "wpp.delete_extra_blank_paragraphs") { const before = state.wpp.insertedText; state.wpp.insertedText = before.replace(/\n{3,}/g, "\n\n"); return { host: "wpp", applied: before !== state.wpp.insertedText, deletedCount: before.length - state.wpp.insertedText.length, paragraphCountBefore: before.split(/\n/).length }; }
 
   if (command.toolName === "wpp.save_document") {
     return { host: "wpp", saved: true, path: "/tmp/" + state.wpp.documentName, savedAt: new Date().toISOString(), documentIdentity: { name: state.wpp.documentName, fullPath: "/tmp/" + state.wpp.documentName } };
