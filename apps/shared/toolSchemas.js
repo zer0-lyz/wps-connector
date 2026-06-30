@@ -1,5 +1,6 @@
 const scalarCellSchema = { type: ["string", "number", "boolean", "null"] };
 const matrixSchema = { type: "array", items: { type: "array", items: scalarCellSchema } };
+const tableFormatSchema = { type: "object", additionalProperties: true };
 
 export const tools = [
   {
@@ -262,6 +263,66 @@ export const tools = [
       properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, border: { type: "boolean" }, alignment: { type: "string" }, headerRowBold: { type: "boolean" }, autofit: { type: "boolean" } },
       additionalProperties: false,
     },
+  },
+  {
+    name: "wpp.read_table_format",
+    description: "Read complete WPS Writer table formatting, including table, cell, row height, column width, borders, padding, and merged-cell metadata.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_table_format",
+    description: "Apply a structured table format object to a WPS Writer table without changing cell text.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, format: tableFormatSchema }, required: ["tableIndex", "format"], additionalProperties: false },
+  },
+  {
+    name: "wpp.copy_table_style",
+    description: "Copy table appearance from one WPS Writer table to another. Scope: table_only, cell_style, row_height, col_width, merged_cells, or all.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceTableIndex: { type: "number" }, targetTableIndex: { type: "number" }, scope: { type: ["string", "array"], items: { type: "string" } } }, required: ["sourceTableIndex", "targetTableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.duplicate_table_appearance",
+    description: "Make a target WPS Writer table look like a source table while keeping target content by default.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceTableIndex: { type: "number" }, targetTableIndex: { type: "number" }, keepContent: { type: "boolean" } }, required: ["sourceTableIndex", "targetTableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_cell_format",
+    description: "Read formatting from one WPS Writer table cell.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, row: { type: "number" }, col: { type: "number" }, column: { type: "number" } }, required: ["tableIndex", "row"], additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_cell_format",
+    description: "Apply formatting to one WPS Writer table cell without changing its text.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, row: { type: "number" }, col: { type: "number" }, column: { type: "number" }, format: tableFormatSchema }, required: ["tableIndex", "row", "format"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_row_heights",
+    description: "Read WPS Writer table row heights.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.set_row_heights",
+    description: "Set WPS Writer table row heights.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, rowHeights: { type: "array", items: { type: "object", additionalProperties: true } }, rows: { type: "array", items: { type: "object", additionalProperties: true } } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_column_widths",
+    description: "Read WPS Writer table column widths.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.set_column_widths",
+    description: "Set WPS Writer table column widths.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, columnWidths: { type: "array", items: { type: "object", additionalProperties: true } }, columns: { type: "array", items: { type: "object", additionalProperties: true } } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_merged_cells",
+    description: "Read merged-cell regions from a WPS Writer table when exposed by the host.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_merged_cells",
+    description: "Apply merged-cell regions to a WPS Writer table.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, mergedCells: { type: "array", items: { type: "object", additionalProperties: true } } }, required: ["tableIndex", "mergedCells"], additionalProperties: false },
   },
   {
     name: "wpp.insert_image",

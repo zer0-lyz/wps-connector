@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.18";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.06.30-ribbon-line-icon.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.19";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.06.30-writer-table-style.1";
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
 let wpsConnectorCurrentDocumentKey = "";
@@ -280,7 +280,7 @@ function wpsConnectorScope() {
   const documentIdentity = wpsConnectorDocumentIdentity(app, host);
   const documentKey = wpsConnectorDocumentKey(host, documentIdentity);
   const sessionId = `wps-${host}-${wpsConnectorHash(documentKey)}`;
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.read_format", "wpp.read_table", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.read_format", "wpp.read_table", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
   return { app, host, documentIdentity, documentKey, sessionId, capabilities };
 }
 async function wpsConnectorRegister() {
@@ -812,6 +812,122 @@ function wpsConnectorWppFormatTable(input = {}) {
   }
   return { host: "wpp", formattedTable: true, tableIndex, applied, ...wpsConnectorWppTableSize(table) };
 }
+function wpsConnectorSafeGet(object, name) { try { return object ? wpsConnectorMember(object, name) : null; } catch { return null; } }
+function wpsConnectorSafeSet(object, name, value) { if (!object || value === undefined || value === null) return false; try { object[name] = /Color$/i.test(name) ? wpsConnectorColorValue(value) : value; return true; } catch { return false; } }
+function wpsConnectorBoolFormat(value) { return value === -1 || value === true; }
+function wpsConnectorBorderFormat(borders) {
+  const out = { enable: wpsConnectorSafeGet(borders, "Enable"), items: [] };
+  for (let index = 1; index <= 6; index += 1) {
+    let border = null;
+    try { border = typeof borders?.Item === "function" ? borders.Item(index) : null; } catch {}
+    if (!border) continue;
+    out.items.push({ index, lineStyle: wpsConnectorSafeGet(border, "LineStyle"), lineWidth: wpsConnectorSafeGet(border, "LineWidth"), color: wpsConnectorSafeGet(border, "Color") });
+  }
+  return out;
+}
+function wpsConnectorApplyBorderFormat(borders, format = {}) {
+  const applied = [];
+  if (!borders || !format) return applied;
+  if (format.enable !== undefined && wpsConnectorSafeSet(borders, "Enable", format.enable)) applied.push("borders.enable");
+  for (const item of format.items || []) {
+    let border = null;
+    try { border = typeof borders.Item === "function" ? borders.Item(item.index) : null; } catch {}
+    if (!border) continue;
+    if (wpsConnectorSafeSet(border, "LineStyle", item.lineStyle)) applied.push(`border:${item.index}:lineStyle`);
+    if (wpsConnectorSafeSet(border, "LineWidth", item.lineWidth)) applied.push(`border:${item.index}:lineWidth`);
+    if (wpsConnectorSafeSet(border, "Color", item.color)) applied.push(`border:${item.index}:color`);
+  }
+  return applied;
+}
+function wpsConnectorWppRangeFormat(range) {
+  const font = wpsConnectorSafeGet(range, "Font");
+  const paragraph = wpsConnectorSafeGet(range, "ParagraphFormat");
+  const shading = wpsConnectorSafeGet(range, "Shading");
+  return {
+    font: { name: wpsConnectorSafeGet(font, "Name"), size: wpsConnectorSafeGet(font, "Size"), bold: wpsConnectorBoolFormat(wpsConnectorSafeGet(font, "Bold")), italic: wpsConnectorBoolFormat(wpsConnectorSafeGet(font, "Italic")), color: wpsConnectorSafeGet(font, "Color") },
+    paragraph: { alignment: wpsConnectorSafeGet(paragraph, "Alignment"), spaceBefore: wpsConnectorSafeGet(paragraph, "SpaceBefore"), spaceAfter: wpsConnectorSafeGet(paragraph, "SpaceAfter"), lineSpacing: wpsConnectorSafeGet(paragraph, "LineSpacing") },
+    shading: { backgroundColor: wpsConnectorSafeGet(shading, "BackgroundPatternColor"), foregroundColor: wpsConnectorSafeGet(shading, "ForegroundPatternColor"), texture: wpsConnectorSafeGet(shading, "Texture") },
+  };
+}
+function wpsConnectorApplyWppRangeFormat(range, format = {}) {
+  const applied = [];
+  const font = wpsConnectorSafeGet(range, "Font");
+  const paragraph = wpsConnectorSafeGet(range, "ParagraphFormat");
+  const shading = wpsConnectorSafeGet(range, "Shading");
+  const f = format.font || {};
+  if (wpsConnectorSafeSet(font, "Name", f.name)) applied.push("font.name");
+  if (wpsConnectorSafeSet(font, "Size", f.size)) applied.push("font.size");
+  if (typeof f.bold === "boolean" && wpsConnectorSafeSet(font, "Bold", f.bold ? -1 : 0)) applied.push("font.bold");
+  if (typeof f.italic === "boolean" && wpsConnectorSafeSet(font, "Italic", f.italic ? -1 : 0)) applied.push("font.italic");
+  if (wpsConnectorSafeSet(font, "Color", f.color)) applied.push("font.color");
+  const p = format.paragraph || {};
+  if (wpsConnectorSafeSet(paragraph, "Alignment", p.alignment)) applied.push("paragraph.alignment");
+  if (wpsConnectorSafeSet(paragraph, "SpaceBefore", p.spaceBefore)) applied.push("paragraph.spaceBefore");
+  if (wpsConnectorSafeSet(paragraph, "SpaceAfter", p.spaceAfter)) applied.push("paragraph.spaceAfter");
+  if (wpsConnectorSafeSet(paragraph, "LineSpacing", p.lineSpacing)) applied.push("paragraph.lineSpacing");
+  const s = format.shading || {};
+  if (wpsConnectorSafeSet(shading, "BackgroundPatternColor", s.backgroundColor)) applied.push("shading.backgroundColor");
+  if (wpsConnectorSafeSet(shading, "ForegroundPatternColor", s.foregroundColor)) applied.push("shading.foregroundColor");
+  if (wpsConnectorSafeSet(shading, "Texture", s.texture)) applied.push("shading.texture");
+  return applied;
+}
+function wpsConnectorWppCellFormat(cell, row, column) {
+  const range = wpsConnectorSafeGet(cell, "Range");
+  return { row, column, width: wpsConnectorSafeGet(cell, "Width"), height: wpsConnectorSafeGet(cell, "Height"), verticalAlignment: wpsConnectorSafeGet(cell, "VerticalAlignment"), padding: { top: wpsConnectorSafeGet(cell, "TopPadding"), bottom: wpsConnectorSafeGet(cell, "BottomPadding"), left: wpsConnectorSafeGet(cell, "LeftPadding"), right: wpsConnectorSafeGet(cell, "RightPadding") }, borders: wpsConnectorBorderFormat(wpsConnectorSafeGet(cell, "Borders")), ...wpsConnectorWppRangeFormat(range) };
+}
+function wpsConnectorApplyWppCellFormat(cell, format = {}) {
+  const applied = [];
+  applied.push(...wpsConnectorApplyWppRangeFormat(wpsConnectorSafeGet(cell, "Range"), format));
+  applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(cell, "Borders"), format.borders));
+  if (wpsConnectorSafeSet(cell, "VerticalAlignment", format.verticalAlignment)) applied.push("cell.verticalAlignment");
+  const p = format.padding || {};
+  for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"]]) if (wpsConnectorSafeSet(cell, prop, p[key])) applied.push(`cell.padding.${key}`);
+  return applied;
+}
+function wpsConnectorWppReadRowHeights(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input); const { rowCount } = wpsConnectorWppTableSize(table); const rows = [];
+  for (let r = 1; r <= rowCount; r += 1) { const row = wpsConnectorSafeGet(table.Rows, "Item", r); rows.push({ row: r, height: wpsConnectorSafeGet(row, "Height"), heightRule: wpsConnectorSafeGet(row, "HeightRule") }); }
+  return { host: "wpp", tableIndex, rowHeights: rows };
+}
+function wpsConnectorWppSetRowHeights(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const items = input.rowHeights || input.rows || []; const applied = []; for (const item of items) { const rowIndex = wpsConnectorInteger(item.row ?? item.index, "row", 1); wpsConnectorWppAssertCell(table, rowIndex, 1); const row = table.Rows.Item(rowIndex); if (wpsConnectorSafeSet(row, "Height", item.height)) applied.push(rowIndex); wpsConnectorSafeSet(row, "HeightRule", item.heightRule); } return { host: "wpp", tableIndex, appliedRows: applied }; }
+function wpsConnectorWppReadColumnWidths(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const { columnCount } = wpsConnectorWppTableSize(table); const columns = []; for (let c = 1; c <= columnCount; c += 1) { const column = wpsConnectorSafeGet(table.Columns, "Item", c); columns.push({ column: c, width: wpsConnectorSafeGet(column, "Width") }); } return { host: "wpp", tableIndex, columnWidths: columns }; }
+function wpsConnectorWppSetColumnWidths(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const items = input.columnWidths || input.columns || []; const applied = []; for (const item of items) { const columnIndex = wpsConnectorInteger(item.column ?? item.index, "column", 1); wpsConnectorWppAssertCell(table, 1, columnIndex); const column = table.Columns.Item(columnIndex); if (wpsConnectorSafeSet(column, "Width", item.width)) applied.push(columnIndex); } return { host: "wpp", tableIndex, appliedColumns: applied }; }
+function wpsConnectorWppReadMergedCells(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input); const { rowCount, columnCount } = wpsConnectorWppTableSize(table); const mergedCells = [];
+  for (let r = 1; r <= rowCount; r += 1) for (let c = 1; c <= columnCount; c += 1) {
+    let cell = null; try { cell = table.Cell(r, c); } catch { continue; }
+    let endColumn = c; while (endColumn + 1 <= columnCount) { try { table.Cell(r, endColumn + 1); break; } catch { endColumn += 1; } }
+    let endRow = r; while (endRow + 1 <= rowCount) { try { table.Cell(endRow + 1, c); break; } catch { endRow += 1; } }
+    if (endRow > r || endColumn > c) mergedCells.push({ startRow: r, startColumn: c, endRow, endColumn });
+  }
+  return { host: "wpp", tableIndex, mergedCells };
+}
+function wpsConnectorWppApplyMergedCells(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const mergedCells = input.mergedCells || []; const results = []; for (const item of mergedCells) { try { const startRow = wpsConnectorInteger(item.startRow, "startRow", 1); const startColumn = wpsConnectorInteger(item.startColumn, "startColumn", 1); const endRow = wpsConnectorInteger(item.endRow, "endRow", 1); const endColumn = wpsConnectorInteger(item.endColumn, "endColumn", 1); wpsConnectorWppAssertCell(table, startRow, startColumn); wpsConnectorWppAssertCell(table, endRow, endColumn); table.Cell(startRow, startColumn).Merge(table.Cell(endRow, endColumn)); results.push({ ...item, ok: true }); } catch (error) { results.push({ ...item, ok: false, error: error.code || "MERGE_FAILED" }); } } return { host: "wpp", tableIndex, appliedMergedCells: results.filter((r) => r.ok).length, results }; }
+function wpsConnectorWppReadCellFormat(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const row = wpsConnectorInteger(input.row, "row", 1); const column = wpsConnectorInteger(input.col ?? input.column, "col", 1); wpsConnectorWppAssertCell(table, row, column); return { host: "wpp", tableIndex, row, column, format: wpsConnectorWppCellFormat(table.Cell(row, column), row, column) }; }
+function wpsConnectorWppApplyCellFormat(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const row = wpsConnectorInteger(input.row, "row", 1); const column = wpsConnectorInteger(input.col ?? input.column, "col", 1); wpsConnectorWppAssertCell(table, row, column); const applied = wpsConnectorApplyWppCellFormat(table.Cell(row, column), input.format || {}); return { host: "wpp", tableIndex, row, column, applied }; }
+function wpsConnectorWppReadTableFormat(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input); const size = wpsConnectorWppTableSize(table); const cells = [];
+  for (let r = 1; r <= size.rowCount; r += 1) for (let c = 1; c <= size.columnCount; c += 1) { try { cells.push(wpsConnectorWppCellFormat(table.Cell(r, c), r, c)); } catch {} }
+  return { host: "wpp", tableIndex, format: { table: { style: String(wpsConnectorSafeGet(table, "Style") || ""), alignment: wpsConnectorSafeGet(wpsConnectorSafeGet(table, "Range")?.ParagraphFormat, "Alignment"), allowAutoFit: wpsConnectorSafeGet(table, "AllowAutoFit"), preferredWidth: wpsConnectorSafeGet(table, "PreferredWidth"), padding: { top: wpsConnectorSafeGet(table, "TopPadding"), bottom: wpsConnectorSafeGet(table, "BottomPadding"), left: wpsConnectorSafeGet(table, "LeftPadding"), right: wpsConnectorSafeGet(table, "RightPadding"), spacing: wpsConnectorSafeGet(table, "Spacing") }, borders: wpsConnectorBorderFormat(wpsConnectorSafeGet(table, "Borders")) }, rowHeights: wpsConnectorWppReadRowHeights(input).rowHeights, columnWidths: wpsConnectorWppReadColumnWidths(input).columnWidths, mergedCells: wpsConnectorWppReadMergedCells(input).mergedCells, cells, ...size } };
+}
+function wpsConnectorWppApplyTableFormat(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input); const format = input.format || {}; const applied = [];
+  const tf = format.table || {}; if (wpsConnectorSafeSet(table, "Style", tf.style)) applied.push("table.style"); if (wpsConnectorSafeSet(table, "AllowAutoFit", tf.allowAutoFit)) applied.push("table.allowAutoFit"); if (wpsConnectorSafeSet(table, "PreferredWidth", tf.preferredWidth)) applied.push("table.preferredWidth"); applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(table, "Borders"), tf.borders));
+  const padding = tf.padding || {}; for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"], ["spacing", "Spacing"]]) if (wpsConnectorSafeSet(table, prop, padding[key])) applied.push(`table.padding.${key}`);
+  if (tf.alignment !== undefined) { try { table.Range.ParagraphFormat.Alignment = tf.alignment; applied.push("table.alignment"); } catch {} }
+  if (format.rowHeights) applied.push(...wpsConnectorWppSetRowHeights({ tableIndex, rowHeights: format.rowHeights }).appliedRows.map((r) => `row:${r}:height`));
+  if (format.columnWidths) applied.push(...wpsConnectorWppSetColumnWidths({ tableIndex, columnWidths: format.columnWidths }).appliedColumns.map((c) => `column:${c}:width`));
+  if (format.cells) for (const cell of format.cells) { try { applied.push(...wpsConnectorApplyWppCellFormat(table.Cell(cell.row, cell.column), cell).map((x) => `cell:${cell.row}:${cell.column}:${x}`)); } catch {} }
+  if (format.mergedCells) applied.push(`merged:${wpsConnectorWppApplyMergedCells({ tableIndex, mergedCells: format.mergedCells }).appliedMergedCells}`);
+  return { host: "wpp", tableIndex, applied, ...wpsConnectorWppTableSize(table) };
+}
+function wpsConnectorWppFilterTableFormat(format, scope) {
+  const scopes = new Set(Array.isArray(scope) ? scope : [scope || "all"]); if (scopes.has("all")) return format; const out = { rowCount: format.rowCount, columnCount: format.columnCount };
+  if (scopes.has("table_only")) out.table = format.table; if (scopes.has("cell_style")) out.cells = format.cells; if (scopes.has("row_height")) out.rowHeights = format.rowHeights; if (scopes.has("col_width")) out.columnWidths = format.columnWidths; if (scopes.has("merged_cells")) out.mergedCells = format.mergedCells; return out;
+}
+function wpsConnectorWppCopyTableStyle(input = {}) { const sourceTableIndex = wpsConnectorInteger(input.sourceTableIndex, "sourceTableIndex", 1); const targetTableIndex = wpsConnectorInteger(input.targetTableIndex, "targetTableIndex", 1); const source = wpsConnectorWppReadTableFormat({ tableIndex: sourceTableIndex }).format; const filtered = wpsConnectorWppFilterTableFormat(source, input.scope || "all"); const result = wpsConnectorWppApplyTableFormat({ tableIndex: targetTableIndex, format: filtered }); return { host: "wpp", copied: true, sourceTableIndex, targetTableIndex, scope: input.scope || "all", applied: result.applied }; }
+function wpsConnectorWppDuplicateTableAppearance(input = {}) { return { ...wpsConnectorWppCopyTableStyle({ sourceTableIndex: input.sourceTableIndex, targetTableIndex: input.targetTableIndex, scope: "all" }), duplicatedAppearance: true, keepContent: input.keepContent !== false }; }
+
 function wpsConnectorPositiveNumber(value, field) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) wpsConnectorFail("INVALID_ARGUMENT", `${field} must be a positive number.`, { field, value });
@@ -1275,6 +1391,18 @@ async function wpsConnectorExecute(command) {
   if (command.toolName === "wpp.delete_table_columns") return wpsConnectorWppDeleteTableColumns(command.input || {});
   if (command.toolName === "wpp.merge_table_cells") return wpsConnectorWppMergeTableCells(command.input || {});
   if (command.toolName === "wpp.format_table") return wpsConnectorWppFormatTable(command.input || {});
+  if (command.toolName === "wpp.read_table_format") return wpsConnectorWppReadTableFormat(command.input || {});
+  if (command.toolName === "wpp.apply_table_format") return wpsConnectorWppApplyTableFormat(command.input || {});
+  if (command.toolName === "wpp.copy_table_style") return wpsConnectorWppCopyTableStyle(command.input || {});
+  if (command.toolName === "wpp.duplicate_table_appearance") return wpsConnectorWppDuplicateTableAppearance(command.input || {});
+  if (command.toolName === "wpp.read_cell_format") return wpsConnectorWppReadCellFormat(command.input || {});
+  if (command.toolName === "wpp.apply_cell_format") return wpsConnectorWppApplyCellFormat(command.input || {});
+  if (command.toolName === "wpp.read_row_heights") return wpsConnectorWppReadRowHeights(command.input || {});
+  if (command.toolName === "wpp.set_row_heights") return wpsConnectorWppSetRowHeights(command.input || {});
+  if (command.toolName === "wpp.read_column_widths") return wpsConnectorWppReadColumnWidths(command.input || {});
+  if (command.toolName === "wpp.set_column_widths") return wpsConnectorWppSetColumnWidths(command.input || {});
+  if (command.toolName === "wpp.read_merged_cells") return wpsConnectorWppReadMergedCells(command.input || {});
+  if (command.toolName === "wpp.apply_merged_cells") return wpsConnectorWppApplyMergedCells(command.input || {});
   if (command.toolName === "wpp.insert_image") return wpsConnectorWppInsertImage(command.input || {});
   if (command.toolName === "wpp.read_images") return wpsConnectorWppReadImages(command.input || {});
   if (command.toolName === "wpp.format_image") return wpsConnectorWppFormatImage(command.input || {});

@@ -85,7 +85,7 @@ function assert(condition, message) {
 }
 
 async function main() {
-  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port) });
+  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json` });
   bridge.on("exit", (code) => {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
@@ -118,6 +118,9 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.add_comment"), "MCP tools/list missed wpp.add_comment.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_rows"), "MCP tools/list missed wpp.insert_table_rows.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_image"), "MCP tools/list missed wpp.insert_image.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_format"), "MCP tools/list missed wpp.read_table_format.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.copy_table_style"), "MCP tools/list missed wpp.copy_table_style.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.duplicate_table_appearance"), "MCP tools/list missed wpp.duplicate_table_appearance.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_list_sessions"), "MCP tools/list missed underscore alias wps_list_sessions.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp_add_comment"), "MCP tools/list missed underscore alias wpp_add_comment.");
   const mcpSessions = await mcpClient.request("tools/call", { name: "wps.list_sessions", arguments: {} });
@@ -459,6 +462,48 @@ async function main() {
   });
   assert(wppBadMerge.ok === false && wppBadMerge.error?.code === "INVALID_ARGUMENT", "WPP invalid merge range did not return INVALID_ARGUMENT.");
   assert(wppBadMerge.httpStatus === 400, "INVALID_ARGUMENT table merge did not return HTTP 400.");
+
+  const wppTableFormat = await request("/api/tools/wpp/read_table_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1 }),
+  });
+  assert(wppTableFormat.format?.cells?.length >= 1, "WPP read_table_format did not return cell formats.");
+
+  const wppRowHeights = await request("/api/tools/wpp/read_row_heights", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1 }),
+  });
+  assert(Array.isArray(wppRowHeights.rowHeights), "WPP read_row_heights did not return row heights.");
+
+  const wppSetWidths = await request("/api/tools/wpp/set_column_widths", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, columnWidths: [{ column: 1, width: 88 }, { column: 2, width: 99 }] }),
+  });
+  assert(wppSetWidths.appliedColumns?.length === 2, "WPP set_column_widths did not apply widths.");
+
+  const wppSecondTable = await request("/api/tools/wpp/insert_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", rowCount: 2, columnCount: 2, values: [["T2A", "T2B"], ["T2C", "T2D"]], border: false }),
+  });
+  assert(wppSecondTable.tableIndex === 2, "WPP second insert_table did not create table 2.");
+
+  const wppDuplicateAppearance = await request("/api/tools/wpp/duplicate_table_appearance", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", sourceTableIndex: 1, targetTableIndex: 2, keepContent: true }),
+  });
+  assert(wppDuplicateAppearance.duplicatedAppearance === true && wppDuplicateAppearance.keepContent === true, "WPP duplicate_table_appearance did not confirm copy.");
+
+  const wppSecondRead = await request("/api/tools/wpp/read_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 2 }),
+  });
+  assert(wppSecondRead.values?.[0]?.[0] === "T2A" && wppSecondRead.values?.[1]?.[1] === "T2D", "WPP duplicate_table_appearance changed target table content.");
+
+  const wppSecondFormat = await request("/api/tools/wpp/read_table_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 2 }),
+  });
+  assert(wppSecondFormat.format?.table?.alignment === wppTableFormat.format?.table?.alignment, "WPP copied table format did not match source alignment.");
 
   const wppImage = await request("/api/tools/wpp/insert_image", {
     method: "POST",
