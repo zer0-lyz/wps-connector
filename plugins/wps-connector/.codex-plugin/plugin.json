@@ -1,6 +1,6 @@
 {
   "name": "wps-connector",
-  "version": "0.1.0+codex.20260630022900",
+  "version": "0.1.0+codex.20260630222800",
   "description": "Connect Codex to open WPS Writer and Spreadsheet documents through a local WPS bridge.",
   "author": { "name": "WPS Connector" },
   "license": "UNLICENSED",

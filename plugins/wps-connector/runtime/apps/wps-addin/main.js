@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.27";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.06.30-writer-comments-revisions.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.28";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.06.30-writer-native-find.1";
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
 let wpsConnectorCurrentDocumentKey = "";
@@ -1263,11 +1263,65 @@ function wpsConnectorWppFindText(input = {}) {
   }
   return { host: "wpp", query, count: results.length, truncated: results.length >= maxResults, textModel: "normalized-wps-range-v1", results };
 }
+function wpsConnectorWppRangeDuplicate(range) {
+  try {
+    const duplicate = wpsConnectorMember(range, "Duplicate");
+    if (duplicate) return duplicate;
+  } catch {}
+  const document = wpsConnectorApp().ActiveDocument;
+  const start = Number(wpsConnectorMember(range, "Start"));
+  const end = Number(wpsConnectorMember(range, "End"));
+  if (document?.Range && Number.isFinite(start) && Number.isFinite(end)) return document.Range(start, end);
+  return null;
+}
+function wpsConnectorWppFindNativeText(input = {}) {
+  const query = String(input.query ?? input.findText ?? "");
+  if (!query) wpsConnectorFail("INVALID_ARGUMENT", "query is required.", { field: "query" });
+  const maxResults = input.maxResults === undefined ? 1000 : wpsConnectorInteger(input.maxResults, "maxResults", 1);
+  const document = wpsConnectorApp().ActiveDocument;
+  const content = document?.Content || document?.Range?.();
+  if (!document || !content) wpsConnectorFail("HOST_UNSUPPORTED", "WPS Writer document range is not available.");
+  const contentEnd = Number(wpsConnectorMember(content, "End"));
+  const results = [];
+  const attempts = [];
+  let searchRange = wpsConnectorWppRangeDuplicate(content) || content;
+  for (let guard = 0; guard < maxResults + 20 && results.length < maxResults; guard += 1) {
+    const find = searchRange?.Find;
+    if (!find) break;
+    try {
+      try { find.ClearFormatting?.(); } catch {}
+      try { find.Text = query; } catch {}
+      try { find.Forward = true; } catch {}
+      try { find.Wrap = 0; } catch {}
+      try { find.MatchCase = Boolean(input.matchCase); } catch {}
+      try { find.MatchWholeWord = Boolean(input.matchWholeWord); } catch {}
+      let found = false;
+      try { found = Boolean(find.Execute()); } catch (error) {
+        attempts.push({ label: "Find.Execute()", error: error.message || String(error) });
+        try { found = Boolean(find.Execute(query)); } catch (error2) { attempts.push({ label: "Find.Execute(query)", error: error2.message || String(error2) }); }
+      }
+      if (!found) break;
+      const matchRange = wpsConnectorWppRangeDuplicate(searchRange) || searchRange;
+      const nativeStart = Number(wpsConnectorMember(matchRange, "Start"));
+      const nativeEnd = Number(wpsConnectorMember(matchRange, "End"));
+      const text = wpsConnectorWppNormalizeRangeText(wpsConnectorCall(matchRange.Text));
+      const exactMatch = input.matchCase ? text === query : text.toLowerCase() === query.toLowerCase();
+      results.push({ index: results.length + 1, text, start: null, end: null, normalizedStart: null, normalizedEnd: null, nativeStart, nativeEnd, range: matchRange, exactMatch, textModel: "native-wps-find-v1", preview: { before: "", match: text, after: "" } });
+      const nextStart = Math.max(nativeEnd, nativeStart + 1);
+      if (!Number.isFinite(nextStart) || !Number.isFinite(contentEnd) || nextStart >= contentEnd) break;
+      searchRange = document.Range(nextStart, contentEnd);
+    } catch (error) {
+      attempts.push({ label: "native-find-loop", error: error.message || String(error) });
+      break;
+    }
+  }
+  return { query, count: results.length, truncated: results.length >= maxResults, textModel: "native-wps-find-v1", results, attempts };
+}
 function wpsConnectorWppTextTargets(input = {}) {
   const query = String(input.query ?? input.findText ?? "");
   const field = input.query !== undefined ? "query" : "findText";
   if (!query) wpsConnectorFail("INVALID_ARGUMENT", `${field} is required.`, { field });
-  const found = wpsConnectorWppFindText({ query, matchCase: input.matchCase, matchWholeWord: input.matchWholeWord, maxResults: input.maxResults || 1000 });
+  const found = input.preferNormalized === true ? wpsConnectorWppFindText({ query, matchCase: input.matchCase, matchWholeWord: input.matchWholeWord, maxResults: input.maxResults || 1000 }) : wpsConnectorWppFindNativeText({ query, matchCase: input.matchCase, matchWholeWord: input.matchWholeWord, maxResults: input.maxResults || 1000 });
   if (!found.results.length) wpsConnectorFail("TEXT_NOT_FOUND", "Text not found: " + query, { query });
   const occurrence = input.occurrence === undefined ? "first" : input.occurrence;
   if (occurrence === "all") return { query, targets: found.results };
@@ -1286,11 +1340,11 @@ function wpsConnectorWppReplaceText(input = {}) {
   const replaceText = String(input.replaceText ?? "");
   const targets = wpsConnectorWppReplacementTargets(input);
   const replacements = [];
-  for (const target of [...targets].sort((a, b) => b.start - a.start)) {
-    const resolved = wpsConnectorWppResolveRange({ start: target.start, end: target.end });
-    if (!resolved.exactMatch) wpsConnectorFail("RANGE_MAPPING_DRIFT", "Resolved range does not match target text.", { target, resolvedText: resolved.resolvedText, attempts: resolved.attempts });
+  for (const target of [...targets].sort((a, b) => Number(b.nativeStart ?? b.start ?? 0) - Number(a.nativeStart ?? a.start ?? 0))) {
+    const resolved = target.range ? wpsConnectorWppResolvedFromRange(target.range, target.text) : wpsConnectorWppResolveRange({ start: target.start, end: target.end });
+    if (!resolved.exactMatch) wpsConnectorFail("RANGE_MAPPING_DRIFT", "Resolved range does not match target text.", { target: { ...target, range: undefined }, resolvedText: resolved.resolvedText, attempts: resolved.attempts });
     const before = resolved.resolvedText;
-    try { resolved.range.Text = replaceText; } catch (error) { wpsConnectorFail("HOST_UNSUPPORTED", "WPS Writer text replacement is not available.", { hostMessage: error.message, target }); }
+    try { resolved.range.Text = replaceText; } catch (error) { wpsConnectorFail("HOST_UNSUPPORTED", "WPS Writer text replacement is not available.", { hostMessage: error.message, target: { ...target, range: undefined } }); }
     replacements.unshift({ index: target.index, start: target.start, end: target.end, nativeStart: target.nativeStart, nativeEnd: target.nativeEnd, before, after: replaceText, beforePreview: target.preview });
   }
   return { host: "wpp", replaced: replacements.length > 0, replacedCount: replacements.length, findText: String(input.findText || ""), replaceText, replacements };
@@ -1783,13 +1837,20 @@ function wpsConnectorWppCommentRange(input = {}) {
   if (!hasStart) return wpsConnectorWppSelectionRangeDetails();
   return wpsConnectorWppResolveRange(input);
 }
+function wpsConnectorWppResolvedFromRange(range, expectedText = "") {
+  const nativeStart = Number(wpsConnectorMember(range, "Start"));
+  const nativeEnd = Number(wpsConnectorMember(range, "End"));
+  const resolvedText = wpsConnectorWppNormalizeRangeText(wpsConnectorCall(range.Text));
+  const expected = String(expectedText || "");
+  const exactMatch = expected ? resolvedText === expected : true;
+  return { range, requestedStart: null, requestedEnd: null, resolvedStart: null, resolvedEnd: null, nativeStart, nativeEnd, resolvedText, exactMatch, attempts: [{ label: "native-range", nativeStart, nativeEnd, resolvedText, expectedText: expected, exactMatch }] };
+}
 function wpsConnectorWppCommentRangeFromNative(target) {
   const document = wpsConnectorApp().ActiveDocument;
-  const range = document?.Range?.(target.nativeStart, target.nativeEnd);
+  const range = target.range ? wpsConnectorWppRangeDuplicate(target.range) : document?.Range?.(target.nativeStart, target.nativeEnd);
   if (!range) wpsConnectorFail("RANGE_RESOLUTION_FAILED", "WPS Writer failed to create native comment range.", { target });
-  const resolvedText = wpsConnectorWppNormalizeRangeText(wpsConnectorCall(range.Text));
-  const exactMatch = resolvedText === target.text;
-  return { range, requestedStart: target.start, requestedEnd: target.end, resolvedStart: target.start, resolvedEnd: target.end, nativeStart: target.nativeStart, nativeEnd: target.nativeEnd, resolvedText, exactMatch, attempts: [{ label: "native-find-result", nativeStart: target.nativeStart, nativeEnd: target.nativeEnd, resolvedText, exactMatch }] };
+  const resolved = wpsConnectorWppResolvedFromRange(range, target.text);
+  return { ...resolved, requestedStart: target.start, requestedEnd: target.end, resolvedStart: target.start, resolvedEnd: target.end, attempts: [{ label: "native-find-result", nativeStart: resolved.nativeStart, nativeEnd: resolved.nativeEnd, resolvedText: resolved.resolvedText, expectedText: target.text, exactMatch: resolved.exactMatch }] };
 }
 function wpsConnectorWppCommentText(comment) {
   return String(wpsConnectorCall(comment?.Range?.Text) || wpsConnectorCall(comment?.Text) || "").replace(/\r+$/g, "");
@@ -1818,6 +1879,16 @@ function wpsConnectorWppCommentItem(comment, index) {
     createdAt: dateValue ? String(dateValue) : "",
   };
 }
+function wpsConnectorWppCommentSummaryItem(comment, index) {
+  const nativeCommentId = String(wpsConnectorMember(comment, "ID") || index);
+  return {
+    index,
+    commentId: nativeCommentId ? `native-${nativeCommentId}` : `index-${index}`,
+    nativeCommentId,
+    author: String(wpsConnectorMember(comment, "Author") || ""),
+    rangeText: wpsConnectorWppCommentRangeText(comment),
+  };
+}
 function wpsConnectorWppReadComments(input = {}) {
   const comments = wpsConnectorWppComments();
   const count = Number(wpsConnectorMember(comments, "Count") || 0);
@@ -1827,10 +1898,11 @@ function wpsConnectorWppReadComments(input = {}) {
   let include = sinceCommentId ? false : true;
   for (let i = 1; i <= count; i += 1) {
     try {
-      const item = wpsConnectorWppCommentItem(comments.Item(i), i);
+      const comment = comments.Item(i);
+      const item = summaryOnly ? wpsConnectorWppCommentSummaryItem(comment, i) : wpsConnectorWppCommentItem(comment, i);
       if (sinceCommentId && !include && (item.commentId === sinceCommentId || item.nativeCommentId === sinceCommentId)) { include = true; continue; }
       if (!include) continue;
-      items.push(summaryOnly ? { index: item.index, commentId: item.commentId, nativeCommentId: item.nativeCommentId, author: item.author, text: item.text, rangeText: item.rangeText } : item);
+      items.push(item);
     } catch {}
   }
   return { host: "wpp", count, returnedCount: items.length, summaryOnly, sinceCommentId: sinceCommentId || undefined, comments: items };
@@ -1902,7 +1974,7 @@ function wpsConnectorWppAddCommentsBatch(input = {}) {
     if (targets.length !== 1) wpsConnectorFail("AMBIGUOUS_MATCH", "Batch comment item requires exactly one target occurrence.", { index, query, count: targets.length, occurrence: item.occurrence });
     return { index, input: item, target: targets[0] };
   });
-  const ordered = String(input.mode || "reverse-order") === "forward-order" ? resolvedItems : [...resolvedItems].sort((a, b) => b.target.start - a.target.start);
+  const ordered = String(input.mode || "reverse-order") === "forward-order" ? resolvedItems : [...resolvedItems].sort((a, b) => Number(b.target.nativeStart ?? b.target.start ?? 0) - Number(a.target.nativeStart ?? a.target.start ?? 0));
   const results = [];
   const started = Date.now();
   for (const item of ordered) {
@@ -1911,7 +1983,7 @@ function wpsConnectorWppAddCommentsBatch(input = {}) {
       const result = wpsConnectorWppAddCommentResolved({ ...item.input, text: item.input.text, author: item.input.author, start: item.target.start, end: item.target.end, verify }, resolved);
       results.push({ itemIndex: item.index, ok: true, query: item.input.query, commentId: result.commentId, commentIndex: result.commentIndex, rangeText: result.rangeText, exactMatch: result.exactMatch });
     } catch (error) {
-      results.push({ itemIndex: item.index, ok: false, query: item.input.query, error: { code: error.code || "COMMENT_INSERT_FAILED", message: error.message, details: error.details || {} } });
+      results.push({ itemIndex: item.index, ok: false, query: item.input.query, expected: item.target.text, actual: error.details?.actualRangeText || error.details?.resolvedText || "", error: { code: error.code || "COMMENT_INSERT_FAILED", message: error.message, details: error.details || {} } });
       if (input.continueOnError !== true) break;
     }
   }
