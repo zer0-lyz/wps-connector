@@ -1,10 +1,12 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 const host = process.env.WPS_CONNECTOR_ADDIN_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_ADDIN_PORT || 3891);
-const rootDir = join(process.cwd(), "apps/wps-addin");
+const runtimeRoot = process.env.WPS_CONNECTOR_RUNTIME_ROOT || join(homedir(), ".local/share/wps-connector/runtime");
+const rootDir = process.env.WPS_CONNECTOR_ADDIN_ROOT || join(runtimeRoot, "apps/wps-addin");
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",

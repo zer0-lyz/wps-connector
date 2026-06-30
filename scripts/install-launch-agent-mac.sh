@@ -38,6 +38,17 @@ write_agent() {
   </array>
   <key>WorkingDirectory</key>
   <string>$RUNTIME_ROOT</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>WPS_CONNECTOR_RUNTIME_ROOT</key>
+    <string>$RUNTIME_ROOT</string>
+    <key>WPS_CONNECTOR_BINDINGS_PATH</key>
+    <string>$RUNTIME_ROOT/project-bindings.local.json</string>
+    <key>WPS_CONNECTOR_CATALOG_PATH</key>
+    <string>$RUNTIME_ROOT/codex-catalog.snapshot.json</string>
+    <key>WPS_CONNECTOR_ADDIN_ROOT</key>
+    <string>$RUNTIME_ROOT/apps/wps-addin</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

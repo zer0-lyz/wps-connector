@@ -3,14 +3,16 @@ import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { tools } from "../shared/toolSchemas.js";
 
 const host = process.env.WPS_CONNECTOR_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_PORT || 40215);
 const commandTimeoutMs = Number(process.env.WPS_CONNECTOR_COMMAND_TIMEOUT_MS || 60000);
-const catalogPath = process.env.WPS_CONNECTOR_CATALOG_PATH || join(process.cwd(), "codex-catalog.snapshot.json");
-const bindingsPath = process.env.WPS_CONNECTOR_BINDINGS_PATH || join(process.cwd(), "project-bindings.local.json");
+const runtimeRoot = process.env.WPS_CONNECTOR_RUNTIME_ROOT || join(homedir(), ".local/share/wps-connector/runtime");
+const catalogPath = process.env.WPS_CONNECTOR_CATALOG_PATH || join(runtimeRoot, "codex-catalog.snapshot.json");
+const bindingsPath = process.env.WPS_CONNECTOR_BINDINGS_PATH || join(runtimeRoot, "project-bindings.local.json");
 const sessions = new Map();
 const commands = new Map();
 const execFileAsync = promisify(execFile);
