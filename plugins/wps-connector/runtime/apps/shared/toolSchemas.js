@@ -526,15 +526,35 @@ export const tools = [
     description: "Add a real WPS Writer comment to the current selection or a specified character range.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, text: { type: "string" }, author: { type: "string" } },
+      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, text: { type: "string" }, author: { type: "string" }, verify: { type: "boolean" }, allowInexact: { type: "boolean" } },
       required: ["text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.add_comment_by_text",
+    description: "Find one exact text occurrence and add a real WPS Writer comment atomically, with range verification.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, query: { type: "string" }, occurrence: { type: ["string", "number"] }, index: { type: "number" }, text: { type: "string" }, author: { type: "string" }, exact: { type: "boolean" }, matchCase: { type: "boolean" }, matchWholeWord: { type: "boolean" }, maxResults: { type: "number" }, verify: { type: "boolean" }, allowInexact: { type: "boolean" } },
+      required: ["query", "text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.add_comments_batch",
+    description: "Add multiple real WPS Writer comments by text anchors, normally from document end to start to avoid anchor drift.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, mode: { type: "string" }, verify: { type: "boolean" }, continueOnError: { type: "boolean" }, items: { type: "array", items: { type: "object", properties: { query: { type: "string" }, occurrence: { type: ["string", "number"] }, index: { type: "number" }, text: { type: "string" }, author: { type: "string" }, matchCase: { type: "boolean" }, matchWholeWord: { type: "boolean" }, maxResults: { type: "number" } }, required: ["query", "text"], additionalProperties: false } } },
+      required: ["items"],
       additionalProperties: false,
     },
   },
   {
     name: "wpp.read_comments",
     description: "Read comments from the active WPS Writer document.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, summaryOnly: { type: "boolean" }, sinceCommentId: { type: "string" } }, additionalProperties: false },
   },
   {
     name: "wpp.delete_comment",

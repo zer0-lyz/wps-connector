@@ -53,7 +53,7 @@ function activeContext() {
 }
 
 async function register() {
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
   await request("/api/sessions/register", {
     method: "POST",
     body: JSON.stringify({
@@ -532,8 +532,31 @@ function execute(command) {
     state.wpp.comments.push(comment);
     return { host: "wpp", added: true, commentIndex: comment.index, commentId: comment.commentId, nativeCommentId: comment.commentId, commentIdStable: true, text: comment.text, rangeText: comment.rangeText, author: comment.author, requestedStart: hasRange ? command.input.start : null, requestedEnd: hasRange ? command.input.end : null, resolvedStart: hasRange ? command.input.start : state.wpp.selectionStart, resolvedEnd: hasRange ? command.input.end : state.wpp.selectionEnd, resolvedText: rangeText, exactMatch: true };
   }
+  if (command.toolName === "wpp.add_comment_by_text") {
+    const query = String(command.input.query || "").trim();
+    if (!query) fail("INVALID_ARGUMENT", "query is required.", { field: "query" });
+    const found = execute({ toolName: "wpp.find_text", input: { query, matchCase: command.input.matchCase, matchWholeWord: command.input.matchWholeWord, maxResults: 1000 } }).results;
+    const occurrence = command.input.occurrence === undefined ? "first" : command.input.occurrence;
+    let target = occurrence === "last" ? found[found.length - 1] : found[0];
+    if (occurrence !== "first" && occurrence !== "last") {
+      const wanted = occurrence === "index" ? simIndex(command.input.index, "index") : simIndex(occurrence, "occurrence");
+      target = found[wanted - 1];
+    }
+    if (!target) fail("TEXT_NOT_FOUND", "Text occurrence not found.", { query, occurrence });
+    const result = execute({ toolName: "wpp.add_comment", input: { ...command.input, start: target.start, end: target.end } });
+    return { ...result, query, occurrence, rangeText: target.text, resolvedText: target.text, exactMatch: true };
+  }
+  if (command.toolName === "wpp.add_comments_batch") {
+    const items = Array.isArray(command.input.items) ? command.input.items : [];
+    if (!items.length) fail("INVALID_ARGUMENT", "items must be a non-empty array.", { field: "items" });
+    const results = items.map((item, index) => {
+      const result = execute({ toolName: "wpp.add_comment_by_text", input: item });
+      return { itemIndex: index, ok: true, query: item.query, commentId: result.commentId, commentIndex: result.commentIndex, rangeText: result.rangeText, exactMatch: true };
+    });
+    return { host: "wpp", added: true, addedCount: results.length, requestedCount: items.length, mode: command.input.mode || "reverse-order", verify: command.input.verify !== false, elapsedMs: 1, results };
+  }
   if (command.toolName === "wpp.read_comments") {
-    return { host: "wpp", count: state.wpp.comments.length, comments: state.wpp.comments.map((comment, index) => ({ ...comment, index: index + 1 })) };
+    return { host: "wpp", count: state.wpp.comments.length, returnedCount: state.wpp.comments.length, summaryOnly: command.input.summaryOnly === true, comments: state.wpp.comments.map((comment, index) => ({ ...comment, index: index + 1 })) };
   }
   if (command.toolName === "wpp.delete_comment") {
     let idx = -1;

@@ -122,6 +122,8 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.write_table_cell"), "MCP tools/list missed wpp.write_table_cell.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.save_document"), "MCP tools/list missed wpp.save_document.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.add_comment"), "MCP tools/list missed wpp.add_comment.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.add_comment_by_text"), "MCP tools/list missed wpp.add_comment_by_text.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.add_comments_batch"), "MCP tools/list missed wpp.add_comments_batch.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_rows"), "MCP tools/list missed wpp.insert_table_rows.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_image"), "MCP tools/list missed wpp.insert_image.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_format"), "MCP tools/list missed wpp.read_table_format.");
@@ -540,12 +542,24 @@ async function main() {
   });
   assert(wppCommentThird.added === true && wppCommentThird.commentId !== wppCommentRange.commentId, "WPP third add_comment did not return a unique commentId.");
 
+  const wppCommentByText = await request("/api/tools/wpp/add_comment_by_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", query: "验收", text: "按文本批注", occurrence: "first" }),
+  });
+  assert(wppCommentByText.added === true && wppCommentByText.rangeText === "验收" && wppCommentByText.exactMatch === true, "WPP add_comment_by_text did not verify the target text.");
+
+  const wppCommentBatch = await request("/api/tools/wpp/add_comments_batch", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", items: [{ query: "验收", text: "批量批注1" }, { query: "插入", text: "批量批注2" }], verify: true }),
+  });
+  assert(wppCommentBatch.addedCount === 2 && wppCommentBatch.results.every((item) => item.ok && item.exactMatch), "WPP add_comments_batch did not add verified comments.");
+
   const wppCommentsBeforeDelete = await request("/api/tools/wpp/read_comments", {
     method: "POST",
-    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+    body: JSON.stringify({ sessionId: "test-wpp-session", summaryOnly: true }),
   });
   const commentIds = new Set(wppCommentsBeforeDelete.comments.map((comment) => comment.commentId));
-  assert(wppCommentsBeforeDelete.count === 3 && commentIds.size === 3 && wppCommentsBeforeDelete.comments.some((comment) => comment.commentId === wppCommentRange.commentId && comment.rangeText === "插入"), "WPP read_comments did not return stable unique comments.");
+  assert(wppCommentsBeforeDelete.count === 6 && commentIds.size === 6 && wppCommentsBeforeDelete.summaryOnly === true && wppCommentsBeforeDelete.comments.some((comment) => comment.commentId === wppCommentRange.commentId && comment.rangeText === "插入"), "WPP read_comments did not return stable unique comments.");
 
   const wppDeleteComment = await request("/api/tools/wpp/delete_comment", {
     method: "POST",
@@ -557,7 +571,7 @@ async function main() {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session" }),
   });
-  assert(wppCommentsAfterDelete.count === 2 && !wppCommentsAfterDelete.comments.some((comment) => comment.text === "当前选区批注"), "WPP read_comments still returned deleted comment.");
+  assert(wppCommentsAfterDelete.count === 5 && !wppCommentsAfterDelete.comments.some((comment) => comment.text === "当前选区批注"), "WPP read_comments still returned deleted comment.");
 
   const wppEmptyComment = await rawRequest("/api/tools/wpp/add_comment", {
     method: "POST",
