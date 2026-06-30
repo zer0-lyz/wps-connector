@@ -43,11 +43,11 @@ description: Use when the user asks to connect Codex to WPS Spreadsheets or WPS 
 
 # WPS Connector
 
-Use the WPS Connector MCP server exposed by this plugin. Runtime files live at $RUNTIME_ROOT; the OneDrive project folder is documentation/source only. The default bridge URL is http://127.0.0.1:40215.
+Use the WPS Connector MCP server exposed by this plugin. Runtime files live at \$HOME/.local/share/wps-connector/runtime unless WPS_CONNECTOR_RUNTIME_ROOT overrides it. Project folders should be treated as source code or documents, not as the live runtime directory. The default bridge URL is http://127.0.0.1:40215.
 
 Before calling live WPS tools, run wps.connection_status (or wps_connection_status) with onlyOnline:true and the expected host/project/thread selector. Use recommendedSession.sessionId only when issues is empty. For project-specific work, require the WPS session binding to match the Codex project/thread to avoid cross-window routing.
 
-Fallback CLI for non-MCP agents: node $RUNTIME_ROOT/scripts/agent-connection-status.js --onlyOnline --host wpp
+Fallback CLI for non-MCP agents: node "\$HOME/.local/share/wps-connector/runtime/scripts/agent-connection-status.js" --onlyOnline --host wpp
 EOF_SKILL
 
 printf 'Deployed WPS Connector runtime to %s\n' "$RUNTIME_ROOT"

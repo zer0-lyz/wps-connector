@@ -6,7 +6,7 @@ WPS Connector connects Codex to open WPS Writer and WPS Spreadsheet documents th
 
 ## What It Installs
 
-The full package contains two connected parts:
+The package contains two connected parts:
 
 - Codex plugin: skill, MCP server configuration, and WPS operation tools.
 - WPS runtime: local bridge, WPS add-in files, taskpane server, LaunchAgent services, and project/thread binding UI.
@@ -15,7 +15,7 @@ Architecture:
 
 ```text
 Codex
-  -> Codex plugin skill / MCP server
+  -> WPS Connector MCP server
   -> local bridge at http://127.0.0.1:40215
   -> command queue
   -> WPS add-in taskpane at http://127.0.0.1:3891
@@ -28,51 +28,50 @@ Codex
 - macOS.
 - WPS Office desktop app.
 - Node.js 20 or later.
-- Codex CLI/app with plugin support.
-
-The Codex plugin shape is cross-platform, but the bundled local runtime installer currently supports macOS only.
+- git.
+- Codex app or CLI with plugin support.
 
 ## One-Command Install
 
-After cloning or downloading this repository:
+Run this on the target Mac:
 
 ```bash
-bash scripts/bootstrap-mac.sh
+curl -fsSL https://raw.githubusercontent.com/zer0-lyz/wps-connector/main/scripts/install-mac.sh | bash
 ```
 
-The bootstrap script will:
+The installer will:
 
-- copy `plugins/wps-connector` to `~/plugins/wps-connector`;
-- update `~/.agents/plugins/marketplace.json`;
-- run `codex plugin add wps-connector@personal` when the Codex CLI is available;
-- deploy runtime files to `~/.local/share/wps-connector/runtime`;
-- install LaunchAgents for the bridge and add-in server.
+- clone or update the repo at `$HOME/.local/share/wps-connector/source`;
+- install the Codex plugin into `$HOME/.codex/plugins/cache/personal/wps-connector/0.1.0`;
+- deploy runtime files to `$HOME/.local/share/wps-connector/runtime`;
+- install LaunchAgents for the bridge and add-in server;
+- configure the WPS jsaddons files for the current macOS user;
+- run basic health checks.
+
+No `/Users/<name>` path is hard-coded. Override paths with environment variables when needed:
+
+```bash
+WPS_CONNECTOR_SOURCE_ROOT="$HOME/Code/wps-connector" \
+WPS_CONNECTOR_RUNTIME_ROOT="$HOME/.local/share/wps-connector/runtime" \
+WPS_CONNECTOR_PLUGIN_INSTALL_DIR="$HOME/.codex/plugins/cache/personal/wps-connector/0.1.0" \
+bash scripts/install-mac.sh
+```
 
 ## Verify
 
 ```bash
-npm test
 curl -sS http://127.0.0.1:40215/api/health
-curl -sS http://127.0.0.1:40215/api/tools/schema
 curl -sS http://127.0.0.1:3891/health
+node "$HOME/.local/share/wps-connector/runtime/scripts/agent-connection-status.js" --onlyOnline
 ```
 
+For MCP visibility, Codex should expose both dotted and underscore tool names, including:
 
-## Agent Connection Flow
-
-For Codex sub-agents or other models, use this preflight before any document write:
-
-```bash
-node scripts/agent-connection-status.js --onlyOnline --host wpp
-node scripts/agent-connection-status.js --onlyOnline --host et --projectId <projectId> --threadId <threadId>
-```
-
-The same preflight is exposed as MCP tools with both naming styles:
-
-- `wps.connection_status`
-- `wps_connection_status`
-
-The JSON response includes bridge/add-in health, filtered sessions, binding match status, `recommendedSession`, structured `issues`, and `nextActions`. Agents should stop on non-empty `issues` instead of guessing a session. For multi-window work, pass `projectId` + `threadId` or the full `binding` selector so Writer and Spreadsheet calls cannot route to the wrong WPS pane.
+- `wps.list_sessions` / `wps_list_sessions`
+- `wps.connection_status` / `wps_connection_status`
+- `wpp.add_comment_by_text` / `wpp_add_comment_by_text`
+- `wpp.add_comments_batch` / `wpp_add_comments_batch`
+- `et.read_range` / `et_read_range`
 
 ## Use With WPS
 
@@ -83,31 +82,48 @@ The JSON response includes bridge/add-in health, filtered sessions, binding matc
 
 WPS add-in loading is version-dependent. If WPS keeps an old WebView script after an upgrade, reopen the Connector Pane or restart WPS so it loads the current `main.js`.
 
+## Agent Connection Flow
+
+For Codex sub-agents or other models, run this preflight before any document write:
+
+```bash
+node "$HOME/.local/share/wps-connector/runtime/scripts/agent-connection-status.js" --onlyOnline --host wpp
+node "$HOME/.local/share/wps-connector/runtime/scripts/agent-connection-status.js" --onlyOnline --host et --projectId <projectId> --threadId <threadId>
+```
+
+Agents should stop on non-empty `issues`; otherwise use `recommendedSession.sessionId` or pass the same binding selector to the target tool. For multi-window work, pass `projectId` plus `threadId` or the full binding selector so Writer and Spreadsheet calls cannot route to the wrong WPS pane.
+
 ## Important Local Paths
 
 Runtime:
 
 ```text
-~/.local/share/wps-connector/runtime
+$HOME/.local/share/wps-connector/runtime
 ```
 
-Codex plugin source:
+Source checkout used by the one-command installer:
 
 ```text
-~/plugins/wps-connector
+$HOME/.local/share/wps-connector/source
 ```
 
-Personal marketplace:
+Codex plugin install:
 
 ```text
-~/.agents/plugins/marketplace.json
+$HOME/.codex/plugins/cache/personal/wps-connector/0.1.0
+```
+
+WPS jsaddons:
+
+```text
+$HOME/Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons
 ```
 
 ## Development Commands
 
 ```bash
-npm test
 npm run check
+npm test
 npm run deploy
 npm run launchd:install
 npm run runtime:start
@@ -116,8 +132,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.25`
-- clientBuild: `2026.06.30-writer-paragraph-format-fast.1`
+- UI/clientVersion: `v1.0.28`
+- clientBuild: `2026.06.30-writer-native-find.1`
 
 ## Current Tool Surface
 
@@ -137,12 +153,11 @@ WPS Writer (`wpp`) tools:
 - document identity, document text, selection and format reads;
 - stable range selection with resolved text verification;
 - paragraph-indexed formatting, batch paragraph format application, and paragraph format copying;
-- text/news insertion and paragraph formatting;
-- tables, images, comments;
-- track changes / revisions where the WPS host API supports them.
+- text replacement, text-anchored comments, batch comments, and revision tools;
+- tables, images, comments, save, and style/layout helpers.
 
 ## Known Boundaries
 
-- WPS native add-in installation and debugging flows differ by WPS version. The runtime and Codex plugin install automatically; the WPS host may still require enabling/opening the connector pane in WPS.
+- The installer configures the local runtime and WPS jsaddons files. The user may still need to open the WPS Connector pane in WPS manually.
 - Track changes tools return `TRACK_CHANGES_UNSUPPORTED` when the WPS host does not expose a compatible revisions API.
-- Writer character offsets use the connector's normalized WPS text model. `select_range` and `add_comment` return `requestedStart`, `requestedEnd`, `resolvedStart`, `resolvedEnd`, `resolvedText`, and `exactMatch` so anchor drift is auditable.
+- Codex Desktop may cache MCP tool discovery per conversation. If a newly installed tool is not visible in `tool_search`, reload the plugin or start a new Codex thread.

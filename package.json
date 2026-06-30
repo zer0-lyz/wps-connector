@@ -12,6 +12,8 @@
     "test": "node tests/e2e.js",
     "test:et": "node scripts/regression-et.js",
     "deploy": "bash scripts/deploy-runtime-mac.sh && node scripts/disable-wps-js-debug-mac.js",
+    "install:mac": "bash scripts/install-mac.sh",
+    "bootstrap:mac": "bash scripts/bootstrap-mac.sh",
     "runtime:start": "bash scripts/start-runtime-mac.sh",
     "runtime:stop": "bash scripts/stop-runtime-mac.sh",
     "launchd:install": "bash scripts/install-launch-agent-mac.sh",

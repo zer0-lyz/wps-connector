@@ -2,24 +2,30 @@
 
 This plugin exposes the local WPS Connector runtime to Codex through MCP.
 
-Runtime files live in:
+## Install
+
+Recommended one-command install:
 
 ```bash
-/Users/lin/.local/share/wps-connector/runtime
+curl -fsSL https://raw.githubusercontent.com/zer0-lyz/wps-connector/main/scripts/install-mac.sh | bash
 ```
 
-The OneDrive project folder is source code and documentation only. Do not use it as the live runtime directory.
+The live runtime is deployed to:
 
-The bundled MCP configuration points Codex to:
-
-```bash
-/Users/lin/.local/share/wps-connector/runtime/apps/mcp/server.js
+```text
+$HOME/.local/share/wps-connector/runtime
 ```
 
-The bridge and add-in services should be managed by LaunchAgent after installation:
+The bundled MCP configuration is updated during deployment to point Codex to:
+
+```text
+$HOME/.local/share/wps-connector/runtime/apps/mcp/server.js
+```
+
+The bridge and add-in services are managed by LaunchAgent after installation:
 
 ```bash
-cd /Users/lin/.local/share/wps-connector/runtime
+cd "$HOME/.local/share/wps-connector/runtime"
 npm run launchd:install
 ```
 
