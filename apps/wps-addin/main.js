@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.16";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.06.30-mcp-range-revisions.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.17";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.06.30-ribbon-icon.1";
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
 let wpsConnectorCurrentDocumentKey = "";
@@ -1244,6 +1244,11 @@ function OnAction(control) {
 }
 function OnGetEnabled() { return true; }
 function OnGetVisible() { return true; }
+function GetImage(control) {
+  const id = control && (control.Id || control.id);
+  if (id === "btnShowConnectorPane" || id === "wpsConnectorPaneButton") return "images/connector.svg";
+  return "images/connector.svg";
+}
 async function wpsConnectorExecute(command) {
   if (command.toolName === "et.read_selection") return wpsConnectorEtSelection(command.input || {});
   if (command.toolName === "et.list_worksheets") return wpsConnectorEtListWorksheets(command.input || {});
@@ -1340,5 +1345,7 @@ if (typeof window !== "undefined") {
   window.OnAddinLoad = OnAddinLoad;
   window.OnGetEnabled = OnGetEnabled;
   window.OnGetVisible = OnGetVisible;
+  window.GetImage = GetImage;
+  window.OnGetImage = GetImage;
 }
 wpsConnectorStart().catch(console.error);

@@ -4,7 +4,7 @@
     <tabs>
       <tab id="wpsConnectorTab" label="WPS Connector">
         <group id="wpsConnectorGroup" label="Connector">
-          <button id="btnShowConnectorPane" label="连接面板" onAction="OnAction" getEnabled="OnGetEnabled" visible="true" size="large"/>
+          <button id="btnShowConnectorPane" label="连接面板" onAction="OnAction" getEnabled="OnGetEnabled" getImage="GetImage" visible="true" size="large"/>
         </group>
       </tab>
     </tabs>

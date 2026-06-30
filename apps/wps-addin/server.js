@@ -12,6 +12,7 @@ const mimeTypes = {
   ".xml": "application/xml; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".png": "image/png",
+  ".svg": "image/svg+xml",
 };
 
 function contentType(pathname) {
@@ -36,6 +37,7 @@ async function handle(req, res) {
     if (safeMethod && pathname === "/main.js") return sendAsset(res, "main.js");
     if (safeMethod && pathname === "/ribbon.xml") return sendAsset(res, "ribbon.xml");
     if (safeMethod && pathname === "/icon.png") return sendAsset(res, "icon.png");
+    if (safeMethod && pathname === "/images/connector.svg") return sendAsset(res, "images/connector.svg");
     if (req.method === "GET" && pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*" });
       return res.end(JSON.stringify({ ok: true, name: "wps-connector-addin", time: new Date().toISOString() }, null, 2));
