@@ -8,13 +8,14 @@
     "bridge": "node apps/bridge/server.js",
     "mcp": "node apps/mcp/server.js",
     "simulator": "node apps/wps-addin/simulator.js",
-    "check": "node --check apps/bridge/server.js && node --check apps/mcp/server.js && node --check apps/shared/toolSchemas.js && node --check apps/wps-addin/main.js && node --check apps/wps-addin/simulator.js && node --check scripts/sync-codex-catalog.js && node --check tests/e2e.js",
+    "check": "node --check apps/bridge/server.js && node --check apps/mcp/server.js && node --check apps/shared/toolSchemas.js && node --check apps/wps-addin/main.js && node --check apps/wps-addin/simulator.js && node --check scripts/sync-codex-catalog.js && node --check scripts/disable-wps-js-debug-mac.js && node --check tests/e2e.js",
     "test": "node tests/e2e.js",
     "test:et": "node scripts/regression-et.js",
-    "deploy": "bash scripts/deploy-runtime-mac.sh",
+    "deploy": "bash scripts/deploy-runtime-mac.sh && node scripts/disable-wps-js-debug-mac.js",
     "runtime:start": "bash scripts/start-runtime-mac.sh",
     "runtime:stop": "bash scripts/stop-runtime-mac.sh",
-    "launchd:install": "bash scripts/install-launch-agent-mac.sh"
+    "launchd:install": "bash scripts/install-launch-agent-mac.sh",
+    "wps:disable-js-debug": "node scripts/disable-wps-js-debug-mac.js"
   },
   "engines": {
     "node": ">=20"
