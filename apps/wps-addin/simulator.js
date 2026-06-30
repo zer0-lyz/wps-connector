@@ -52,7 +52,7 @@ function activeContext() {
 }
 
 async function register() {
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.read_format", "wpp.read_table", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.find_text", "wpp.replace_text", "wpp.read_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
   await request("/api/sessions/register", {
     method: "POST",
     body: JSON.stringify({
@@ -156,6 +156,49 @@ function execute(command) {
     state.wpp.selectionText = state.wpp.insertedText.slice(start, end);
     return { host: "wpp", selected: true, start, end, text: state.wpp.selectionText, requestedStart: start, requestedEnd: end, resolvedStart: start, resolvedEnd: end, resolvedText: state.wpp.selectionText, exactMatch: true, attempts: [{ label: "simulated", start, end, resolvedText: state.wpp.selectionText, exactMatch: true }] };
   }
+
+  if (command.toolName === "wpp.find_text") {
+    const query = String(command.input.query || "");
+    if (!query) fail("INVALID_ARGUMENT", "query is required.", { field: "query" });
+    const maxResults = command.input.maxResults || 50;
+    const text = state.wpp.insertedText;
+    const haystack = command.input.matchCase ? text : text.toLowerCase();
+    const needle = command.input.matchCase ? query : query.toLowerCase();
+    const results = [];
+    let pos = 0;
+    while (results.length < maxResults) {
+      const index = haystack.indexOf(needle, pos);
+      if (index < 0) break;
+      const end = index + query.length;
+      results.push({ index: results.length + 1, text: text.slice(index, end), start: index, end, normalizedStart: index, normalizedEnd: end, nativeStart: index, nativeEnd: end, preview: { before: text.slice(Math.max(0, index - 40), index), match: text.slice(index, end), after: text.slice(end, end + 40) } });
+      pos = Math.max(index + 1, end);
+    }
+    return { host: "wpp", query, count: results.length, truncated: results.length >= maxResults, textModel: "normalized-wps-range-v1", results };
+  }
+  if (command.toolName === "wpp.replace_text") {
+    const findText = String(command.input.findText || "");
+    if (!findText) fail("INVALID_ARGUMENT", "findText is required.", { field: "findText" });
+    const found = execute({ toolName: "wpp.find_text", input: { query: findText, matchCase: command.input.matchCase, matchWholeWord: command.input.matchWholeWord, maxResults: 1000 } }).results;
+    if (!found.length) fail("TEXT_NOT_FOUND", "Text not found: " + findText, { findText });
+    const occurrence = command.input.occurrence === undefined ? "first" : command.input.occurrence;
+    let targets = [];
+    if (occurrence === "all") targets = found;
+    else if (occurrence === "last") targets = [found[found.length - 1]];
+    else if (occurrence === "first") targets = [found[0]];
+    else {
+      const wanted = occurrence === "index" ? simIndex(command.input.index, "index") : simIndex(occurrence, "occurrence");
+      if (wanted > found.length) fail("TEXT_NOT_FOUND", "Text occurrence not found: " + wanted, { findText, occurrence: wanted, count: found.length });
+      targets = [found[wanted - 1]];
+    }
+    const replaceText = String(command.input.replaceText ?? "");
+    const replacements = [];
+    for (const target of [...targets].sort((a, b) => b.start - a.start)) {
+      state.wpp.insertedText = state.wpp.insertedText.slice(0, target.start) + replaceText + state.wpp.insertedText.slice(target.end);
+      replacements.unshift({ index: target.index, start: target.start, end: target.end, nativeStart: target.nativeStart, nativeEnd: target.nativeEnd, before: target.text, after: replaceText, beforePreview: target.preview });
+    }
+    return { host: "wpp", replaced: replacements.length > 0, replacedCount: replacements.length, findText, replaceText, replacements };
+  }
+
   if (command.toolName === "wpp.read_format") return { host: "wpp", ...state.wpp.format };
   if (command.toolName === "wpp.insert_text") {
     const inserted = command.input.text || "";
@@ -189,6 +232,11 @@ function execute(command) {
     return { host: "wpp", [command.toolName === "wpp.accept_all_revisions" ? "acceptedAll" : "rejectedAll"]: true, before };
   }
 
+
+  if (command.toolName === "wpp.save_document") {
+    return { host: "wpp", saved: true, path: "/tmp/" + state.wpp.documentName, savedAt: new Date().toISOString(), documentIdentity: { name: state.wpp.documentName, fullPath: "/tmp/" + state.wpp.documentName } };
+  }
+
   if (command.toolName === "wpp.insert_table") {
     const rowCount = Number(command.input.rowCount);
     const columnCount = Number(command.input.columnCount);
@@ -217,6 +265,27 @@ function execute(command) {
     if (!Number.isInteger(n) || n < min) fail("INVALID_ARGUMENT", `${field} must be an integer >= ${min}.`, { field, value });
     return n;
   }
+
+  if (command.toolName === "wpp.read_table_cell") {
+    const { table, tableIndex } = simTable(command.input);
+    const row = simIndex(command.input.row, "row");
+    const column = simIndex(command.input.col ?? command.input.column, "column");
+    if (row > table.rowCount || column > table.columnCount) fail("INVALID_ARGUMENT", "cell index is outside table bounds.", { row, column, rowCount: table.rowCount, columnCount: table.columnCount });
+    const mergeRegion = (simFormat(table).mergedCells || table.merged || []).find((item) => row >= item.startRow && row <= item.endRow && column >= item.startColumn && column <= item.endColumn) || null;
+    return { host: "wpp", tableIndex, row, column, text: table.values?.[row - 1]?.[column - 1] ?? "", merged: Boolean(mergeRegion), mergeAnchor: mergeRegion ? { row: mergeRegion.startRow, column: mergeRegion.startColumn } : { row, column }, mergeRegion, isMergeAnchor: !mergeRegion || (mergeRegion.startRow === row && mergeRegion.startColumn === column), format: (simFormat(table).cells || []).find((cell) => cell.row === row && cell.column === column) || { row, column } };
+  }
+  if (command.toolName === "wpp.write_table_cell") {
+    const { table, tableIndex } = simTable(command.input);
+    const row = simIndex(command.input.row, "row");
+    const column = simIndex(command.input.col ?? command.input.column, "column");
+    if (row > table.rowCount || column > table.columnCount) fail("INVALID_ARGUMENT", "cell index is outside table bounds.", { row, column, rowCount: table.rowCount, columnCount: table.columnCount });
+    const beforeText = table.values?.[row - 1]?.[column - 1] ?? "";
+    table.values[row - 1] = table.values[row - 1] || [];
+    table.values[row - 1][column - 1] = String(command.input.text ?? "");
+    const readback = execute({ toolName: "wpp.read_table_cell", input: { tableIndex, row, column } });
+    return { host: "wpp", tableIndex, row, column, written: true, preserveStyle: command.input.preserveStyle !== false, beforeText, afterText: readback.text, merged: readback.merged, mergeAnchor: readback.mergeAnchor, mergeRegion: readback.mergeRegion };
+  }
+
   if (command.toolName === "wpp.insert_table_rows") {
     const { table, tableIndex } = simTable(command.input);
     const rowIndex = simIndex(command.input.rowIndex, "rowIndex");

@@ -115,6 +115,11 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "et.read_range"), "MCP tools/list missed et.read_range.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_document_text"), "MCP tools/list missed wpp.read_document_text.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.find_text"), "MCP tools/list missed wpp.find_text.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.replace_text"), "MCP tools/list missed wpp.replace_text.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_cell"), "MCP tools/list missed wpp.read_table_cell.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.write_table_cell"), "MCP tools/list missed wpp.write_table_cell.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.save_document"), "MCP tools/list missed wpp.save_document.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.add_comment"), "MCP tools/list missed wpp.add_comment.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_rows"), "MCP tools/list missed wpp.insert_table_rows.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_image"), "MCP tools/list missed wpp.insert_image.");
@@ -308,6 +313,31 @@ async function main() {
   });
   assert(wppSelectRange.selected === true && wppSelectRange.resolvedText === "测试" && wppSelectRange.exactMatch === true, "WPP select_range returned unexpected resolved selection.");
 
+
+  const wppFindText = await request("/api/tools/wpp/find_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", query: "测试" }),
+  });
+  assert(wppFindText.count >= 1 && wppFindText.results?.[0]?.text === "测试", "WPP find_text did not find inserted document text.");
+
+  const wppReplaceText = await request("/api/tools/wpp/replace_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", findText: "测试", replaceText: "验收", occurrence: "first" }),
+  });
+  assert(wppReplaceText.replacedCount === 1 && wppReplaceText.replacements?.[0]?.before === "测试", "WPP replace_text did not replace the first occurrence.");
+
+  const wppFindAfterReplace = await request("/api/tools/wpp/find_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", query: "验收" }),
+  });
+  assert(wppFindAfterReplace.count >= 1, "WPP find_text did not find replacement text.");
+
+  const wppMissingText = await rawRequest("/api/tools/wpp/replace_text", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", findText: "不存在文本", replaceText: "X" }),
+  });
+  assert(wppMissingText.ok === false && wppMissingText.error?.code === "TEXT_NOT_FOUND", "WPP missing replace text did not return TEXT_NOT_FOUND.");
+
   const wppCommentSelection = await request("/api/tools/wpp/add_comment", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", text: "当前选区批注", author: "Codex Test" }),
@@ -419,6 +449,25 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1 }),
   });
   assert(wppReadTable.rowCount === 2 && wppReadTable.values?.[1]?.[1] === "D", "WPP read_table returned unexpected values.");
+
+
+  const wppReadTableCell = await request("/api/tools/wpp/read_table_cell", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, row: 2, column: 2 }),
+  });
+  assert(wppReadTableCell.text === "D" && wppReadTableCell.format, "WPP read_table_cell returned unexpected cell data.");
+
+  const wppWriteTableCell = await request("/api/tools/wpp/write_table_cell", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, row: 2, column: 2, text: "评分80", preserveStyle: true }),
+  });
+  assert(wppWriteTableCell.written === true && wppWriteTableCell.beforeText === "D" && wppWriteTableCell.afterText === "评分80", "WPP write_table_cell did not return expected before/after text.");
+
+  const wppReadTableCellAfter = await request("/api/tools/wpp/read_table_cell", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, row: 2, column: 2 }),
+  });
+  assert(wppReadTableCellAfter.text === "评分80", "WPP read_table_cell did not verify written text.");
 
   const wppInsertRows = await request("/api/tools/wpp/insert_table_rows", {
     method: "POST",
@@ -549,6 +598,13 @@ async function main() {
   });
   assert(wppImagesAfterDelete.count === 0, "WPP read_images still returned deleted image.");
 
+
+  const wppSave = await request("/api/tools/wpp/save_document", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+  });
+  assert(wppSave.saved === true && wppSave.path && wppSave.savedAt, "WPP save_document did not return save metadata.");
+
   const wppBadTable = await rawRequest("/api/tools/wpp/insert_table", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", rowCount: 0, columnCount: 2 }),
@@ -566,13 +622,14 @@ async function main() {
     etFind: { count: etFind.count },
     wppSelection: { text: wppSelection.text },
     wppInsert: { insertedLength: wppInsert.insertedLength },
-    wppText: { length: wppText.length },
+    wppText: { length: wppText.length, findCount: wppFindText.count, replacedCount: wppReplaceText.replacedCount },
     wppComments: { beforeDelete: wppCommentsBeforeDelete.count, afterDelete: wppCommentsAfterDelete.count },
     wppRevisions: { beforeAcceptAll: wppRevisions.count },
     wppTable: { rowCount: wppTable.rowCount, columnCount: wppTable.columnCount },
     wppReadTable: { rowCount: wppReadTable.rowCount, columnCount: wppReadTable.columnCount },
-    wppTableOps: { rows: wppDeleteRows.rowCount, columns: wppDeleteColumns.columnCount, merged: wppMergeCells.merged },
+    wppTableOps: { rows: wppDeleteRows.rowCount, columns: wppDeleteColumns.columnCount, merged: wppMergeCells.merged, cellAfter: wppReadTableCellAfter.text },
     wppImages: { inserted: wppImage.insertedImage, afterDelete: wppImagesAfterDelete.count },
+    wppSave: { saved: wppSave.saved, path: wppSave.path },
   }, null, 2));
 }
 

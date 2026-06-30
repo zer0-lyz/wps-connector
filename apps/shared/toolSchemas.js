@@ -192,6 +192,26 @@ export const tools = [
     },
   },
   {
+    name: "wpp.find_text",
+    description: "Find text in a WPS Writer document using the normalized Writer text model.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, query: { type: "string" }, matchCase: { type: "boolean" }, matchWholeWord: { type: "boolean" }, maxResults: { type: "number" } },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.replace_text",
+    description: "Replace text in WPS Writer while preserving surrounding paragraph and table formatting where the host permits.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, findText: { type: "string" }, replaceText: { type: "string" }, occurrence: { type: ["string", "number"] }, index: { type: "number" }, matchCase: { type: "boolean" }, matchWholeWord: { type: "boolean" } },
+      required: ["findText", "replaceText"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "wpp.read_format",
     description: "Read font and paragraph formatting from the current WPS Writer selection.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
@@ -202,6 +222,26 @@ export const tools = [
     inputSchema: {
       type: "object",
       properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.read_table_cell",
+    description: "Read one WPS Writer table cell by one-based table, row, and column, including merge and format metadata.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, row: { type: "number" }, column: { type: "number" }, col: { type: "number" } },
+      required: ["tableIndex", "row"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.write_table_cell",
+    description: "Write text to one WPS Writer table cell while preserving cell style by default.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, row: { type: "number" }, column: { type: "number" }, col: { type: "number" }, text: { type: "string" }, preserveStyle: { type: "boolean" } },
+      required: ["tableIndex", "row", "text"],
       additionalProperties: false,
     },
   },
@@ -409,6 +449,12 @@ export const tools = [
   {
     name: "wpp.reject_all_revisions",
     description: "Reject all WPS Writer revisions when supported by the host.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+  },
+
+  {
+    name: "wpp.save_document",
+    description: "Save the active WPS Writer document.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
   },
 
