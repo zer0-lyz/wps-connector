@@ -53,7 +53,7 @@ function activeContext() {
 }
 
 async function register() {
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
   await request("/api/sessions/register", {
     method: "POST",
     body: JSON.stringify({
@@ -195,7 +195,9 @@ function execute(command) {
     const page = paragraphs.filter((p) => p.paragraphIndex >= startIndex && p.paragraphIndex <= endIndex).slice(0, maxCount);
     const last = page[page.length - 1]?.paragraphIndex || startIndex - 1;
     const nextStartIndex = last < Math.min(endIndex, paragraphs.length) ? last + 1 : null;
-    return { host: "wpp", paragraphCount: paragraphs.length, count: page.length, startIndex, endIndex, maxCount, nextStartIndex, truncated: nextStartIndex !== null, paragraphs: page };
+    const fields = Array.isArray(command.input.fields) && command.input.fields.length ? command.input.fields : null;
+    const projected = fields ? page.map((item) => Object.fromEntries(fields.map((field) => [field, field === "index" ? item.index : item[field]]).filter((entry) => entry[1] !== undefined))) : page;
+    return { host: "wpp", paragraphCount: paragraphs.length, count: page.length, startIndex, endIndex, maxCount, nextStartIndex, truncated: nextStartIndex !== null, paragraphs: projected };
   }
   if (command.toolName === "wpp.get_paragraph_range") {
     const item = simParagraphItem(command.input.index);
@@ -280,6 +282,16 @@ function execute(command) {
     const format = state.wpp.paragraphFormats[source] || state.wpp.format.paragraph || {};
     const result = execute({ toolName: "wpp.apply_paragraph_format_by_indexes", input: { paragraphIndexes: command.input.targetParagraphIndexes || [], format, dryRun: command.input.dryRun } });
     return { ...result, copied: !result.dryRun && result.applied, sourceParagraphIndex: source, sourceFormat: format, copiedFields: Object.keys(format), targetParagraphIndexes: command.input.targetParagraphIndexes || [] };
+  }
+  if (command.toolName === "wpp.compare_paragraph_format") {
+    const source = simIndex(command.input.sourceParagraphIndex, "sourceParagraphIndex");
+    const sourceFormat = state.wpp.paragraphFormats[source] || state.wpp.format.paragraph || {};
+    const comparisons = (command.input.targetParagraphIndexes || []).map((index) => {
+      const targetFormat = state.wpp.paragraphFormats[index] || state.wpp.format.paragraph || {};
+      const diffs = Object.keys(sourceFormat).filter((field) => String(sourceFormat[field]) !== String(targetFormat[field])).map((field) => ({ field, source: sourceFormat[field], target: targetFormat[field] }));
+      return { paragraphIndex: index, matches: diffs.length === 0, differingFields: diffs.map((diff) => diff.field), diffs, textPreview: simParagraphItem(index).preview, format: targetFormat };
+    });
+    return { host: "wpp", sourceParagraphIndex: source, sourceFormat, targetParagraphIndexes: command.input.targetParagraphIndexes || [], allMatch: comparisons.every((item) => item.matches), comparisons };
   }
 
 

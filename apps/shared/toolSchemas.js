@@ -2,7 +2,8 @@ const scalarCellSchema = { type: ["string", "number", "boolean", "null"] };
 const matrixSchema = { type: "array", items: { type: "array", items: scalarCellSchema } };
 const tableFormatSchema = { type: "object", additionalProperties: true };
 const textFormatSchema = { type: "object", properties: { fontName: { type: "string" }, fontSize: { type: "number" }, bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" }, color: { type: "string" }, highlightColor: { type: "string" } }, additionalProperties: false };
-const paragraphFormatSchema = { type: "object", properties: { alignment: { type: "string" }, lineSpacing: { type: "number" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" } }, additionalProperties: false };
+const paragraphFormatSchema = { type: "object", properties: { alignment: { type: "string" }, lineSpacing: { type: "number" }, lineSpacingRule: { type: ["string", "number"] }, lineSpacingValue: { type: "number" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" } }, additionalProperties: false };
+const fontFormatSchema = { type: "object", properties: { fontName: { type: "string" }, fontSize: { type: "number" }, bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" }, color: { type: "string" } }, additionalProperties: false };
 
 export const tools = [
   {
@@ -232,7 +233,7 @@ export const tools = [
   {
     name: "wpp.list_paragraphs",
     description: "List WPS Writer paragraphs with stable pagination, text previews, ranges, style metadata, and optional paragraph format summaries.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, startIndex: { type: "number" }, endIndex: { type: "number" }, rangeMode: { type: "string" }, maxCount: { type: "number" }, includeFormatSummary: { type: "boolean" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, startIndex: { type: "number" }, endIndex: { type: "number" }, rangeMode: { type: "string" }, maxCount: { type: "number" }, includeFormatSummary: { type: "boolean" }, fields: { type: "array", items: { type: "string" } } }, additionalProperties: false },
   },
   {
     name: "wpp.get_paragraph_range",
@@ -323,12 +324,17 @@ export const tools = [
   {
     name: "wpp.apply_paragraph_format_by_indexes",
     description: "Apply paragraph formatting to one or more one-based WPS Writer paragraph indexes without relying on the current selection.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, font: fontFormatSchema, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, additionalProperties: false },
   },
   {
     name: "wpp.copy_paragraph_format",
     description: "Copy paragraph formatting from one source paragraph to target paragraph indexes or a paragraph range without changing document text.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, fields: { type: "array", items: { type: "string" } }, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, required: ["sourceParagraphIndex"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, includeFont: { type: "boolean" }, fields: { type: "array", items: { type: "string" } }, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, required: ["sourceParagraphIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.compare_paragraph_format",
+    description: "Compare paragraph formatting between a source paragraph and target paragraphs, returning per-target differing fields.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, includeFont: { type: "boolean" }, fields: { type: "array", items: { type: "string" } } }, required: ["sourceParagraphIndex"], additionalProperties: false },
   },
   {
     name: "wpp.read_table",

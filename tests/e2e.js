@@ -116,7 +116,7 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_document_text"), "MCP tools/list missed wpp.read_document_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.find_text"), "MCP tools/list missed wpp.find_text.");
-  for (const name of ["wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
+  for (const name of ["wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.compare_paragraph_format", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wpp.replace_text"), "MCP tools/list missed wpp.replace_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_cell"), "MCP tools/list missed wpp.read_table_cell.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.write_table_cell"), "MCP tools/list missed wpp.write_table_cell.");
@@ -411,21 +411,33 @@ async function main() {
 
   const wppParagraphPage = await request("/api/tools/wpp/list_paragraphs", {
     method: "POST",
-    body: JSON.stringify({ sessionId: "test-wpp-session", start: 1, maxCount: 2, includeFormatSummary: true }),
+    body: JSON.stringify({ sessionId: "test-wpp-session", start: 1, maxCount: 2, fields: ["index", "text", "range", "formatSummary"] }),
   });
-  assert(wppParagraphPage.count === 2 && wppParagraphPage.nextStartIndex === 3, "WPP list_paragraphs pagination did not return the next paragraph cursor.");
+  assert(wppParagraphPage.count === 2 && wppParagraphPage.nextStartIndex === 3 && wppParagraphPage.paragraphs[0].styleName === undefined, "WPP list_paragraphs lightweight pagination did not return the expected field projection.");
 
   const wppBatchParagraphFormat = await request("/api/tools/wpp/apply_paragraph_format_by_indexes", {
     method: "POST",
-    body: JSON.stringify({ sessionId: "test-wpp-session", paragraphIndexes: [1], format: { alignment: "left", firstLineIndent: 24, lineSpacing: 1.4, spaceBefore: 0, spaceAfter: 6 } }),
+    body: JSON.stringify({ sessionId: "test-wpp-session", paragraphIndexes: [1], format: { alignment: "left", firstLineIndent: 24, lineSpacingRule: "multiple", lineSpacingValue: 1.5, spaceBefore: 0, spaceAfter: 6 } }),
   });
-  assert(wppBatchParagraphFormat.applied === true && wppBatchParagraphFormat.affectedParagraphs?.[0]?.effectiveFormat?.firstLineIndent === 24, "WPP apply_paragraph_format_by_indexes did not apply firstLineIndent.");
+  assert(wppBatchParagraphFormat.applied === true && wppBatchParagraphFormat.affectedParagraphs?.[0]?.effectiveFormat?.firstLineIndent === 24 && wppBatchParagraphFormat.affectedParagraphs?.[0]?.effectiveFormat?.lineSpacingValue === 1.5, "WPP apply_paragraph_format_by_indexes did not apply firstLineIndent and lineSpacingValue.");
 
-  const wppCopyParagraphFormat = await request("/api/tools/wpp/copy_paragraph_format", {
+  const wppCompareBeforeCopy = await request("/api/tools/wpp/compare_paragraph_format", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", sourceParagraphIndex: 1, targetParagraphIndexes: [2, 3] }),
   });
+  assert(wppCompareBeforeCopy.allMatch === false && wppCompareBeforeCopy.comparisons?.some((item) => item.differingFields.includes("firstLineIndent")), "WPP compare_paragraph_format did not detect pre-copy differences.");
+
+  const wppCopyParagraphFormat = await request("/api/tools/wpp/copy_paragraph_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", sourceParagraphIndex: 1, targetParagraphIndexes: [2, 3], includeFont: false }),
+  });
   assert(wppCopyParagraphFormat.copied === true && wppCopyParagraphFormat.perParagraphFormats?.every((p) => p.format.firstLineIndent === 24), "WPP copy_paragraph_format did not copy paragraph format to targets.");
+
+  const wppCompareAfterCopy = await request("/api/tools/wpp/compare_paragraph_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", sourceParagraphIndex: 1, targetParagraphIndexes: [2, 3] }),
+  });
+  assert(wppCompareAfterCopy.allMatch === true, "WPP compare_paragraph_format did not confirm copied paragraph formats.");
 
   const wppReadCopiedParagraphFormat = await request("/api/tools/wpp/read_paragraph_format", {
     method: "POST",

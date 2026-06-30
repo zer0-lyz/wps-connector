@@ -47,11 +47,7 @@ Use the WPS Connector MCP server exposed by this plugin. Runtime files live at $
 
 Before calling live WPS tools, run wps.connection_status (or wps_connection_status) with onlyOnline:true and the expected host/project/thread selector. Use recommendedSession.sessionId only when issues is empty. For project-specific work, require the WPS session binding to match the Codex project/thread to avoid cross-window routing.
 
-Fallback CLI for non-MCP agents:
-
-```bash
-node $RUNTIME_ROOT/scripts/agent-connection-status.js --onlyOnline --host wpp
-```
+Fallback CLI for non-MCP agents: node $RUNTIME_ROOT/scripts/agent-connection-status.js --onlyOnline --host wpp
 EOF_SKILL
 
 printf 'Deployed WPS Connector runtime to %s\n' "$RUNTIME_ROOT"
