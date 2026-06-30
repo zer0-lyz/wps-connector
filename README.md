@@ -116,8 +116,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.24`
-- clientBuild: `2026.06.30-writer-paragraph-format-diff.1`
+- UI/clientVersion: `v1.0.25`
+- clientBuild: `2026.06.30-writer-paragraph-format-fast.1`
 
 ## Current Tool Surface
 

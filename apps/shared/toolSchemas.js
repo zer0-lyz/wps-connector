@@ -324,17 +324,22 @@ export const tools = [
   {
     name: "wpp.apply_paragraph_format_by_indexes",
     description: "Apply paragraph formatting to one or more one-based WPS Writer paragraph indexes without relying on the current selection.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, font: fontFormatSchema, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, font: fontFormatSchema, dryRun: { type: "boolean" }, preview: { type: "boolean" }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, additionalProperties: false },
   },
   {
     name: "wpp.copy_paragraph_format",
     description: "Copy paragraph formatting from one source paragraph to target paragraph indexes or a paragraph range without changing document text.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, includeFont: { type: "boolean" }, fields: { type: "array", items: { type: "string" } }, dryRun: { type: "boolean" }, preview: { type: "boolean" } }, required: ["sourceParagraphIndex"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, includeFont: { type: "boolean" }, fields: { type: "array", items: { type: "string" } }, dryRun: { type: "boolean" }, preview: { type: "boolean" }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, required: ["sourceParagraphIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.copy_selected_paragraph_format_to_indexes",
+    description: "Copy paragraph formatting from the current selected paragraph to target paragraph indexes or a paragraph range without changing document text.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, includeFont: { type: "boolean" }, fields: { type: "array", items: { type: "string" } }, dryRun: { type: "boolean" }, preview: { type: "boolean" }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, additionalProperties: false },
   },
   {
     name: "wpp.compare_paragraph_format",
     description: "Compare paragraph formatting between a source paragraph and target paragraphs, returning per-target differing fields.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, includeFont: { type: "boolean" }, fields: { type: "array", items: { type: "string" } } }, required: ["sourceParagraphIndex"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, includeFont: { type: "boolean" }, fields: { type: "array", items: { type: "string" } }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, required: ["sourceParagraphIndex"], additionalProperties: false },
   },
   {
     name: "wpp.read_table",
@@ -647,7 +652,7 @@ export const tools = [
     description: "Set paragraph formatting for the current selection or optional normalized start/end range. Supports legacy top-level fields and format object.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, format: paragraphFormatSchema, alignment: { type: "string" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, lineSpacing: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" } },
+      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, alignment: { type: "string" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, lineSpacing: { type: "number" }, lineSpacingRule: { type: ["string", "number"] }, lineSpacingValue: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } },
       additionalProperties: false,
     },
   },
