@@ -1,28 +1,31 @@
-# WPS Connector Codex Plugin
+# WPS Connector Plugin
 
-This plugin gives Codex an MCP entrypoint for WPS Writer and WPS Spreadsheet.
+This plugin exposes the local WPS Connector runtime to Codex through MCP.
 
-## One-Command Install From A Cloned Repo
-
-From the repository root:
+Runtime files live in:
 
 ```bash
-bash scripts/bootstrap-mac.sh
+/Users/lin/.local/share/wps-connector/runtime
 ```
 
-The bootstrap script installs both sides:
+The OneDrive project folder is source code and documentation only. Do not use it as the live runtime directory.
 
-- Codex plugin source into `~/plugins/wps-connector`.
-- Personal Codex marketplace entry in `~/.agents/plugins/marketplace.json`.
-- Codex plugin cache through `codex plugin add wps-connector@personal` when the Codex CLI is available.
-- WPS runtime into `~/.local/share/wps-connector/runtime`.
-- LaunchAgent services for the bridge at `http://127.0.0.1:40215` and add-in server at `http://127.0.0.1:3891`.
+The bundled MCP configuration points Codex to:
 
-## Use
+```bash
+/Users/lin/.local/share/wps-connector/runtime/apps/mcp/server.js
+```
 
-1. Open WPS Writer or WPS Spreadsheet.
-2. Open the WPS Connector Pane from the installed WPS add-in entry.
-3. Bind the document to a Codex project/thread if needed.
-4. In Codex, call `wps.list_sessions` / `wps_list_sessions` and operate on the bound session.
+The bridge and add-in services should be managed by LaunchAgent after installation:
 
-WPS add-in loading is host-version dependent. If WPS keeps an old WebView script, reopen the Connector Pane or restart WPS after upgrades.
+```bash
+cd /Users/lin/.local/share/wps-connector/runtime
+npm run launchd:install
+```
+
+Health checks:
+
+```bash
+curl http://127.0.0.1:40215/api/health
+curl http://127.0.0.1:3891/health
+```
