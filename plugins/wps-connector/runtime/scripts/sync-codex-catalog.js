@@ -1,7 +1,11 @@
 import { readdir, readFile, writeFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
+
+const execFileAsync = promisify(execFile);
 
 function argValue(name, fallback = "") {
   const idx = process.argv.indexOf(name);
@@ -18,6 +22,9 @@ function titleFromText(text) {
   const cleaned = String(text || "").replace(/\s+/g, " ").trim();
   if (!cleaned || cleaned.startsWith("# AGENTS.md") || cleaned.startsWith("<")) return "";
   return cleaned.length > 120 ? `${cleaned.slice(0, 117)}...` : cleaned;
+}
+function normPath(value) {
+  return String(value || "").replace(/\/$/, "");
 }
 async function walk(dir, out = []) {
   let entries = [];
@@ -40,8 +47,28 @@ function promptHistoryTitle(globalState, id) {
   const prompts = history[id] || [];
   return titleFromText(prompts[0] || "");
 }
-async function parseThreadFile(path, existingTitle, globalState) {
-  const thread = { id: "", hostId: "local", title: "", preview: "", cwd: "", status: "active", createdAt: "", updatedAt: "" };
+function msToIso(value, fallback = "") {
+  const n = Number(value || 0);
+  return n > 0 ? isoLocal(new Date(n)) : fallback;
+}
+async function readCodexThreadIndex(codexHome) {
+  const dbPath = join(codexHome, "state_5.sqlite");
+  if (!existsSync(dbPath)) return { byId: new Map(), rows: [] };
+  const sql = [
+    "select id,cwd,title,preview,created_at_ms,updated_at_ms,recency_at_ms,rollout_path",
+    "from threads where cwd<>'' and archived=0",
+    "order by recency_at_ms desc, updated_at_ms desc, id desc"
+  ].join(" ");
+  try {
+    const { stdout } = await execFileAsync("sqlite3", ["-json", dbPath, sql], { maxBuffer: 1024 * 1024 * 20 });
+    const rows = JSON.parse(stdout || "[]").map((row, index) => ({ ...row, catalogOrder: index }));
+    return { byId: new Map(rows.map((row) => [String(row.id), row])), rows };
+  } catch {
+    return { byId: new Map(), rows: [] };
+  }
+}
+async function parseThreadFile(path, existingTitle, globalState, codexThread) {
+  const thread = { id: "", hostId: "local", title: "", preview: "", cwd: "", status: "active", createdAt: "", updatedAt: "", catalogOrder: 999999 };
   const fileStat = await stat(path);
   thread.updatedAt = isoLocal(fileStat.mtime);
   const raw = await readFile(path, "utf8");
@@ -76,7 +103,18 @@ async function parseThreadFile(path, existingTitle, globalState) {
   }
   if (!thread.id) thread.id = basename(path).match(/rollout-[^-]+-[^-]+-(.+)\.jsonl$/)?.[1] || basename(path, ".jsonl");
   const globalTitle = promptHistoryTitle(globalState, thread.id);
-  thread.title = existingTitle || globalTitle || thread.title || thread.preview || thread.id;
+  if (codexThread) {
+    thread.cwd = String(codexThread.cwd || thread.cwd || "");
+    thread.title = titleFromText(codexThread.title) || globalTitle || thread.title || thread.preview || existingTitle || thread.id;
+    thread.preview = titleFromText(codexThread.preview) || thread.preview || thread.title;
+    thread.createdAt = msToIso(codexThread.created_at_ms, thread.createdAt);
+    thread.updatedAt = msToIso(codexThread.updated_at_ms, thread.updatedAt);
+    thread.recencyAt = msToIso(codexThread.recency_at_ms, thread.updatedAt);
+    thread.catalogOrder = Number(codexThread.catalogOrder ?? thread.catalogOrder);
+  } else {
+    thread.title = globalTitle || thread.title || thread.preview || existingTitle || thread.id;
+    thread.recencyAt = thread.updatedAt;
+  }
   thread.preview = thread.preview || thread.title;
   thread.createdAt = thread.createdAt || thread.updatedAt;
   return thread.cwd ? thread : null;
@@ -91,19 +129,40 @@ async function main() {
   const existing = await readExistingCatalog(output);
   const existingTitles = new Map((existing.threads || []).map((thread) => [thread.id, thread.title]).filter(([id]) => id));
   const globalState = await readGlobalState(codexHome);
+  const projectOrder = new Map((globalState?.["project-order"] || []).map((path, index) => [String(path).replace(/\/$/, ""), index]));
+  const codexThreads = await readCodexThreadIndex(codexHome);
   const files = await walk(join(codexHome, "sessions"));
   const parsed = [];
   for (const file of files) {
-    const thread = await parseThreadFile(file, existingTitles.get(basename(file, ".jsonl").split("-").slice(-5).join("-")), globalState);
+    const id = basename(file, ".jsonl").split("-").slice(-5).join("-");
+    const thread = await parseThreadFile(file, existingTitles.get(id), globalState, codexThreads.byId.get(id));
     if (thread) parsed.push(thread);
+  }
+  for (const row of codexThreads.rows) {
+    if (!row?.id || parsed.some((thread) => thread.id === row.id)) continue;
+    parsed.push({
+      id: String(row.id),
+      hostId: "local",
+      title: titleFromText(row.title) || String(row.id),
+      preview: titleFromText(row.preview) || titleFromText(row.title) || String(row.id),
+      cwd: String(row.cwd || ""),
+      status: "active",
+      createdAt: msToIso(row.created_at_ms),
+      updatedAt: msToIso(row.updated_at_ms),
+      recencyAt: msToIso(row.recency_at_ms, msToIso(row.updated_at_ms)),
+      catalogOrder: Number(row.catalogOrder ?? 999999)
+    });
   }
   const threadMap = new Map();
   for (const thread of parsed) threadMap.set(thread.id, thread);
-  const threads = [...threadMap.values()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  const threads = [...threadMap.values()].sort((a, b) => Number(a.catalogOrder ?? 999999) - Number(b.catalogOrder ?? 999999) || Date.parse(b.recencyAt || b.updatedAt) - Date.parse(a.recencyAt || a.updatedAt));
   const projectMap = new Map();
   for (const project of existing.projects || []) if (project?.path || project?.projectId) projectMap.set(project.path || project.projectId, project);
   for (const thread of threads) if (thread.cwd) projectMap.set(thread.cwd, projectMap.get(thread.cwd) || projectFromCwd(thread.cwd));
-  const catalog = { updatedAt: isoLocal(), source: "local ~/.codex session scan", projects: [...projectMap.values()], threads };
+  const projects = [...projectMap.values()]
+    .map((project) => ({ ...project, catalogOrder: projectOrder.has(normPath(project.path || project.projectId)) ? projectOrder.get(normPath(project.path || project.projectId)) : 999999 }))
+    .sort((a, b) => Number(a.catalogOrder ?? 999999) - Number(b.catalogOrder ?? 999999) || String(a.label || a.projectId || "").localeCompare(String(b.label || b.projectId || ""), "zh-Hans-CN"));
+  const catalog = { updatedAt: isoLocal(), source: "local Codex state_5.sqlite + ~/.codex session scan", projects, threads };
   await writeFile(output, `${JSON.stringify(catalog, null, 2)}\n`);
   console.log(JSON.stringify({ ok: true, output, projectCount: catalog.projects.length, threadCount: catalog.threads.length, updatedAt: catalog.updatedAt }, null, 2));
 }
