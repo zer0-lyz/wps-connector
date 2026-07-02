@@ -197,20 +197,19 @@ export const tools = [
   },
   {
     name: "wpp.read_document_text",
-    description: "Read text from the active WPS Writer document, with optional start/end character offsets.",
+    description: "Read text from the active WPS Writer document, with optional start/end offsets and revision view mode.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, maxLength: { type: "number" } },
+      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, maxLength: { type: "number" }, viewMode: { type: "string" } },
       additionalProperties: false,
     },
   },
   {
     name: "wpp.select_range",
-    description: "Select a character range in the active WPS Writer document.",
+    description: "Select a character range or rangeId in the active WPS Writer document.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" } },
-      required: ["start", "end"],
+      properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, rangeId: { type: "string" }, expectedText: { type: "string" }, failOnInexact: { type: "boolean" } },
       additionalProperties: false,
     },
   },
@@ -233,7 +232,7 @@ export const tools = [
   {
     name: "wpp.list_paragraphs",
     description: "List WPS Writer paragraphs with stable pagination, text previews, ranges, style metadata, and optional paragraph format summaries.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, startIndex: { type: "number" }, endIndex: { type: "number" }, rangeMode: { type: "string" }, maxCount: { type: "number" }, includeFormatSummary: { type: "boolean" }, fields: { type: "array", items: { type: "string" } } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, start: { type: "number" }, end: { type: "number" }, startIndex: { type: "number" }, endIndex: { type: "number" }, rangeMode: { type: "string" }, maxCount: { type: "number" }, maxMs: { type: "number" }, lightweight: { type: "boolean" }, includeFormatSummary: { type: "boolean" }, fields: { type: "array", items: { type: "string" } } }, additionalProperties: false },
   },
   {
     name: "wpp.get_paragraph_range",
@@ -247,11 +246,21 @@ export const tools = [
   },
   {
     name: "wpp.find_text",
-    description: "Find text in a WPS Writer document using the normalized Writer text model.",
+    description: "Find text in a WPS Writer document using native WPS Find by default and return reusable rangeIds.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, query: { type: "string" }, matchCase: { type: "boolean" }, matchWholeWord: { type: "boolean" }, maxResults: { type: "number" } },
+      properties: { sessionId: { type: "string" }, query: { type: "string" }, matchCase: { type: "boolean" }, matchWholeWord: { type: "boolean" }, maxResults: { type: "number" }, viewMode: { type: "string" }, preferNormalized: { type: "boolean" } },
       required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.replace_between_anchors",
+    description: "Atomically replace the current visible text between two native WPS Writer text anchors.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, startAnchorText: { type: "string" }, endAnchorText: { type: "string" }, includeStart: { type: "boolean" }, includeEnd: { type: "boolean" }, occurrence: { type: ["string", "number"] }, index: { type: "number" }, endOccurrence: { type: ["string", "number"] }, endIndex: { type: "number" }, replacementText: { type: "string" }, verifyVisibleText: { type: "boolean" }, verifyMaxLength: { type: "number" }, matchCase: { type: "boolean" }, matchWholeWord: { type: "boolean" }, viewMode: { type: "string" }, maxResults: { type: "number" } },
+      required: ["startAnchorText", "endAnchorText", "replacementText"],
       additionalProperties: false,
     },
   },
@@ -626,7 +635,7 @@ export const tools = [
   {
     name: "wpp.save_document",
     description: "Save the active WPS Writer document.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, readbackVisibleText: { type: "boolean" }, checksum: { type: "boolean" }, maxLength: { type: "number" } }, additionalProperties: false },
   },
 
   {

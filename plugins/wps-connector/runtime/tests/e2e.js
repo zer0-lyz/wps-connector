@@ -118,6 +118,7 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.find_text"), "MCP tools/list missed wpp.find_text.");
   for (const name of ["wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wpp.replace_text"), "MCP tools/list missed wpp.replace_text.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.replace_between_anchors"), "MCP tools/list missed wpp.replace_between_anchors.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_cell"), "MCP tools/list missed wpp.read_table_cell.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.write_table_cell"), "MCP tools/list missed wpp.write_table_cell.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.save_document"), "MCP tools/list missed wpp.save_document.");
@@ -499,7 +500,13 @@ async function main() {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", query: "测试" }),
   });
-  assert(wppFindText.count >= 1 && wppFindText.results?.[0]?.text === "测试", "WPP find_text did not find inserted document text.");
+  assert(wppFindText.count >= 1 && wppFindText.results?.[0]?.text === "测试" && wppFindText.results?.[0]?.rangeId, "WPP find_text did not find inserted document text with a rangeId.");
+
+  const wppSelectFoundRange = await request("/api/tools/wpp/select_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", rangeId: wppFindText.results[0].rangeId, expectedText: "测试", failOnInexact: true }),
+  });
+  assert(wppSelectFoundRange.exactMatch === true && wppSelectFoundRange.resolvedText === "测试", "WPP select_range did not select the find_text rangeId exactly.");
 
   const wppReplaceText = await request("/api/tools/wpp/replace_text", {
     method: "POST",
@@ -512,6 +519,12 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-wpp-session", query: "验收" }),
   });
   assert(wppFindAfterReplace.count >= 1, "WPP find_text did not find replacement text.");
+
+  const wppReplaceBetweenAnchors = await request("/api/tools/wpp/replace_between_anchors", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", startAnchorText: "验收", endAnchorText: "插入", replacementText: "", includeStart: false, includeEnd: false, verifyVisibleText: true }),
+  });
+  assert(wppReplaceBetweenAnchors.replaced === true && wppReplaceBetweenAnchors.verification?.containsReplacement === true, "WPP replace_between_anchors did not replace and verify visible text.");
 
   const wppMissingText = await rawRequest("/api/tools/wpp/replace_text", {
     method: "POST",
@@ -800,9 +813,9 @@ async function main() {
 
   const wppSave = await request("/api/tools/wpp/save_document", {
     method: "POST",
-    body: JSON.stringify({ sessionId: "test-wpp-session" }),
+    body: JSON.stringify({ sessionId: "test-wpp-session", checksum: true }),
   });
-  assert(wppSave.saved === true && wppSave.path && wppSave.savedAt, "WPP save_document did not return save metadata.");
+  assert(wppSave.saved === true && wppSave.path && wppSave.savedAt && wppSave.readbackVisibleText?.checksum, "WPP save_document did not return save metadata and checksum.");
 
   const wppBadTable = await rawRequest("/api/tools/wpp/insert_table", {
     method: "POST",
