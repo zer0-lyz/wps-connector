@@ -130,6 +130,8 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_format"), "MCP tools/list missed wpp.read_table_format.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.copy_table_style"), "MCP tools/list missed wpp.copy_table_style.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.duplicate_table_appearance"), "MCP tools/list missed wpp.duplicate_table_appearance.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_with_layout"), "MCP tools/list missed wpp.insert_table_with_layout.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.reset_table_layout"), "MCP tools/list missed wpp.reset_table_layout.");
   assert(listedTools.tools.some((tool) => tool.name === "wps.connection_status"), "MCP tools/list missed wps.connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_connection_status"), "MCP tools/list missed underscore alias wps_connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_list_sessions"), "MCP tools/list missed underscore alias wps_list_sessions.");
@@ -741,28 +743,48 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, columnWidths: [{ column: 1, width: 88 }, { column: 2, width: 99 }] }),
   });
   assert(wppSetWidths.appliedColumns?.length === 2, "WPP set_column_widths did not apply widths.");
+  assert(wppSetWidths.verifiedColumns?.length === 2 && Array.isArray(wppSetWidths.results), "WPP set_column_widths did not return readback verification.");
+
+  const wppLayoutTable = await request("/api/tools/wpp/insert_table_with_layout", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", rowCount: 3, columnCount: 7, values: [["H1", "H2", "H3", "H4", "H5", "H6", "H7"], ["A", "B", "C", "D", "E", "F", "G"], ["1", "2", "3", "4", "5", "6", "7"]], fitToPageWidth: true, firstColumnWidth: 90, equalDataColumnWidths: 54, fontName: "宋体", fontSize: 10.5, horizontalText: true, rowHeightRule: "auto", cellPadding: { left: 4, right: 4 }, border: true, headerRowBold: true }),
+  });
+  assert(wppLayoutTable.insertedTableWithLayout === true && wppLayoutTable.columnCount === 7, "WPP insert_table_with_layout did not create 7-column layout table.");
+  assert(wppLayoutTable.widthResult?.verifiedColumns?.length === 7, "WPP insert_table_with_layout did not verify column widths.");
+
+  const wppResetLayout = await request("/api/tools/wpp/reset_table_layout", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: wppLayoutTable.tableIndex, fitToPageWidth: true, horizontalText: true, rowHeightRule: "auto" }),
+  });
+  assert(wppResetLayout.resetLayout === true && !wppResetLayout.warnings?.length, "WPP reset_table_layout did not reset layout cleanly.");
 
   const wppSecondTable = await request("/api/tools/wpp/insert_table", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", rowCount: 2, columnCount: 2, values: [["T2A", "T2B"], ["T2C", "T2D"]], border: false }),
   });
-  assert(wppSecondTable.tableIndex === 2, "WPP second insert_table did not create table 2.");
+  assert(wppSecondTable.tableIndex > wppLayoutTable.tableIndex, "WPP second insert_table did not create a later table.");
 
   const wppDuplicateAppearance = await request("/api/tools/wpp/duplicate_table_appearance", {
     method: "POST",
-    body: JSON.stringify({ sessionId: "test-wpp-session", sourceTableIndex: 1, targetTableIndex: 2, keepContent: true }),
+    body: JSON.stringify({ sessionId: "test-wpp-session", sourceTableIndex: 1, targetTableIndex: wppSecondTable.tableIndex, keepContent: true }),
   });
   assert(wppDuplicateAppearance.duplicatedAppearance === true && wppDuplicateAppearance.keepContent === true, "WPP duplicate_table_appearance did not confirm copy.");
 
+  const wppSafeCopy = await request("/api/tools/wpp/copy_table_style", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", sourceTableIndex: 1, targetTableIndex: wppSecondTable.tableIndex }),
+  });
+  assert(wppSafeCopy.copied === true && wppSafeCopy.layoutCopied === false, "WPP copy_table_style default should not copy layout dimensions.");
+
   const wppSecondRead = await request("/api/tools/wpp/read_table", {
     method: "POST",
-    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 2 }),
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: wppSecondTable.tableIndex }),
   });
   assert(wppSecondRead.values?.[0]?.[0] === "T2A" && wppSecondRead.values?.[1]?.[1] === "T2D", "WPP duplicate_table_appearance changed target table content.");
 
   const wppSecondFormat = await request("/api/tools/wpp/read_table_format", {
     method: "POST",
-    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 2 }),
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: wppSecondTable.tableIndex }),
   });
   assert(wppSecondFormat.format?.table?.alignment === wppTableFormat.format?.table?.alignment, "WPP copied table format did not match source alignment.");
 

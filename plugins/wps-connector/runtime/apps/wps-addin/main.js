@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.30";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.02-pane-scroll-version.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.31";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.02-writer-table-layout.1";
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
 let wpsConnectorCurrentDocumentKey = "";
@@ -281,7 +281,7 @@ function wpsConnectorScope() {
   const documentIdentity = wpsConnectorDocumentIdentity(app, host);
   const documentKey = wpsConnectorDocumentKey(host, documentIdentity);
   const sessionId = `wps-${host}-${wpsConnectorHash(documentKey)}`;
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
   return { app, host, documentIdentity, documentKey, sessionId, capabilities };
 }
 async function wpsConnectorRegister() {
@@ -1716,9 +1716,13 @@ function wpsConnectorWppFormatTable(input = {}) {
   const align = wpsConnectorWppAlignment(input.alignment);
   if (align !== undefined) { try { table.Range.ParagraphFormat.Alignment = align; applied.push("alignment"); } catch {} }
   if (input.headerRowBold !== undefined) { try { table.Rows.Item(1).Range.Font.Bold = input.headerRowBold ? -1 : 0; applied.push("headerRowBold"); } catch {} }
-  if (input.autofit) {
-    try { table.AutoFitBehavior?.(1); applied.push("autofit"); } catch {}
-  }
+  if (input.fontName) { try { table.Range.Font.Name = String(input.fontName); applied.push("fontName"); } catch {} }
+  if (input.fontSize) { try { table.Range.Font.Size = Number(input.fontSize); applied.push("fontSize"); } catch {} }
+  if (input.cellPadding) applied.push(...wpsConnectorWppApplyTablePadding(table, input.cellPadding));
+  if (input.textDirection || input.horizontalText) applied.push(...wpsConnectorWppSetTableTextDirection(table, "horizontal"));
+  if (input.rowHeightRule) applied.push(...wpsConnectorWppSetTableRowHeightRule(table, input.rowHeightRule));
+  if (input.fitToWindow || input.fitToPageWidth || input.preferredWidthPercent) applied.push(...wpsConnectorWppFitTableToPage(table, input.preferredWidthPercent || 100));
+  if (input.autofit) { try { table.AutoFitBehavior?.(1); applied.push("autofit"); } catch {} }
   return { host: "wpp", formattedTable: true, tableIndex, applied, ...wpsConnectorWppTableSize(table) };
 }
 function wpsConnectorSafeGet(object, name) { try { return object ? wpsConnectorMember(object, name) : null; } catch { return null; } }
@@ -1793,6 +1797,61 @@ function wpsConnectorApplyWppCellFormat(cell, format = {}) {
   for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"]]) if (wpsConnectorSafeSet(cell, prop, p[key])) applied.push(`cell.padding.${key}`);
   return applied;
 }
+function wpsConnectorWppApplyTablePadding(table, padding = {}) {
+  const applied = [];
+  for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"], ["spacing", "Spacing"]]) if (wpsConnectorSafeSet(table, prop, padding[key])) applied.push(`table.padding.${key}`);
+  return applied;
+}
+function wpsConnectorWppFitTableToPage(table, percent = 100) {
+  const applied = [];
+  try { table.AllowAutoFit = true; applied.push("allowAutoFit"); } catch {}
+  try { table.AutoFitBehavior?.(2); applied.push("fitToWindow"); } catch {}
+  try { table.PreferredWidthType = 2; applied.push("preferredWidthTypePercent"); } catch {}
+  try { table.PreferredWidth = Number(percent) || 100; applied.push("preferredWidthPercent"); } catch {}
+  return applied;
+}
+function wpsConnectorWppSetTableRowHeightRule(table, rule = "auto") {
+  const applied = [];
+  const value = String(rule).toLowerCase() === "exactly" ? 2 : String(rule).toLowerCase() === "atleast" || String(rule).toLowerCase() === "at_least" ? 1 : 0;
+  try { table.Rows.HeightRule = value; applied.push("rows.heightRule"); } catch {}
+  if (value === 0) { try { table.Rows.Height = 0; applied.push("rows.heightAuto"); } catch {} }
+  const count = Number(wpsConnectorMember(wpsConnectorSafeGet(table, "Rows"), "Count") || 0);
+  for (let i = 1; i <= count; i += 1) { try { table.Rows.Item(i).HeightRule = value; } catch {}; if (value === 0) { try { table.Rows.Item(i).Height = 0; } catch {} } }
+  return applied;
+}
+function wpsConnectorWppSetTableTextDirection(table, direction = "horizontal") {
+  const applied = [];
+  const value = String(direction).toLowerCase() === "vertical" ? 1 : 0;
+  const size = wpsConnectorWppTableSize(table);
+  try { table.Range.Orientation = value; applied.push("table.range.orientation"); } catch {}
+  for (let r = 1; r <= size.rowCount; r += 1) for (let c = 1; c <= size.columnCount; c += 1) { try { table.Cell(r, c).Range.Orientation = value; } catch {}; try { table.Cell(r, c).Range.TextDirection = value; } catch {} }
+  applied.push("cells.textDirection");
+  return applied;
+}
+function wpsConnectorWppBuildColumnWidths(columnCount, input = {}) {
+  if (Array.isArray(input.columnWidths) || Array.isArray(input.columns)) return input.columnWidths || input.columns;
+  const first = Number(input.firstColumnWidth || 0);
+  const equal = Number(input.equalDataColumnWidths || 0);
+  if (!first && !equal) return [];
+  const out = [];
+  for (let c = 1; c <= columnCount; c += 1) out.push({ column: c, width: c === 1 && first ? first : equal || first });
+  return out;
+}
+function wpsConnectorWppNormalizeReadWidth(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
+}
+function wpsConnectorWppResetTableLayout(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const applied = [];
+  if (input.fitToPageWidth !== false) applied.push(...wpsConnectorWppFitTableToPage(table, input.preferredWidthPercent || 100));
+  if (input.rowHeightRule !== false) applied.push(...wpsConnectorWppSetTableRowHeightRule(table, input.rowHeightRule || "auto"));
+  if (input.horizontalText !== false) applied.push(...wpsConnectorWppSetTableTextDirection(table, "horizontal"));
+  if (input.cellPadding) applied.push(...wpsConnectorWppApplyTablePadding(table, input.cellPadding));
+  const readback = wpsConnectorWppReadTableFormat({ tableIndex });
+  const abnormalRowHeights = (readback.format.rowHeights || []).filter((row) => Number(row.height) >= 999999 || Number(row.height) < 0);
+  return { host: "wpp", tableIndex, resetLayout: true, applied, warnings: abnormalRowHeights.length ? [{ code: "ROW_HEIGHT_READBACK_ABNORMAL", rowHeights: abnormalRowHeights }] : [], formatSummary: { rowHeights: readback.format.rowHeights, columnWidths: readback.format.columnWidths } };
+}
 function wpsConnectorWppReadRowHeights(input = {}) {
   const { table, tableIndex } = wpsConnectorWppTable(input); const { rowCount } = wpsConnectorWppTableSize(table); const rows = [];
   for (let r = 1; r <= rowCount; r += 1) { const row = wpsConnectorSafeGet(table.Rows, "Item", r); rows.push({ row: r, height: wpsConnectorSafeGet(row, "Height"), heightRule: wpsConnectorSafeGet(row, "HeightRule") }); }
@@ -1800,7 +1859,30 @@ function wpsConnectorWppReadRowHeights(input = {}) {
 }
 function wpsConnectorWppSetRowHeights(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const items = input.rowHeights || input.rows || []; const applied = []; for (const item of items) { const rowIndex = wpsConnectorInteger(item.row ?? item.index, "row", 1); wpsConnectorWppAssertCell(table, rowIndex, 1); const row = table.Rows.Item(rowIndex); if (wpsConnectorSafeSet(row, "Height", item.height)) applied.push(rowIndex); wpsConnectorSafeSet(row, "HeightRule", item.heightRule); } return { host: "wpp", tableIndex, appliedRows: applied }; }
 function wpsConnectorWppReadColumnWidths(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const { columnCount } = wpsConnectorWppTableSize(table); const columns = []; for (let c = 1; c <= columnCount; c += 1) { const column = wpsConnectorSafeGet(table.Columns, "Item", c); columns.push({ column: c, width: wpsConnectorSafeGet(column, "Width") }); } return { host: "wpp", tableIndex, columnWidths: columns }; }
-function wpsConnectorWppSetColumnWidths(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const items = input.columnWidths || input.columns || []; const applied = []; for (const item of items) { const columnIndex = wpsConnectorInteger(item.column ?? item.index, "column", 1); wpsConnectorWppAssertCell(table, 1, columnIndex); const column = table.Columns.Item(columnIndex); if (wpsConnectorSafeSet(column, "Width", item.width)) applied.push(columnIndex); } return { host: "wpp", tableIndex, appliedColumns: applied }; }
+function wpsConnectorWppSetColumnWidths(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const items = input.columnWidths || input.columns || [];
+  const applied = [];
+  const results = [];
+  const warnings = [];
+  if (input.disableAutoFit !== false) { try { table.AllowAutoFit = false; } catch {} }
+  for (const item of items) {
+    const columnIndex = wpsConnectorInteger(item.column ?? item.index, "column", 1);
+    const width = Number(item.width);
+    if (!Number.isFinite(width) || width <= 0) wpsConnectorFail("INVALID_ARGUMENT", "column width must be a positive number.", { column: columnIndex, width: item.width });
+    wpsConnectorWppAssertCell(table, 1, columnIndex);
+    let setOk = false;
+    try { const column = table.Columns.Item(columnIndex); setOk = wpsConnectorSafeSet(column, "Width", width); } catch {}
+    if (!setOk) { try { table.Columns.Item(columnIndex).SetWidth?.(width, 0); setOk = true; } catch {} }
+    if (setOk) applied.push(columnIndex);
+    const actual = (() => { try { return wpsConnectorWppNormalizeReadWidth(table.Columns.Item(columnIndex).Width); } catch { return null; } })();
+    const expected = wpsConnectorWppNormalizeReadWidth(width);
+    const verified = actual !== null && expected !== null && Math.abs(actual - expected) <= Number(input.tolerance || 1.5);
+    if (setOk && !verified) warnings.push({ code: "COLUMN_WIDTH_READBACK_MISMATCH", column: columnIndex, expected, actual });
+    results.push({ column: columnIndex, requestedWidth: width, actualWidth: actual, applied: setOk, verified });
+  }
+  return { host: "wpp", tableIndex, appliedColumns: applied, verifiedColumns: results.filter((r) => r.verified).map((r) => r.column), warnings, results };
+}
 function wpsConnectorWppReadMergedCells(input = {}) {
   const { table, tableIndex } = wpsConnectorWppTable(input); const { rowCount, columnCount } = wpsConnectorWppTableSize(table); const mergedCells = [];
   for (let r = 1; r <= rowCount; r += 1) for (let c = 1; c <= columnCount; c += 1) {
@@ -1831,16 +1913,62 @@ function wpsConnectorWppApplyTableFormat(input = {}) {
   return { host: "wpp", tableIndex, applied, ...wpsConnectorWppTableSize(table) };
 }
 function wpsConnectorWppFilterTableFormat(format, scope) {
-  const scopes = new Set(Array.isArray(scope) ? scope : [scope || "all"]); if (scopes.has("all")) return format; const out = { rowCount: format.rowCount, columnCount: format.columnCount };
-  if (scopes.has("table_only")) out.table = format.table; if (scopes.has("cell_style")) out.cells = format.cells; if (scopes.has("row_height")) out.rowHeights = format.rowHeights; if (scopes.has("col_width")) out.columnWidths = format.columnWidths; if (scopes.has("merged_cells")) out.mergedCells = format.mergedCells; return out;
+  const rawScopes = Array.isArray(scope) ? scope : [scope || "style_safe"];
+  const scopes = new Set(rawScopes.flatMap((item) => String(item).split(/[,+]/)).map((item) => item.trim()).filter(Boolean));
+  if (scopes.has("all")) return format;
+  if (scopes.has("style_safe")) ["border", "font", "headerShading", "alignment"].forEach((item) => scopes.add(item));
+  const out = { rowCount: format.rowCount, columnCount: format.columnCount };
+  if (scopes.has("table_only")) out.table = format.table;
+  if (scopes.has("row_height")) out.rowHeights = format.rowHeights;
+  if (scopes.has("col_width")) out.columnWidths = format.columnWidths;
+  if (scopes.has("merged_cells")) out.mergedCells = format.mergedCells;
+  const table = {};
+  if (scopes.has("border")) table.borders = format.table?.borders;
+  if (scopes.has("alignment")) table.alignment = format.table?.alignment;
+  if (Object.keys(table).length) out.table = { ...(out.table || {}), ...table };
+  const cellScopes = new Set(["cell_style", "border", "font", "headerShading", "alignment"]);
+  if ([...scopes].some((item) => cellScopes.has(item))) {
+    out.cells = (format.cells || []).map((cell) => {
+      if (scopes.has("cell_style")) return cell;
+      const next = { row: cell.row, column: cell.column };
+      if (scopes.has("border")) next.borders = cell.borders;
+      if (scopes.has("font")) next.font = cell.font;
+      if (scopes.has("alignment")) { next.paragraph = cell.paragraph; next.verticalAlignment = cell.verticalAlignment; }
+      if (scopes.has("headerShading") && cell.row === 1) { next.shading = cell.shading; next.font = { ...(next.font || {}), bold: cell.font?.bold }; }
+      return next;
+    });
+  }
+  return out;
 }
-function wpsConnectorWppCopyTableStyle(input = {}) { const sourceTableIndex = wpsConnectorInteger(input.sourceTableIndex, "sourceTableIndex", 1); const targetTableIndex = wpsConnectorInteger(input.targetTableIndex, "targetTableIndex", 1); const source = wpsConnectorWppReadTableFormat({ tableIndex: sourceTableIndex }).format; const filtered = wpsConnectorWppFilterTableFormat(source, input.scope || "all"); const result = wpsConnectorWppApplyTableFormat({ tableIndex: targetTableIndex, format: filtered }); return { host: "wpp", copied: true, sourceTableIndex, targetTableIndex, scope: input.scope || "all", applied: result.applied }; }
+function wpsConnectorWppCopyTableStyle(input = {}) {
+  const sourceTableIndex = wpsConnectorInteger(input.sourceTableIndex, "sourceTableIndex", 1);
+  const targetTableIndex = wpsConnectorInteger(input.targetTableIndex, "targetTableIndex", 1);
+  const scope = input.scope || ["border", "font", "headerShading", "alignment"];
+  const source = wpsConnectorWppReadTableFormat({ tableIndex: sourceTableIndex }).format;
+  const filtered = wpsConnectorWppFilterTableFormat(source, scope);
+  const result = wpsConnectorWppApplyTableFormat({ tableIndex: targetTableIndex, format: filtered });
+  return { host: "wpp", copied: true, sourceTableIndex, targetTableIndex, scope, applied: result.applied, layoutCopied: Boolean(filtered.columnWidths || filtered.rowHeights || filtered.mergedCells) };
+}
 function wpsConnectorWppDuplicateTableAppearance(input = {}) { return { ...wpsConnectorWppCopyTableStyle({ sourceTableIndex: input.sourceTableIndex, targetTableIndex: input.targetTableIndex, scope: "all" }), duplicatedAppearance: true, keepContent: input.keepContent !== false }; }
 
 function wpsConnectorPositiveNumber(value, field) {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) wpsConnectorFail("INVALID_ARGUMENT", `${field} must be a positive number.`, { field, value });
   return n;
+}
+function wpsConnectorWppInsertTableWithLayout(input = {}) {
+  const result = wpsConnectorWppInsertTable(input);
+  const tableIndex = result.tableIndex;
+  const applied = [];
+  if (!tableIndex) return { ...result, layoutApplied: false, warnings: [{ code: "TABLE_INDEX_UNAVAILABLE" }] };
+  const reset = wpsConnectorWppResetTableLayout({ tableIndex, fitToPageWidth: input.fitToPageWidth !== false, preferredWidthPercent: input.preferredWidthPercent || 100, horizontalText: input.horizontalText !== false, rowHeightRule: input.rowHeightRule || "auto", cellPadding: input.cellPadding });
+  applied.push(...reset.applied);
+  const fmt = wpsConnectorWppFormatTable({ tableIndex, border: input.border !== false, alignment: input.alignment || "center", headerRowBold: input.headerRowBold !== false, fontName: input.fontName, fontSize: input.fontSize });
+  applied.push(...fmt.applied);
+  const widths = wpsConnectorWppBuildColumnWidths(result.columnCount, input);
+  const widthResult = widths.length ? wpsConnectorWppSetColumnWidths({ tableIndex, columnWidths: widths, disableAutoFit: input.disableAutoFitForWidths !== false, tolerance: input.widthTolerance }) : null;
+  const readback = wpsConnectorWppReadTableFormat({ tableIndex });
+  return { ...result, insertedTableWithLayout: true, layoutApplied: true, applied, widthResult, warnings: [...(reset.warnings || []), ...(widthResult?.warnings || [])], formatSummary: { rowHeights: readback.format.rowHeights, columnWidths: readback.format.columnWidths } };
 }
 function wpsConnectorWppImageSource(input = {}) {
   const source = String(input.path || input.url || "").trim();
@@ -2426,6 +2554,8 @@ async function wpsConnectorExecute(command) {
   if (command.toolName === "wpp.apply_table_format") return wpsConnectorWppApplyTableFormat(command.input || {});
   if (command.toolName === "wpp.copy_table_style") return wpsConnectorWppCopyTableStyle(command.input || {});
   if (command.toolName === "wpp.duplicate_table_appearance") return wpsConnectorWppDuplicateTableAppearance(command.input || {});
+  if (command.toolName === "wpp.insert_table_with_layout") return wpsConnectorWppInsertTableWithLayout(command.input || {});
+  if (command.toolName === "wpp.reset_table_layout") return wpsConnectorWppResetTableLayout(command.input || {});
   if (command.toolName === "wpp.read_cell_format") return wpsConnectorWppReadCellFormat(command.input || {});
   if (command.toolName === "wpp.apply_cell_format") return wpsConnectorWppApplyCellFormat(command.input || {});
   if (command.toolName === "wpp.read_row_heights") return wpsConnectorWppReadRowHeights(command.input || {});

@@ -434,7 +434,7 @@ export const tools = [
     description: "Format a WPS Writer table, including borders, alignment, header row, and autofit.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, border: { type: "boolean" }, alignment: { type: "string" }, headerRowBold: { type: "boolean" }, autofit: { type: "boolean" } },
+      properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, border: { type: "boolean" }, alignment: { type: "string" }, headerRowBold: { type: "boolean" }, autofit: { type: "boolean" }, fitToWindow: { type: "boolean" }, fitToPageWidth: { type: "boolean" }, preferredWidthPercent: { type: "number" }, rowHeightRule: { type: ["string", "boolean"] }, textDirection: { type: "string" }, horizontalText: { type: "boolean" }, fontName: { type: "string" }, fontSize: { type: "number" }, cellPadding: { type: "object", additionalProperties: true } },
       additionalProperties: false,
     },
   },
@@ -450,13 +450,23 @@ export const tools = [
   },
   {
     name: "wpp.copy_table_style",
-    description: "Copy table appearance from one WPS Writer table to another. Scope: table_only, cell_style, row_height, col_width, merged_cells, or all.",
+    description: "Copy safe table style from one WPS Writer table to another. Default scope copies border/font/headerShading/alignment but not column widths, row heights, merged cells, or text direction. Scope also supports table_only, cell_style, row_height, col_width, merged_cells, style_safe, or all.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceTableIndex: { type: "number" }, targetTableIndex: { type: "number" }, scope: { type: ["string", "array"], items: { type: "string" } } }, required: ["sourceTableIndex", "targetTableIndex"], additionalProperties: false },
   },
   {
     name: "wpp.duplicate_table_appearance",
     description: "Make a target WPS Writer table look like a source table while keeping target content by default.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceTableIndex: { type: "number" }, targetTableIndex: { type: "number" }, keepContent: { type: "boolean" } }, required: ["sourceTableIndex", "targetTableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.insert_table_with_layout",
+    description: "Insert a real WPS Writer table and immediately normalize page-width layout, horizontal text, auto row height, borders, font, header, padding, and optional column widths.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, rowCount: { type: "number" }, columnCount: { type: "number" }, values: matrixSchema, headerRowBold: { type: "boolean" }, border: { type: "boolean" }, fitToPageWidth: { type: "boolean" }, preferredWidthPercent: { type: "number" }, firstColumnWidth: { type: "number" }, equalDataColumnWidths: { type: "number" }, columnWidths: { type: "array", items: { type: "object", additionalProperties: true } }, columns: { type: "array", items: { type: "object", additionalProperties: true } }, fontName: { type: "string" }, fontSize: { type: "number" }, horizontalText: { type: "boolean" }, rowHeightRule: { type: "string" }, cellPadding: { type: "object", additionalProperties: true }, alignment: { type: "string" }, disableAutoFitForWidths: { type: "boolean" }, widthTolerance: { type: "number" } }, required: ["rowCount", "columnCount"], additionalProperties: false },
+  },
+  {
+    name: "wpp.reset_table_layout",
+    description: "Reset a WPS Writer table layout after unsafe style copying: fit to page width, horizontal text, automatic row height, and optional cell padding.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, fitToPageWidth: { type: "boolean" }, preferredWidthPercent: { type: "number" }, horizontalText: { type: "boolean" }, rowHeightRule: { type: ["string", "boolean"] }, cellPadding: { type: "object", additionalProperties: true } }, required: ["tableIndex"], additionalProperties: false },
   },
   {
     name: "wpp.read_cell_format",
@@ -485,8 +495,8 @@ export const tools = [
   },
   {
     name: "wpp.set_column_widths",
-    description: "Set WPS Writer table column widths.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, columnWidths: { type: "array", items: { type: "object", additionalProperties: true } }, columns: { type: "array", items: { type: "object", additionalProperties: true } } }, required: ["tableIndex"], additionalProperties: false },
+    description: "Set WPS Writer table column widths and read back actual widths; returns warnings if WPS AutoFit or host behavior overrides requested widths.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, columnWidths: { type: "array", items: { type: "object", additionalProperties: true } }, columns: { type: "array", items: { type: "object", additionalProperties: true } }, disableAutoFit: { type: "boolean" }, tolerance: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
   },
   {
     name: "wpp.read_merged_cells",
