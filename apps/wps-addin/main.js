@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.31";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.02-writer-table-layout.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.32";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.03-batch-table-format.1";
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
 let wpsConnectorCurrentDocumentKey = "";
@@ -281,7 +281,7 @@ function wpsConnectorScope() {
   const documentIdentity = wpsConnectorDocumentIdentity(app, host);
   const documentKey = wpsConnectorDocumentKey(host, documentIdentity);
   const sessionId = `wps-${host}-${wpsConnectorHash(documentKey)}`;
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.read_format_sample", "et.verify_range", "et.write_blocks"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
   return { app, host, documentIdentity, documentKey, sessionId, capabilities };
 }
 async function wpsConnectorRegister() {
@@ -457,6 +457,61 @@ function wpsConnectorEtFormatRange(input = {}) {
     try { range.Rows.AutoFit(); applied.push("autofitRows"); } catch {}
   }
   return { host: "et", sheetName: String(wpsConnectorCall(sheet.Name) || input.sheetName || ""), address, formatted: true, applied };
+}
+function wpsConnectorGetPathValue(object, path) {
+  return String(path || "").split(".").reduce((current, key) => (current && Object.prototype.hasOwnProperty.call(current, key) ? current[key] : undefined), object);
+}
+function wpsConnectorSetPathValue(object, path, value) {
+  const parts = String(path || "").split(".").filter(Boolean);
+  if (!parts.length) return object;
+  let cursor = object;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const key = parts[i];
+    if (!cursor[key] || typeof cursor[key] !== "object") cursor[key] = {};
+    cursor = cursor[key];
+  }
+  cursor[parts[parts.length - 1]] = value;
+  return object;
+}
+function wpsConnectorPickFields(object, fields) {
+  if (!Array.isArray(fields) || !fields.length) return object;
+  const out = {};
+  for (const field of fields) {
+    const value = wpsConnectorGetPathValue(object, field);
+    if (value !== undefined) wpsConnectorSetPathValue(out, field, value);
+  }
+  return out;
+}
+function wpsConnectorEtReadFormatSample(input = {}) {
+  const sheet = wpsConnectorSheet(input);
+  const cells = Array.isArray(input.cells) && input.cells.length ? input.cells : [{ address: input.address }];
+  const fields = input.fields || [];
+  const results = [];
+  for (const item of cells) {
+    const address = typeof item === "string" ? item : item.address;
+    const safeAddress = wpsConnectorValidateAddress(address, "cells[].address");
+    const range = sheet.Range(safeAddress);
+    const format = wpsConnectorPickFields(wpsConnectorReadFormats(range, false), fields);
+    results.push({ address: safeAddress, format });
+  }
+  return { host: "et", sheetName: String(wpsConnectorCall(sheet.Name) || input.sheetName || ""), count: results.length, fields, cells: results };
+}
+function wpsConnectorEtVerifyRange(input = {}) {
+  const { sheet, range, address } = wpsConnectorRange(input);
+  const values = wpsConnectorNormalizeValues(wpsConnectorMember(range, "Value2"));
+  const formulas = wpsConnectorNormalizeValues(wpsConnectorMember(range, "Formula"));
+  const shape = wpsConnectorRangeShape(range, values);
+  const errors = [];
+  const errorValues = new Set(["#REF!", "#DIV/0!", "#VALUE!", "#NAME?", "#N/A", "#NULL!", "#NUM!"]);
+  for (let r = 0; r < values.length; r += 1) {
+    const row = Array.isArray(values[r]) ? values[r] : [values[r]];
+    for (let c = 0; c < row.length; c += 1) {
+      const text = String(row[c] ?? "");
+      if (errorValues.has(text.toUpperCase())) errors.push({ address: wpsConnectorA1(shape.row + r, shape.column + c), value: text, formula: formulas[r]?.[c] });
+    }
+  }
+  const checks = { formulaErrors: errors.length === 0 };
+  return { host: "et", sheetName: String(wpsConnectorCall(sheet.Name) || input.sheetName || ""), address, ok: errors.length === 0, checks, formulaErrorCount: errors.length, formulaErrors: errors };
 }
 function wpsConnectorEtClearRange(input = {}) {
   const { range, address } = wpsConnectorRange(input);
@@ -1758,7 +1813,7 @@ function wpsConnectorWppRangeFormat(range) {
   const shading = wpsConnectorSafeGet(range, "Shading");
   return {
     font: { name: wpsConnectorSafeGet(font, "Name"), size: wpsConnectorSafeGet(font, "Size"), bold: wpsConnectorBoolFormat(wpsConnectorSafeGet(font, "Bold")), italic: wpsConnectorBoolFormat(wpsConnectorSafeGet(font, "Italic")), color: wpsConnectorSafeGet(font, "Color") },
-    paragraph: { alignment: wpsConnectorSafeGet(paragraph, "Alignment"), spaceBefore: wpsConnectorSafeGet(paragraph, "SpaceBefore"), spaceAfter: wpsConnectorSafeGet(paragraph, "SpaceAfter"), lineSpacing: wpsConnectorSafeGet(paragraph, "LineSpacing") },
+    paragraph: { alignment: wpsConnectorSafeGet(paragraph, "Alignment"), spaceBefore: wpsConnectorSafeGet(paragraph, "SpaceBefore"), spaceAfter: wpsConnectorSafeGet(paragraph, "SpaceAfter"), lineSpacing: wpsConnectorSafeGet(paragraph, "LineSpacing"), leftIndent: wpsConnectorSafeGet(paragraph, "LeftIndent"), firstLineIndent: wpsConnectorSafeGet(paragraph, "FirstLineIndent"), rightIndent: wpsConnectorSafeGet(paragraph, "RightIndent") },
     shading: { backgroundColor: wpsConnectorSafeGet(shading, "BackgroundPatternColor"), foregroundColor: wpsConnectorSafeGet(shading, "ForegroundPatternColor"), texture: wpsConnectorSafeGet(shading, "Texture") },
   };
 }
@@ -1778,6 +1833,9 @@ function wpsConnectorApplyWppRangeFormat(range, format = {}) {
   if (wpsConnectorSafeSet(paragraph, "SpaceBefore", p.spaceBefore)) applied.push("paragraph.spaceBefore");
   if (wpsConnectorSafeSet(paragraph, "SpaceAfter", p.spaceAfter)) applied.push("paragraph.spaceAfter");
   if (wpsConnectorSafeSet(paragraph, "LineSpacing", p.lineSpacing)) applied.push("paragraph.lineSpacing");
+  if (wpsConnectorSafeSet(paragraph, "LeftIndent", p.leftIndent)) applied.push("paragraph.leftIndent");
+  if (wpsConnectorSafeSet(paragraph, "FirstLineIndent", p.firstLineIndent)) applied.push("paragraph.firstLineIndent");
+  if (wpsConnectorSafeSet(paragraph, "RightIndent", p.rightIndent)) applied.push("paragraph.rightIndent");
   const s = format.shading || {};
   if (wpsConnectorSafeSet(shading, "BackgroundPatternColor", s.backgroundColor)) applied.push("shading.backgroundColor");
   if (wpsConnectorSafeSet(shading, "ForegroundPatternColor", s.foregroundColor)) applied.push("shading.foregroundColor");
@@ -1911,6 +1969,107 @@ function wpsConnectorWppApplyTableFormat(input = {}) {
   if (format.cells) for (const cell of format.cells) { try { applied.push(...wpsConnectorApplyWppCellFormat(table.Cell(cell.row, cell.column), cell).map((x) => `cell:${cell.row}:${cell.column}:${x}`)); } catch {} }
   if (format.mergedCells) applied.push(`merged:${wpsConnectorWppApplyMergedCells({ tableIndex, mergedCells: format.mergedCells }).appliedMergedCells}`);
   return { host: "wpp", tableIndex, applied, ...wpsConnectorWppTableSize(table) };
+}
+function wpsConnectorWppTableBounds(input = {}, table) {
+  const size = wpsConnectorWppTableSize(table);
+  const startRow = wpsConnectorInteger(input.startRow ?? 1, "startRow", 1);
+  const endRow = wpsConnectorInteger(input.endRow ?? size.rowCount, "endRow", 1);
+  const startCol = wpsConnectorInteger(input.startCol ?? input.startColumn ?? 1, "startCol", 1);
+  const endCol = wpsConnectorInteger(input.endCol ?? input.endColumn ?? size.columnCount, "endCol", 1);
+  if (endRow < startRow || endCol < startCol || endRow > size.rowCount || endCol > size.columnCount) {
+    wpsConnectorFail("INVALID_ARGUMENT", "Table range is outside table bounds.", { startRow, endRow, startCol, endCol, ...size });
+  }
+  return { ...size, startRow, endRow, startCol, endCol };
+}
+function wpsConnectorWppFormatTableCells(table, tableIndex, targets, format = {}, options = {}) {
+  const started = Date.now();
+  const results = [];
+  let affectedCells = 0;
+  const accepted = new Set();
+  for (const target of targets) {
+    try {
+      wpsConnectorWppAssertCell(table, target.row, target.column);
+      const applied = options.dryRun ? [] : wpsConnectorApplyWppCellFormat(table.Cell(target.row, target.column), format);
+      applied.forEach((item) => accepted.add(item));
+      affectedCells += 1;
+      if (options.includeResults) results.push({ row: target.row, column: target.column, ok: true, applied });
+    } catch (error) {
+      const details = wpsConnectorErrorDetails(error, "cell_format");
+      if (options.includeResults) results.push({ row: target.row, column: target.column, ok: false, error: details });
+      if (!options.continueOnError) throw error;
+    }
+  }
+  const out = { host: "wpp", tableIndex, applied: !options.dryRun, dryRun: Boolean(options.dryRun), affectedCells, acceptedFields: [...accepted], durationMs: Date.now() - started };
+  if (options.includeResults) out.results = results;
+  return out;
+}
+function wpsConnectorWppFormatTableRange(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const bounds = wpsConnectorWppTableBounds(input, table);
+  const targets = [];
+  for (let row = bounds.startRow; row <= bounds.endRow; row += 1) for (let column = bounds.startCol; column <= bounds.endCol; column += 1) targets.push({ row, column });
+  return { ...wpsConnectorWppFormatTableCells(table, tableIndex, targets, input.format || {}, input), affectedRange: { startRow: bounds.startRow, endRow: bounds.endRow, startCol: bounds.startCol, endCol: bounds.endCol } };
+}
+function wpsConnectorWppFormatTableRows(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const size = wpsConnectorWppTableSize(table);
+  const rows = (Array.isArray(input.rows) ? input.rows : [input.row]).map((row) => wpsConnectorInteger(row, "rows[]", 1));
+  const startCol = wpsConnectorInteger(input.startCol ?? input.startColumn ?? 1, "startCol", 1);
+  const endCol = wpsConnectorInteger(input.endCol ?? input.endColumn ?? size.columnCount, "endCol", 1);
+  if (!rows.length || rows.some((row) => row > size.rowCount) || endCol < startCol || endCol > size.columnCount) wpsConnectorFail("INVALID_ARGUMENT", "Table row format target is outside table bounds.", { rows, startCol, endCol, ...size });
+  const targets = [];
+  for (const row of rows) for (let column = startCol; column <= endCol; column += 1) targets.push({ row, column });
+  return { ...wpsConnectorWppFormatTableCells(table, tableIndex, targets, input.format || {}, input), rows, affectedRange: { rows, startCol, endCol } };
+}
+function wpsConnectorWppFormatTableColumns(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const size = wpsConnectorWppTableSize(table);
+  const columns = (Array.isArray(input.columns) ? input.columns : [input.column ?? input.col]).map((column) => wpsConnectorInteger(column, "columns[]", 1));
+  const startRow = wpsConnectorInteger(input.startRow ?? 1, "startRow", 1);
+  const endRow = wpsConnectorInteger(input.endRow ?? size.rowCount, "endRow", 1);
+  if (!columns.length || columns.some((column) => column > size.columnCount) || endRow < startRow || endRow > size.rowCount) wpsConnectorFail("INVALID_ARGUMENT", "Table column format target is outside table bounds.", { columns, startRow, endRow, ...size });
+  const targets = [];
+  for (let row = startRow; row <= endRow; row += 1) for (const column of columns) targets.push({ row, column });
+  return { ...wpsConnectorWppFormatTableCells(table, tableIndex, targets, input.format || {}, input), columns, affectedRange: { columns, startRow, endRow } };
+}
+function wpsConnectorWppCellStyleSample(cell, row, column, fields) {
+  return { row, column, format: wpsConnectorPickFields(wpsConnectorWppCellFormat(cell, row, column), fields || []) };
+}
+function wpsConnectorWppReadTableFormatSample(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const started = Date.now();
+  const cells = Array.isArray(input.cells) ? input.cells : [];
+  if (!cells.length) wpsConnectorFail("INVALID_ARGUMENT", "cells is required.", { field: "cells" });
+  const results = cells.map((item) => {
+    const row = wpsConnectorInteger(item.row, "cells[].row", 1);
+    const column = wpsConnectorInteger(item.col ?? item.column, "cells[].col", 1);
+    wpsConnectorWppAssertCell(table, row, column);
+    return wpsConnectorWppCellStyleSample(table.Cell(row, column), row, column, input.fields || []);
+  });
+  return { host: "wpp", tableIndex, count: results.length, fields: input.fields || [], cells: results, durationMs: Date.now() - started };
+}
+function wpsConnectorWppReadTableFormatRange(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const started = Date.now();
+  const bounds = wpsConnectorWppTableBounds(input, table);
+  const cells = [];
+  for (let row = bounds.startRow; row <= bounds.endRow; row += 1) for (let column = bounds.startCol; column <= bounds.endCol; column += 1) {
+    try { cells.push(wpsConnectorWppCellStyleSample(table.Cell(row, column), row, column, input.fields || [])); } catch {}
+  }
+  return { host: "wpp", tableIndex, count: cells.length, fields: input.fields || [], affectedRange: { startRow: bounds.startRow, endRow: bounds.endRow, startCol: bounds.startCol, endCol: bounds.endCol }, cells, durationMs: Date.now() - started };
+}
+function wpsConnectorWppReadTableStructure(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const size = wpsConnectorWppTableSize(table);
+  const out = { host: "wpp", tableIndex, ...size };
+  if (input.includeMergedCells !== false) out.mergedCells = wpsConnectorWppReadMergedCells({ tableIndex }).mergedCells;
+  if (input.includeRowHeights) out.rowHeights = wpsConnectorWppReadRowHeights({ tableIndex }).rowHeights;
+  if (input.includeColumnWidths) out.columnWidths = wpsConnectorWppReadColumnWidths({ tableIndex }).columnWidths;
+  return out;
+}
+function wpsConnectorWppReadTableCellStyles(input = {}) {
+  if (Array.isArray(input.cells) && input.cells.length) return wpsConnectorWppReadTableFormatSample(input);
+  return wpsConnectorWppReadTableFormatRange(input);
 }
 function wpsConnectorWppFilterTableFormat(format, scope) {
   const rawScopes = Array.isArray(scope) ? scope : [scope || "style_safe"];
@@ -2512,6 +2671,8 @@ async function wpsConnectorExecute(command) {
   if (command.toolName === "et.insert_range") return wpsConnectorEtInsertRange(command.input || {});
   if (command.toolName === "et.delete_range") return wpsConnectorEtDeleteRange(command.input || {});
   if (command.toolName === "et.find_cells") return wpsConnectorEtFindCells(command.input || {});
+  if (command.toolName === "et.read_format_sample") return wpsConnectorEtReadFormatSample(command.input || {});
+  if (command.toolName === "et.verify_range") return wpsConnectorEtVerifyRange(command.input || {});
   if (command.toolName === "et.write_blocks") return wpsConnectorEtWriteBlocks(command.input || {});
   if (command.toolName === "wpp.read_selection") return wpsConnectorWppSelection(command.input || {});
   if (command.toolName === "wpp.read_document_identity") return wpsConnectorWppDocumentIdentity(command.input || {});
@@ -2550,6 +2711,13 @@ async function wpsConnectorExecute(command) {
   if (command.toolName === "wpp.delete_table_columns") return wpsConnectorWppDeleteTableColumns(command.input || {});
   if (command.toolName === "wpp.merge_table_cells") return wpsConnectorWppMergeTableCells(command.input || {});
   if (command.toolName === "wpp.format_table") return wpsConnectorWppFormatTable(command.input || {});
+  if (command.toolName === "wpp.format_table_range") return wpsConnectorWppFormatTableRange(command.input || {});
+  if (command.toolName === "wpp.format_table_rows") return wpsConnectorWppFormatTableRows(command.input || {});
+  if (command.toolName === "wpp.format_table_columns") return wpsConnectorWppFormatTableColumns(command.input || {});
+  if (command.toolName === "wpp.read_table_format_sample") return wpsConnectorWppReadTableFormatSample(command.input || {});
+  if (command.toolName === "wpp.read_table_format_range") return wpsConnectorWppReadTableFormatRange(command.input || {});
+  if (command.toolName === "wpp.read_table_structure") return wpsConnectorWppReadTableStructure(command.input || {});
+  if (command.toolName === "wpp.read_table_cell_styles") return wpsConnectorWppReadTableCellStyles(command.input || {});
   if (command.toolName === "wpp.read_table_format") return wpsConnectorWppReadTableFormat(command.input || {});
   if (command.toolName === "wpp.apply_table_format") return wpsConnectorWppApplyTableFormat(command.input || {});
   if (command.toolName === "wpp.copy_table_style") return wpsConnectorWppCopyTableStyle(command.input || {});

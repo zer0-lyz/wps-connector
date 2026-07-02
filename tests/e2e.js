@@ -128,6 +128,7 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_rows"), "MCP tools/list missed wpp.insert_table_rows.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_image"), "MCP tools/list missed wpp.insert_image.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_format"), "MCP tools/list missed wpp.read_table_format.");
+  for (const name of ["wps.batch", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "et.read_format_sample", "et.verify_range"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wpp.copy_table_style"), "MCP tools/list missed wpp.copy_table_style.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.duplicate_table_appearance"), "MCP tools/list missed wpp.duplicate_table_appearance.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_with_layout"), "MCP tools/list missed wpp.insert_table_with_layout.");
@@ -267,6 +268,16 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-et-session", address: "C3:E4", bold: true, fillColor: "#D9EAF7", numberFormat: "#,##0.00", horizontalAlignment: "center", border: true, autofit: true }),
   });
   assert(etFormat.formatted === true, "ET format_range did not confirm formatting.");
+  const etFormatSample = await request("/api/tools/et/read_format_sample", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", cells: [{ address: "C3:E4" }], fields: ["bold", "numberFormat", "horizontalAlignment"] }),
+  });
+  assert(etFormatSample.count === 1 && etFormatSample.cells[0].format.bold === true, "ET read_format_sample did not return selected format fields.");
+  const etVerifyRange = await request("/api/tools/et/verify_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", address: "C3:E4" }),
+  });
+  assert(etVerifyRange.ok === true && etVerifyRange.formulaErrorCount === 0, "ET verify_range reported unexpected formula errors.");
 
   const etFind = await request("/api/tools/et/find_cells", {
     method: "POST",
@@ -718,6 +729,46 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, border: true, alignment: "center", headerRowBold: true, autofit: true }),
   });
   assert(wppFormatTable.formattedTable === true && wppFormatTable.applied?.includes("border"), "WPP format_table did not confirm formatting.");
+  const wppFormatRows = await request("/api/tools/wpp/format_table_rows", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, rows: [1], format: { font: { bold: true }, paragraph: { alignment: 1 } } }),
+  });
+  assert(wppFormatRows.affectedCells === 2 && wppFormatRows.applied === true, "WPP format_table_rows did not format the header row.");
+  const wppFormatColumns = await request("/api/tools/wpp/format_table_columns", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, columns: [2], startRow: 2, endRow: 2, format: { paragraph: { alignment: 2 } } }),
+  });
+  assert(wppFormatColumns.affectedCells === 1 && wppFormatColumns.applied === true, "WPP format_table_columns did not format the numeric column.");
+  const wppFormatRange = await request("/api/tools/wpp/format_table_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, startRow: 2, endRow: 2, startCol: 1, endCol: 1, format: { paragraph: { leftIndent: 12, firstLineIndent: 0 }, padding: { left: 6 } } }),
+  });
+  assert(wppFormatRange.affectedCells === 1 && wppFormatRange.affectedRange.startRow === 2, "WPP format_table_range did not format the target cell.");
+  const wppTableSample = await request("/api/tools/wpp/read_table_format_sample", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, cells: [{ row: 1, column: 1 }, { row: 2, column: 1 }, { row: 2, column: 2 }], fields: ["font.bold", "paragraph.alignment", "paragraph.leftIndent", "padding.left"] }),
+  });
+  assert(wppTableSample.count === 3 && wppTableSample.cells[0].format.font.bold === true && wppTableSample.cells[1].format.paragraph.leftIndent === 12 && wppTableSample.cells[2].format.paragraph.alignment === 2, "WPP read_table_format_sample did not verify lightweight fields.");
+  const wppTableRangeFormat = await request("/api/tools/wpp/read_table_format_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, startRow: 1, endRow: 2, startCol: 1, endCol: 2, fields: ["font.bold", "paragraph.alignment"] }),
+  });
+  assert(wppTableRangeFormat.count === 4, "WPP read_table_format_range did not return the expected cell count.");
+  const wppTableStructure = await request("/api/tools/wpp/read_table_structure", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, includeColumnWidths: true }),
+  });
+  assert(wppTableStructure.rowCount === 2 && Array.isArray(wppTableStructure.columnWidths), "WPP read_table_structure did not return lightweight structure.");
+  const wpsBatchDryRun = await request("/api/tools/wps/batch", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", dryRun: true, operations: [{ operationId: "header", tool: "wpp.format_table_rows", input: { tableIndex: 1, rows: [1], format: { font: { bold: true } } } }] }),
+  });
+  assert(wpsBatchDryRun.dryRun === true && wpsBatchDryRun.results[0].wouldRun === true, "WPS batch dryRun did not validate operations.");
+  const wpsBatch = await request("/api/tools/wps/batch", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", operations: [{ operationId: "first-col", tool: "wpp.format_table_columns", input: { tableIndex: 1, columns: [1], format: { paragraph: { alignment: 0 } } } }, { operationId: "data-col", tool: "wpp.format_table_columns", input: { tableIndex: 1, columns: [2], startRow: 2, format: { paragraph: { alignment: 2 } } } }], verifyAfter: [{ operationId: "sample", tool: "wpp.read_table_format_sample", input: { tableIndex: 1, cells: [{ row: 2, column: 1 }, { row: 2, column: 2 }], fields: ["paragraph.alignment"] } }] }),
+  });
+  assert(wpsBatch.batch === true && wpsBatch.failedCount === 0 && wpsBatch.verification[0].result.cells[0].format.paragraph.alignment === 0, "WPS batch did not execute and verify table formatting.");
 
   const wppBadMerge = await rawRequest("/api/tools/wpp/merge_table_cells", {
     method: "POST",

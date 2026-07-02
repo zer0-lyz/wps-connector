@@ -132,8 +132,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.28`
-- clientBuild: `2026.06.30-writer-native-find.1`
+- UI/clientVersion: `v1.0.32`
+- clientBuild: `2026.07.03-batch-table-format.1`
 
 ## Current Tool Surface
 
@@ -141,12 +141,13 @@ Session:
 
 - `wps.list_sessions` / `wps_list_sessions`
 - `wps.connection_status` / `wps_connection_status`
+- `wps.batch` / `wps_batch`
 
 WPS Spreadsheet (`et`) tools:
 
 - selection, worksheet list/add/rename/delete;
 - range read/write/format/clear/insert/delete;
-- formulas, number formats, find cells, and batch `write_blocks`.
+- formulas, number formats, find cells, batch `write_blocks`, lightweight format samples, and range verification.
 
 WPS Writer (`wpp`) tools:
 
@@ -154,7 +155,7 @@ WPS Writer (`wpp`) tools:
 - stable range selection with resolved text verification;
 - paragraph-indexed formatting, batch paragraph format application, and paragraph format copying;
 - text replacement, text-anchored comments, batch comments, and revision tools;
-- tables, images, comments, save, and style/layout helpers.
+- tables, images, comments, save, style/layout helpers, table range/row/column bulk formatting, and lightweight table format sampling.
 
 ## Known Boundaries
 

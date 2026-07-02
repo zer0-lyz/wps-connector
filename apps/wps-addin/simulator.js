@@ -35,6 +35,29 @@ const state = {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+function getPathValue(object, path) {
+  return String(path || "").split(".").reduce((current, key) => (current && Object.prototype.hasOwnProperty.call(current, key) ? current[key] : undefined), object);
+}
+function setPathValue(object, path, value) {
+  const parts = String(path || "").split(".").filter(Boolean);
+  let cursor = object;
+  for (let i = 0; i < parts.length - 1; i += 1) {
+    const key = parts[i];
+    if (!cursor[key] || typeof cursor[key] !== "object") cursor[key] = {};
+    cursor = cursor[key];
+  }
+  if (parts.length) cursor[parts[parts.length - 1]] = value;
+  return object;
+}
+function pickFields(object, fields) {
+  if (!Array.isArray(fields) || !fields.length) return object;
+  const out = {};
+  for (const field of fields) {
+    const value = getPathValue(object, field);
+    if (value !== undefined) setPathValue(out, field, value);
+  }
+  return out;
+}
 
 async function request(path, options = {}) {
   const response = await fetch(`${bridgeUrl}${path}`, {
@@ -53,7 +76,7 @@ function activeContext() {
 }
 
 async function register() {
-  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
+  const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.read_format_sample", "et.verify_range", "et.clear_range", "et.find_cells", "et.write_blocks"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
   await request("/api/sessions/register", {
     method: "POST",
     body: JSON.stringify({
@@ -148,6 +171,24 @@ function execute(command) {
     };
   }
   if (command.toolName === "et.format_range") { requireSheet(command.input.sheetName); const address = requireAddress(command.input.address); state.et.formats[address] = command.input; return { host: "et", address, formatted: true }; }
+  if (command.toolName === "et.read_format_sample") {
+    requireSheet(command.input.sheetName);
+    const cells = Array.isArray(command.input.cells) && command.input.cells.length ? command.input.cells : [{ address: command.input.address }];
+    const results = cells.map((item) => {
+      const address = requireAddress(typeof item === "string" ? item : item.address);
+      return { address, format: pickFields(state.et.formats[address] || {}, command.input.fields || []) };
+    });
+    return { host: "et", sheetName: command.input.sheetName || state.et.sheetName, count: results.length, fields: command.input.fields || [], cells: results };
+  }
+  if (command.toolName === "et.verify_range") {
+    requireSheet(command.input.sheetName);
+    const address = requireAddress(command.input.address);
+    const values = state.et.cells[address] || [];
+    const formulas = state.et.formulas[address] || [];
+    const errors = [];
+    for (let r = 0; r < values.length; r += 1) for (let c = 0; c < (values[r] || []).length; c += 1) if (/^#(REF!|DIV\/0!|VALUE!|NAME\?|N\/A)$/i.test(String(values[r][c] || ""))) errors.push({ address, value: values[r][c], formula: formulas[r]?.[c] });
+    return { host: "et", sheetName: command.input.sheetName || state.et.sheetName, address, ok: errors.length === 0, checks: { formulaErrors: errors.length === 0 }, formulaErrorCount: errors.length, formulaErrors: errors };
+  }
   if (command.toolName === "et.clear_range") { requireSheet(command.input.sheetName); const address = requireAddress(command.input.address); delete state.et.cells[address]; return { host: "et", address, cleared: command.input.applyTo || "contents" }; }
   if (command.toolName === "et.find_cells") { const results = []; for (const [address, values] of Object.entries(state.et.cells)) if (JSON.stringify(values).includes(command.input.query)) results.push({ address, value: command.input.query, row: 1, column: 1 }); return { host: "et", query: command.input.query, count: results.length, results }; }
   if (command.toolName === "et.write_blocks") { const results = []; for (const [index, block] of (command.input.blocks || []).entries()) { const steps = []; try { requireSheet(block.sheetName); const address = requireAddress(block.address); if (block.values) { state.et.cells[address] = requireMatrix(block.values, "blocks[].values"); steps.push({ step: "write", ok: true }); } if (block.formulas) { state.et.formulas[address] = requireMatrix(block.formulas, "blocks[].formulas"); steps.push({ step: "write", ok: true, formulasApplied: true }); } if (block.format) { state.et.formats[address] = block.format; steps.push({ step: "format", ok: true }); } results.push({ index, address, ok: true, steps }); } catch (error) { results.push({ index, address: block.address || "", ok: false, error: { code: error.code || "SIMULATOR_COMMAND_FAILED", message: error.message, details: error.details || {} } }); if (!command.input.continueOnError) break; } } return { host: "et", blockCount: command.input.blocks?.length || 0, okCount: results.filter((r) => r.ok).length, failedCount: results.filter((r) => !r.ok).length, results }; }
@@ -508,8 +549,90 @@ function execute(command) {
   }
   function simClone(value) { return JSON.parse(JSON.stringify(value)); }
   function simFormat(table) { table.format = table.format || { table: {}, rowHeights: [], columnWidths: [], mergedCells: [], cells: [] }; table.format.rowCount = table.rowCount; table.format.columnCount = table.columnCount; return table.format; }
+  function simCellFormat(table, row, column) {
+    const format = simFormat(table);
+    let cell = format.cells.find((item) => item.row === row && item.column === column);
+    if (!cell) { cell = { row, column }; format.cells.push(cell); }
+    return cell;
+  }
+  function simMergeFormat(target, patch) {
+    for (const [key, value] of Object.entries(patch || {})) {
+      if (value && typeof value === "object" && !Array.isArray(value)) target[key] = simMergeFormat(target[key] && typeof target[key] === "object" ? target[key] : {}, value);
+      else target[key] = value;
+    }
+    return target;
+  }
+  function simFormatTargets(table, tableIndex, targets, input) {
+    const started = Date.now();
+    const accepted = new Set();
+    for (const target of targets) {
+      if (target.row > table.rowCount || target.column > table.columnCount) fail("INVALID_ARGUMENT", "cell index is outside table bounds.", { row: target.row, column: target.column, rowCount: table.rowCount, columnCount: table.columnCount });
+      if (!input.dryRun) simMergeFormat(simCellFormat(table, target.row, target.column), { ...(input.format || {}), row: target.row, column: target.column });
+      Object.keys(input.format || {}).forEach((key) => accepted.add(key));
+    }
+    const out = { host: "wpp", tableIndex, applied: !input.dryRun, dryRun: Boolean(input.dryRun), affectedCells: targets.length, acceptedFields: [...accepted], durationMs: Date.now() - started };
+    if (input.includeResults) out.results = targets.map((target) => ({ ...target, ok: true, applied: [...accepted] }));
+    return out;
+  }
   if (command.toolName === "wpp.read_table_format") { const { table, tableIndex } = simTable(command.input); return { host: "wpp", tableIndex, format: simClone(simFormat(table)) }; }
   if (command.toolName === "wpp.apply_table_format") { const { table, tableIndex } = simTable(command.input); table.format = simClone(command.input.format || {}); table.format.rowCount = table.rowCount; table.format.columnCount = table.columnCount; return { host: "wpp", tableIndex, applied: ["table_format"], rowCount: table.rowCount, columnCount: table.columnCount }; }
+  if (command.toolName === "wpp.format_table_range") {
+    const { table, tableIndex } = simTable(command.input);
+    const startRow = simIndex(command.input.startRow || 1, "startRow");
+    const endRow = simIndex(command.input.endRow || table.rowCount, "endRow");
+    const startCol = simIndex(command.input.startCol ?? command.input.startColumn ?? 1, "startCol");
+    const endCol = simIndex(command.input.endCol ?? command.input.endColumn ?? table.columnCount, "endCol");
+    if (endRow < startRow || endCol < startCol || endRow > table.rowCount || endCol > table.columnCount) fail("INVALID_ARGUMENT", "Table range is outside table bounds.", { startRow, endRow, startCol, endCol });
+    const targets = [];
+    for (let row = startRow; row <= endRow; row += 1) for (let column = startCol; column <= endCol; column += 1) targets.push({ row, column });
+    return { ...simFormatTargets(table, tableIndex, targets, command.input), affectedRange: { startRow, endRow, startCol, endCol } };
+  }
+  if (command.toolName === "wpp.format_table_rows") {
+    const { table, tableIndex } = simTable(command.input);
+    const rows = (Array.isArray(command.input.rows) ? command.input.rows : [command.input.row]).map((row) => simIndex(row, "rows[]"));
+    const startCol = simIndex(command.input.startCol ?? command.input.startColumn ?? 1, "startCol");
+    const endCol = simIndex(command.input.endCol ?? command.input.endColumn ?? table.columnCount, "endCol");
+    const targets = [];
+    for (const row of rows) for (let column = startCol; column <= endCol; column += 1) targets.push({ row, column });
+    return { ...simFormatTargets(table, tableIndex, targets, command.input), rows, affectedRange: { rows, startCol, endCol } };
+  }
+  if (command.toolName === "wpp.format_table_columns") {
+    const { table, tableIndex } = simTable(command.input);
+    const columns = (Array.isArray(command.input.columns) ? command.input.columns : [command.input.column ?? command.input.col]).map((column) => simIndex(column, "columns[]"));
+    const startRow = simIndex(command.input.startRow || 1, "startRow");
+    const endRow = simIndex(command.input.endRow || table.rowCount, "endRow");
+    const targets = [];
+    for (let row = startRow; row <= endRow; row += 1) for (const column of columns) targets.push({ row, column });
+    return { ...simFormatTargets(table, tableIndex, targets, command.input), columns, affectedRange: { columns, startRow, endRow } };
+  }
+  if (command.toolName === "wpp.read_table_format_sample") {
+    const { table, tableIndex } = simTable(command.input);
+    const cells = (command.input.cells || []).map((item) => {
+      const row = simIndex(item.row, "cells[].row");
+      const column = simIndex(item.col ?? item.column, "cells[].col");
+      return { row, column, format: pickFields(simClone(simCellFormat(table, row, column)), command.input.fields || []) };
+    });
+    return { host: "wpp", tableIndex, count: cells.length, fields: command.input.fields || [], cells, durationMs: 0 };
+  }
+  if (command.toolName === "wpp.read_table_format_range" || command.toolName === "wpp.read_table_cell_styles") {
+    const { table, tableIndex } = simTable(command.input);
+    if (Array.isArray(command.input.cells) && command.input.cells.length) return execute({ toolName: "wpp.read_table_format_sample", input: command.input });
+    const startRow = simIndex(command.input.startRow || 1, "startRow");
+    const endRow = simIndex(command.input.endRow || table.rowCount, "endRow");
+    const startCol = simIndex(command.input.startCol ?? command.input.startColumn ?? 1, "startCol");
+    const endCol = simIndex(command.input.endCol ?? command.input.endColumn ?? table.columnCount, "endCol");
+    const cells = [];
+    for (let row = startRow; row <= endRow; row += 1) for (let column = startCol; column <= endCol; column += 1) cells.push({ row, column, format: pickFields(simClone(simCellFormat(table, row, column)), command.input.fields || []) });
+    return { host: "wpp", tableIndex, count: cells.length, fields: command.input.fields || [], affectedRange: { startRow, endRow, startCol, endCol }, cells, durationMs: 0 };
+  }
+  if (command.toolName === "wpp.read_table_structure") {
+    const { table, tableIndex } = simTable(command.input);
+    const result = { host: "wpp", tableIndex, rowCount: table.rowCount, columnCount: table.columnCount };
+    if (command.input.includeMergedCells !== false) result.mergedCells = simClone(simFormat(table).mergedCells || table.merged || []);
+    if (command.input.includeRowHeights) result.rowHeights = simClone(simFormat(table).rowHeights || []);
+    if (command.input.includeColumnWidths) result.columnWidths = simClone(simFormat(table).columnWidths || []);
+    return result;
+  }
   if (command.toolName === "wpp.copy_table_style" || command.toolName === "wpp.duplicate_table_appearance") { const source = simTable({ tableIndex: command.input.sourceTableIndex }).table; const targetInfo = simTable({ tableIndex: command.input.targetTableIndex }); const scope = command.toolName === "wpp.copy_table_style" ? (command.input.scope || ["border", "font", "headerShading", "alignment"]) : "all"; const copied = simClone(simFormat(source)); if (command.toolName === "wpp.copy_table_style" && !String(scope).includes("all") && !String(scope).includes("col_width")) delete copied.columnWidths; if (command.toolName === "wpp.copy_table_style" && !String(scope).includes("all") && !String(scope).includes("row_height")) delete copied.rowHeights; targetInfo.table.format = copied; targetInfo.table.format.rowCount = targetInfo.table.rowCount; targetInfo.table.format.columnCount = targetInfo.table.columnCount; return { host: "wpp", copied: true, duplicatedAppearance: command.toolName === "wpp.duplicate_table_appearance", keepContent: command.input.keepContent !== false, sourceTableIndex: command.input.sourceTableIndex, targetTableIndex: command.input.targetTableIndex, scope, layoutCopied: Boolean(copied.columnWidths || copied.rowHeights), applied: ["table_format"] }; }
   if (command.toolName === "wpp.read_cell_format") { const { table, tableIndex } = simTable(command.input); const row = simIndex(command.input.row, "row"); const column = simIndex(command.input.col ?? command.input.column, "col"); const cell = simFormat(table).cells.find((item) => item.row === row && item.column === column) || { row, column }; return { host: "wpp", tableIndex, row, column, format: simClone(cell) }; }
   if (command.toolName === "wpp.apply_cell_format") { const { table, tableIndex } = simTable(command.input); const row = simIndex(command.input.row, "row"); const column = simIndex(command.input.col ?? command.input.column, "col"); const format = simFormat(table); const index = format.cells.findIndex((item) => item.row === row && item.column === column); const next = { ...(command.input.format || {}), row, column }; if (index >= 0) format.cells[index] = next; else format.cells.push(next); return { host: "wpp", tableIndex, row, column, applied: ["cell_format"] }; }

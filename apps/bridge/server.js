@@ -155,6 +155,71 @@ function commandInputWithScope(session, toolName, input = {}) {
 }
 function enqueueCommand(session, toolName, input) { const commandId = randomUUID(); const command = { commandId, sessionId: session.sessionId, toolName, input: commandInputWithScope(session, toolName, input), status: "queued", createdAt: nowIso() }; commands.set(commandId, command); session.queue.push(commandId); return command; }
 function waitForCommand(command) { return new Promise((resolve, reject) => { const timer = setTimeout(() => { command.status = "timed_out"; command.timedOutAt = nowIso(); command.error = { code: "COMMAND_TIMEOUT", message: `Command timed out after ${commandTimeoutMs}ms.` }; reject(command.error); }, commandTimeoutMs); command.resolve = (result) => { clearTimeout(timer); resolve(result); }; command.reject = (error) => { clearTimeout(timer); reject(error); }; }); }
+function toolExists(toolName) {
+  return tools.some((tool) => tool.name === toolName);
+}
+function expectedHostForTool(toolName) {
+  return toolName.startsWith("et.") ? "et" : toolName.startsWith("wpp.") ? "wpp" : "";
+}
+function batchOperationInput(batchInput = {}, operation = {}) {
+  return { ...(operation.input || {}), sessionId: operation.input?.sessionId || batchInput.sessionId };
+}
+async function runBatch(input = {}) {
+  if (!Array.isArray(input.operations) || !input.operations.length) throw { code: "INVALID_ARGUMENT", message: "operations is required.", details: { field: "operations" } };
+  const started = Date.now();
+  const results = [];
+  const stopOnError = input.stopOnError !== false;
+  for (const [index, operation] of input.operations.entries()) {
+    const operationId = operation.operationId || `op-${index + 1}`;
+    const toolName = operation.tool;
+    const opInput = batchOperationInput(input, operation);
+    const stepStarted = Date.now();
+    try {
+      if (!toolName || toolName === "wps.batch") throw { code: "INVALID_ARGUMENT", message: "Nested or empty batch tool is not supported.", details: { operationId, tool: toolName } };
+      if (!toolExists(toolName)) throw { code: "TOOL_NOT_FOUND", message: `Unknown tool: ${toolName}`, details: { operationId, tool: toolName } };
+      if (input.dryRun) {
+        const expectedHost = expectedHostForTool(toolName);
+        if (expectedHost) {
+          const session = selectSession(opInput, expectedHost, toolName);
+          if (!session) throw { code: "SESSION_NOT_FOUND", message: `No online WPS session found for ${toolName}.` };
+          assertSessionHost(session, expectedHost, toolName);
+        }
+        results.push({ operationId, index, tool: toolName, ok: true, dryRun: true, durationMs: Date.now() - stepStarted, wouldRun: true });
+        continue;
+      }
+      const result = await runTool(toolName, opInput);
+      results.push({ operationId, index, tool: toolName, ok: true, durationMs: Date.now() - stepStarted, result });
+    } catch (error) {
+      const step = { operationId, index, tool: toolName, ok: false, durationMs: Date.now() - stepStarted, error: { code: error.code || "TOOL_FAILED", message: error.message || String(error), details: error.details || {} } };
+      results.push(step);
+      if (stopOnError) break;
+    }
+  }
+  const verification = [];
+  if (!input.dryRun && Array.isArray(input.verifyAfter)) {
+    for (const [index, operation] of input.verifyAfter.entries()) {
+      const operationId = operation.operationId || `verify-${index + 1}`;
+      const toolName = operation.tool;
+      const stepStarted = Date.now();
+      try {
+        const result = await runTool(toolName, batchOperationInput(input, operation));
+        verification.push({ operationId, index, tool: toolName, ok: true, durationMs: Date.now() - stepStarted, result });
+      } catch (error) {
+        verification.push({ operationId, index, tool: toolName, ok: false, durationMs: Date.now() - stepStarted, error: { code: error.code || "TOOL_FAILED", message: error.message || String(error), details: error.details || {} } });
+      }
+    }
+  }
+  let saveResult = null;
+  if (!input.dryRun && input.saveAfter) {
+    const firstTool = input.operations.find((operation) => operation.tool?.startsWith("wpp.") || operation.tool?.startsWith("et."))?.tool || "";
+    const saveTool = firstTool.startsWith("wpp.") ? "wpp.save_document" : "";
+    if (saveTool) {
+      try { saveResult = await runTool(saveTool, { sessionId: input.sessionId }); }
+      catch (error) { saveResult = { ok: false, error: { code: error.code || "SAVE_FAILED", message: error.message || String(error), details: error.details || {} } }; }
+    } else saveResult = { ok: false, warning: { code: "SAVE_UNSUPPORTED", message: "saveAfter is currently implemented for Writer sessions." } };
+  }
+  return { batch: true, ok: results.every((step) => step.ok) && verification.every((step) => step.ok) && (!saveResult || saveResult.ok !== false), operationCount: input.operations.length, completedCount: results.length, failedCount: results.filter((step) => !step.ok).length, dryRun: Boolean(input.dryRun), durationMs: Date.now() - started, results, verification, saveResult };
+}
 async function probeJson(url) {
   const started = Date.now();
   try {
@@ -240,7 +305,8 @@ async function connectionStatus(input = {}) {
 async function runTool(toolName, input) {
   if (toolName === "wps.list_sessions") return { sessions: listSessions(input) };
   if (toolName === "wps.connection_status") return connectionStatus(input);
-  const expectedHost = toolName.startsWith("et.") ? "et" : toolName.startsWith("wpp.") ? "wpp" : "";
+  if (toolName === "wps.batch") return runBatch(input);
+  const expectedHost = expectedHostForTool(toolName);
   const session = selectSession(input, expectedHost, toolName);
   if (!session) throw { code: "SESSION_NOT_FOUND", message: `No online WPS session found for ${toolName}.` };
   assertSessionHost(session, expectedHost, toolName);
