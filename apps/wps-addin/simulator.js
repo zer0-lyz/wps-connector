@@ -1,12 +1,15 @@
 const bridgeUrl = (process.env.WPS_CONNECTOR_BRIDGE_URL || "http://127.0.0.1:40215").replace(/\/$/, "");
 const host = process.env.WPS_CONNECTOR_SIM_HOST || "et";
 const sessionId = process.env.WPS_CONNECTOR_SIM_SESSION_ID || `sim-${host}-${Date.now()}`;
+const selectionPreviewCellLimit = Number(process.env.WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT || 1000);
 
 const state = {
   et: {
     documentName: "simulated-et.xlsx",
     sheetName: "Sheet1",
-    selectionAddress: "A1:B2",
+    selectionAddress: process.env.WPS_CONNECTOR_SIM_SELECTION_ADDRESS || "A1:B2",
+    selectionRowCount: Number(process.env.WPS_CONNECTOR_SIM_SELECTION_ROWS || 2),
+    selectionColumnCount: Number(process.env.WPS_CONNECTOR_SIM_SELECTION_COLUMNS || 2),
     worksheets: ["Sheet1"],
     cells: {
       "A1:B2": [["Name", "Amount"], ["Alpha", 100]],
@@ -70,7 +73,12 @@ async function request(path, options = {}) {
 }
 
 function activeContext() {
-  if (host === "et") return { sheetName: state.et.sheetName, address: state.et.selectionAddress };
+  if (host === "et") {
+    const cellCount = state.et.selectionRowCount * state.et.selectionColumnCount;
+    const shape = { sheetName: state.et.sheetName, address: state.et.selectionAddress, rowCount: state.et.selectionRowCount, columnCount: state.et.selectionColumnCount, cellCount };
+    if (cellCount > selectionPreviewCellLimit) return { ...shape, previewSkipped: true, textPreview: "大选区已跳过预览，避免 WPS 卡顿" };
+    return { ...shape, previewSkipped: false, textPreview: JSON.stringify(state.et.cells[state.et.selectionAddress] || []) };
+  }
   if (host === "wpp") return { start: state.wpp.selectionStart, end: state.wpp.selectionEnd, textPreview: state.wpp.selectionText.slice(0, 500), length: state.wpp.selectionText.length };
   return null;
 }
@@ -83,6 +91,7 @@ async function register() {
       sessionId,
       host,
       documentName: state[host].documentName,
+      documentKey: process.env.WPS_CONNECTOR_SIM_DOCUMENT_KEY || "",
       activeContext: activeContext(),
       capabilities,
     }),
@@ -139,10 +148,30 @@ function execute(command) {
     return isSystemSheet(name) || /^Sheet1$/i.test(String(name || ""));
   }
   if (command.toolName === "et.read_selection") {
+    const cellCount = state.et.selectionRowCount * state.et.selectionColumnCount;
+    if (cellCount > selectionPreviewCellLimit) {
+      return {
+        host: "et",
+        sheetName: state.et.sheetName,
+        address: state.et.selectionAddress,
+        rowCount: state.et.selectionRowCount,
+        columnCount: state.et.selectionColumnCount,
+        cellCount,
+        previewSkipped: true,
+        textPreview: "大选区已跳过预览，避免 WPS 卡顿",
+        values: null,
+        text: "",
+        warning: "Selection is too large to read safely; pass an explicit smaller address to et.read_range.",
+      };
+    }
     return {
       host: "et",
       sheetName: state.et.sheetName,
       address: state.et.selectionAddress,
+      rowCount: state.et.selectionRowCount,
+      columnCount: state.et.selectionColumnCount,
+      cellCount,
+      previewSkipped: false,
       values: state.et.cells[state.et.selectionAddress] || [],
       text: JSON.stringify(state.et.cells[state.et.selectionAddress] || []),
     };

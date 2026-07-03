@@ -110,7 +110,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.34", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.35", "Update check did not return the current connector version.");
 
   const stalePort = port + 1;
   const staleBridgeUrl = `http://127.0.0.1:${stalePort}`;
@@ -152,10 +152,21 @@ async function main() {
     WPS_CONNECTOR_SIM_HOST: "wpp",
     WPS_CONNECTOR_SIM_SESSION_ID: "test-wpp-session",
   });
+  startNode(["apps/wps-addin/simulator.js"], {
+    WPS_CONNECTOR_BRIDGE_URL: bridgeUrl,
+    WPS_CONNECTOR_SIM_HOST: "et",
+    WPS_CONNECTOR_SIM_SESSION_ID: "test-et-large-selection",
+    WPS_CONNECTOR_SIM_DOCUMENT_KEY: "simulated-et-large-selection.xlsx",
+    WPS_CONNECTOR_SIM_SELECTION_ADDRESS: "A:A",
+    WPS_CONNECTOR_SIM_SELECTION_ROWS: "1048576",
+    WPS_CONNECTOR_SIM_SELECTION_COLUMNS: "1",
+  });
 
-  const sessions = await waitForSessions(2);
+  const sessions = await waitForSessions(3);
   assert(sessions.some((session) => session.host === "et"), "ET session was not registered.");
   assert(sessions.some((session) => session.host === "wpp"), "WPP session was not registered.");
+  const largeSession = sessions.find((session) => session.sessionId === "test-et-large-selection");
+  assert(largeSession?.activeContext?.previewSkipped === true && largeSession.activeContext.cellCount === 1048576, "Large ET selection heartbeat did not skip preview.");
 
   const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
   const mcpClient = createMcpClient(mcp);
@@ -243,6 +254,11 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-et-session" }),
   });
   assert(etSelection.values?.[0]?.[0] === "Name", "ET selection read returned unexpected values.");
+  const etLargeSelection = await request("/api/tools/et/read_selection", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-large-selection" }),
+  });
+  assert(etLargeSelection.previewSkipped === true && etLargeSelection.values === null && etLargeSelection.cellCount === 1048576 && etLargeSelection.warning, "ET large selection did not return a safe lightweight response.");
 
   const etScope = await request("/api/sessions/test-et-session/operation-scope", {
     method: "POST",

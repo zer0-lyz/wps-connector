@@ -1,6 +1,7 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.34";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.03-update-check.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.35";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.03-large-selection-guard.1";
+const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
 let wpsConnectorCurrentDocumentKey = "";
@@ -8,6 +9,7 @@ let wpsConnectorStarted = false;
 let wpsConnectorSessionInfo = null;
 const wpsConnectorCommentIdMap = {};
 const wpsConnectorRangeIdMap = {};
+const wpsConnectorFallbackDocumentKeys = {};
 
 function wpsConnectorUuid() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
@@ -38,6 +40,26 @@ function wpsConnectorEtAddress(selection) {
       || wpsConnectorMember(selection, "Address")
       || "",
   );
+}
+function wpsConnectorEtSelectionShape(selection) {
+  const rowCount = Number(wpsConnectorMember(wpsConnectorMember(selection, "Rows"), "Count") || 1);
+  const columnCount = Number(wpsConnectorMember(wpsConnectorMember(selection, "Columns"), "Count") || 1);
+  const safeRowCount = Number.isFinite(rowCount) && rowCount > 0 ? rowCount : 1;
+  const safeColumnCount = Number.isFinite(columnCount) && columnCount > 0 ? columnCount : 1;
+  return {
+    address: wpsConnectorEtAddress(selection),
+    rowCount: safeRowCount,
+    columnCount: safeColumnCount,
+    cellCount: safeRowCount * safeColumnCount,
+  };
+}
+function wpsConnectorLargeSelectionContext(shape) {
+  return {
+    ...shape,
+    previewSkipped: true,
+    textPreview: "大选区已跳过预览，避免 WPS 卡顿",
+    warning: "Selection is too large to preview safely; select a smaller range or pass an explicit address to et.read_range.",
+  };
 }
 function wpsConnectorPreviewValues(values) {
   const rows = wpsConnectorNormalizeValues(values).slice(0, 4).map((row) => row.slice(0, 6).map((cell) => String(cell ?? "")).join("\t"));
@@ -242,17 +264,24 @@ function wpsConnectorDocumentIdentity(app, host) {
 }
 function wpsConnectorDocumentKey(host, identity) {
   const stable = identity?.fullPath || identity?.url || identity?.windowTitle || identity?.name || identity?.caption || identity?.title || "";
-  return `${host}::${stable || wpsConnectorUuid()}`;
+  if (stable) return `${host}::${stable}`;
+  wpsConnectorFallbackDocumentKeys[host] ||= `${host}::${wpsConnectorUuid()}`;
+  return wpsConnectorFallbackDocumentKeys[host];
 }
 function wpsConnectorActiveContext(app, host) {
   try {
     if (host === "et") {
       const selection = app.Selection;
+      const shape = wpsConnectorEtSelectionShape(selection);
+      if (shape.cellCount > WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT) {
+        return { sheetName: String(wpsConnectorCall(app.ActiveSheet?.Name) || ""), ...wpsConnectorLargeSelectionContext(shape) };
+      }
       const values = wpsConnectorMember(selection, "Value2");
       const text = String(wpsConnectorMember(selection, "Text") || "");
       return {
         sheetName: String(wpsConnectorCall(app.ActiveSheet?.Name) || ""),
-        address: wpsConnectorEtAddress(selection),
+        ...shape,
+        previewSkipped: false,
         textPreview: text || wpsConnectorPreviewValues(values),
       };
     }
@@ -336,11 +365,22 @@ function wpsConnectorRequireMatrix(value, field) {
 function wpsConnectorEtSelection() {
   const app = wpsConnectorApp();
   const selection = app.Selection;
+  const shape = wpsConnectorEtSelectionShape(selection);
+  if (shape.cellCount > WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT) {
+    return {
+      host: "et",
+      sheetName: String(wpsConnectorCall(app.ActiveSheet?.Name) || ""),
+      ...wpsConnectorLargeSelectionContext(shape),
+      values: null,
+      text: "",
+    };
+  }
   const values = wpsConnectorMember(selection, "Value2");
   return {
     host: "et",
     sheetName: String(wpsConnectorCall(app.ActiveSheet?.Name) || ""),
-    address: wpsConnectorEtAddress(selection),
+    ...shape,
+    previewSkipped: false,
     values,
     text: String(wpsConnectorMember(selection, "Text") || ""),
   };
