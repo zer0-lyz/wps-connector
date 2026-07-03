@@ -10,6 +10,9 @@ import { tools } from "../shared/toolSchemas.js";
 const host = process.env.WPS_CONNECTOR_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_PORT || 40215);
 const commandTimeoutMs = Number(process.env.WPS_CONNECTOR_COMMAND_TIMEOUT_MS || 60000);
+const sessionOfflineMs = Number(process.env.WPS_CONNECTOR_SESSION_OFFLINE_MS || 30000);
+const sessionRetainOfflineMs = Number(process.env.WPS_CONNECTOR_SESSION_RETAIN_OFFLINE_MS || 300000);
+const maxOfflineSessions = Number(process.env.WPS_CONNECTOR_MAX_OFFLINE_SESSIONS || 200);
 const addinUrl = (process.env.WPS_CONNECTOR_ADDIN_URL || "http://127.0.0.1:3891").replace(/\/$/, "");
 const runtimeRoot = process.env.WPS_CONNECTOR_RUNTIME_ROOT || join(homedir(), ".local/share/wps-connector/runtime");
 const catalogPath = process.env.WPS_CONNECTOR_CATALOG_PATH || join(runtimeRoot, "codex-catalog.snapshot.json");
@@ -37,6 +40,7 @@ function statusForError(error) {
 async function readJson(req) { let body = ""; for await (const chunk of req) body += chunk; if (!body.trim()) return {}; return JSON.parse(body); }
 function normalizeHost(value) { const text = String(value || "").toLowerCase(); if (text.includes("spreadsheet") || text.includes("et") || text.includes("excel")) return "et"; if (text.includes("writer") || text.includes("wpp") || text.includes("word")) return "wpp"; return value || "wps"; }
 function normalizeText(value) { return String(value || "").trim(); }
+function queryBool(value, fallback = false) { if (value === undefined || value === null || value === "") return fallback; return /^(1|true|yes|on)$/i.test(String(value)); }
 function documentKeyFor(session) { return session.documentIdentity?.fullPath || session.documentIdentity?.url || session.documentName || session.sessionId; }
 const bindingKeys = ["projectName", "projectPath", "projectId", "threadId", "conversationId", "documentRole", "bindingId", "documentKey", "host", "documentName", "createdAt", "updatedAt"];
 const selectorBindingKeys = ["projectName", "projectPath", "projectId", "threadId", "conversationId", "documentRole", "bindingId", "documentKey", "host", "documentName"];
@@ -87,7 +91,22 @@ async function refreshCatalog() {
   await execFileAsync(process.execPath, [script, "--output", catalogPath], { env: { ...process.env, WPS_CONNECTOR_CATALOG_PATH: catalogPath }, maxBuffer: 1024 * 1024 * 20 });
   return loadCatalog();
 }
-function pruneOfflineSessions() { const cutoff = Date.now() - 30000; for (const session of sessions.values()) { if (Date.parse(session.lastSeenAt || session.registeredAt) < cutoff) session.status = "offline"; } }
+function sessionLastSeenMs(session) { const value = Date.parse(session.lastSeenAt || session.registeredAt || 0); return Number.isFinite(value) ? value : 0; }
+function pruneOfflineSessions() {
+  const now = Date.now();
+  const offline = [];
+  for (const [sessionId, session] of sessions.entries()) {
+    const age = now - sessionLastSeenMs(session);
+    if (age > sessionRetainOfflineMs) {
+      sessions.delete(sessionId);
+      continue;
+    }
+    if (age > sessionOfflineMs) session.status = "offline";
+    if (session.status !== "online") offline.push(session);
+  }
+  offline.sort((a, b) => sessionLastSeenMs(b) - sessionLastSeenMs(a));
+  for (const session of offline.slice(Math.max(0, maxOfflineSessions))) sessions.delete(session.sessionId);
+}
 function sessionDocumentFlags(session) {
   const identity = session.documentIdentity || {};
   const fullPath = String(identity.fullPath || identity.url || session.documentKey || "").trim();
@@ -109,7 +128,13 @@ function listSessions(input = {}) {
   pruneOfflineSessions();
   const requested = requestedBinding(input);
   let items = [...sessions.values()];
-  if (input.onlyOnline) items = items.filter((session) => session.status === "online");
+  const includeOffline = queryBool(input.includeOffline, false);
+  const onlyOnline = queryBool(input.onlyOnline, false);
+  const sessionId = normalizeText(input.sessionId);
+  const documentKey = normalizeText(input.documentKey);
+  if (sessionId) items = items.filter((session) => session.sessionId === sessionId);
+  if (documentKey) items = items.filter((session) => session.documentKey === documentKey);
+  if (onlyOnline || (!includeOffline && !sessionId && !documentKey)) items = items.filter((session) => session.status === "online");
   if (input.onlyBound) items = items.filter((session) => Boolean(session.binding));
   if (input.host) { const host = normalizeHost(input.host); items = items.filter((session) => String(session.host || "").startsWith(host)); }
   items.sort((a, b) => sessionSortScore(b, requested) - sessionSortScore(a, requested) || Date.parse(b.lastSeenAt || 0) - Date.parse(a.lastSeenAt || 0));
@@ -326,13 +351,22 @@ async function handle(req, res) {
     if (req.method === "POST" && pathname === "/api/catalog/refresh") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
-    if (req.method === "GET" && pathname === "/api/sessions") { pruneOfflineSessions(); return sendJson(res, 200, { ok: true, sessions: [...sessions.values()].map(publicSession) }); }
+    if (req.method === "GET" && pathname === "/api/sessions") {
+      const input = Object.fromEntries(url.searchParams.entries());
+      const sessionsList = listSessions(input);
+      return sendJson(res, 200, { ok: true, sessions: sessionsList, count: sessionsList.length, filters: { onlyOnline: queryBool(input.onlyOnline, false), includeOffline: queryBool(input.includeOffline, false), sessionId: input.sessionId || "", documentKey: input.documentKey || "", host: input.host || "" } });
+    }
     if (req.method === "POST" && pathname === "/api/sessions/register") {
       const body = await readJson(req);
       const sessionId = body.sessionId || randomUUID();
       const previous = sessions.get(sessionId);
       const session = { sessionId, host: normalizeHost(body.host), documentName: body.documentName || "", documentKey: normalizeText(body.documentKey) || "", documentIdentity: body.documentIdentity || null, status: "online", registeredAt: previous?.registeredAt || nowIso(), lastSeenAt: nowIso(), activeContext: body.activeContext || null, operationScope: previous?.operationScope || { mode: "document" }, capabilities: body.capabilities || [], clientVersion: body.clientVersion || previous?.clientVersion || "", clientBuild: body.clientBuild || previous?.clientBuild || "", queue: previous?.queue || [], binding: previous?.binding || null };
       if (!session.documentKey) session.documentKey = documentKeyFor(session);
+      if (session.documentKey) {
+        for (const [existingId, existing] of sessions.entries()) {
+          if (existingId !== sessionId && existing.host === session.host && existing.documentKey === session.documentKey) sessions.delete(existingId);
+        }
+      }
       sessions.set(sessionId, session);
       session.binding = findBindingForSession(session) || null;
       return sendJson(res, 200, { ok: true, session: publicSession(session) });

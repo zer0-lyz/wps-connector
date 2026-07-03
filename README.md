@@ -132,8 +132,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.32`
-- clientBuild: `2026.07.03-batch-table-format.1`
+- UI/clientVersion: `v1.0.33`
+- clientBuild: `2026.07.03-session-prune.1`
 
 ## Current Tool Surface
 

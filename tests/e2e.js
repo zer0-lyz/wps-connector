@@ -37,6 +37,15 @@ async function rawRequest(path, options = {}) {
   json.httpStatus = response.status;
   return json;
 }
+async function requestAt(baseUrl, path, options = {}) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers: { "content-type": "application/json", ...(options.headers || {}) },
+  });
+  const json = await response.json();
+  json.httpStatus = response.status;
+  return json;
+}
 
 async function waitForHealth() {
   for (let i = 0; i < 40; i += 1) {
@@ -48,6 +57,16 @@ async function waitForHealth() {
     }
   }
   throw new Error("Bridge did not become healthy.");
+}
+async function waitForHealthAt(baseUrl) {
+  for (let i = 0; i < 40; i += 1) {
+    try {
+      const json = await requestAt(baseUrl, "/api/health");
+      if (json.ok) return;
+    } catch {}
+    await sleep(100);
+  }
+  throw new Error(`Bridge did not become healthy: ${baseUrl}`);
 }
 
 async function waitForSessions(count) {
@@ -90,6 +109,36 @@ async function main() {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
   await waitForHealth();
+
+  const stalePort = port + 1;
+  const staleBridgeUrl = `http://127.0.0.1:${stalePort}`;
+  startNode(["apps/bridge/server.js"], {
+    WPS_CONNECTOR_PORT: String(stalePort),
+    WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-stale-bindings-${process.pid}.json`,
+    WPS_CONNECTOR_SESSION_OFFLINE_MS: "100",
+    WPS_CONNECTOR_SESSION_RETAIN_OFFLINE_MS: "250",
+    WPS_CONNECTOR_MAX_OFFLINE_SESSIONS: "5",
+  });
+  await waitForHealthAt(staleBridgeUrl);
+  for (let i = 0; i < 80; i += 1) {
+    const json = await requestAt(staleBridgeUrl, "/api/sessions/register", {
+      method: "POST",
+      body: JSON.stringify({ sessionId: `stale-${i}`, host: "wpp", documentName: `stale-${i}.docx`, documentKey: `/tmp/stale-${i}.docx` }),
+    });
+    assert(json.ok === true, "Stale session setup failed.");
+  }
+  await requestAt(staleBridgeUrl, "/api/sessions/register", { method: "POST", body: JSON.stringify({ sessionId: "dup-old", host: "wpp", documentName: "dup.docx", documentKey: "/tmp/dup.docx" }) });
+  await requestAt(staleBridgeUrl, "/api/sessions/register", { method: "POST", body: JSON.stringify({ sessionId: "dup-new", host: "wpp", documentName: "dup.docx", documentKey: "/tmp/dup.docx" }) });
+  const duplicateDoc = await requestAt(staleBridgeUrl, "/api/sessions?documentKey=%2Ftmp%2Fdup.docx&includeOffline=true");
+  assert(duplicateDoc.sessions.length === 1 && duplicateDoc.sessions[0].sessionId === "dup-new", "Register did not replace duplicate host/documentKey session.");
+  await sleep(160);
+  const staleDefault = await requestAt(staleBridgeUrl, "/api/sessions");
+  assert(staleDefault.ok === true && staleDefault.sessions.length === 0 && JSON.stringify(staleDefault).length < 2000, "Default /api/sessions returned stale offline sessions.");
+  const staleIncluded = await requestAt(staleBridgeUrl, "/api/sessions?includeOffline=true");
+  assert(staleIncluded.ok === true && staleIncluded.sessions.length <= 5, "includeOffline did not cap retained offline sessions.");
+  await sleep(140);
+  const staleDeleted = await requestAt(staleBridgeUrl, "/api/sessions?includeOffline=true");
+  assert(staleDeleted.ok === true && staleDeleted.sessions.length === 0, "Retained offline sessions were not deleted after retention window.");
 
   startNode(["apps/wps-addin/simulator.js"], {
     WPS_CONNECTOR_BRIDGE_URL: bridgeUrl,

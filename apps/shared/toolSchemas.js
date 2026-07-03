@@ -12,7 +12,7 @@ export const tools = [
   {
     name: "wps.list_sessions",
     description: "List active WPS add-in sessions registered with the local bridge.",
-    inputSchema: { type: "object", properties: { onlyOnline: { type: "boolean" }, onlyBound: { type: "boolean" }, host: { type: "string" }, projectId: { type: "string" }, threadId: { type: "string" }, binding: { type: "object", additionalProperties: true } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { onlyOnline: { type: "boolean" }, includeOffline: { type: "boolean" }, onlyBound: { type: "boolean" }, host: { type: "string" }, sessionId: { type: "string" }, documentKey: { type: "string" }, projectId: { type: "string" }, threadId: { type: "string" }, binding: { type: "object", additionalProperties: true } }, additionalProperties: false },
   },
   {
     name: "wps.connection_status",
