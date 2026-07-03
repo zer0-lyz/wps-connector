@@ -109,6 +109,8 @@ async function main() {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
   await waitForHealth();
+  const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.34", "Update check did not return the current connector version.");
 
   const stalePort = port + 1;
   const staleBridgeUrl = `http://127.0.0.1:${stalePort}`;

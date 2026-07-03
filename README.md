@@ -132,8 +132,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.33`
-- clientBuild: `2026.07.03-session-prune.1`
+- UI/clientVersion: `v1.0.34`
+- clientBuild: `2026.07.03-update-check.1`
 
 ## Current Tool Surface
 
