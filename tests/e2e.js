@@ -122,7 +122,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.45", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.46", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
 
@@ -198,12 +198,23 @@ async function main() {
     WPS_CONNECTOR_SIM_SELECTION_ROWS: "1048576",
     WPS_CONNECTOR_SIM_SELECTION_COLUMNS: "1",
   });
+  startNode(["apps/wps-addin/simulator.js"], {
+    WPS_CONNECTOR_BRIDGE_URL: bridgeUrl,
+    WPS_CONNECTOR_SIM_HOST: "et",
+    WPS_CONNECTOR_SIM_SESSION_ID: "test-et-full-sheet-selection",
+    WPS_CONNECTOR_SIM_DOCUMENT_KEY: "simulated-et-full-sheet-selection.xlsx",
+    WPS_CONNECTOR_SIM_SELECTION_ADDRESS: "A1:XFD1048576",
+    WPS_CONNECTOR_SIM_SELECTION_ROWS: "1048576",
+    WPS_CONNECTOR_SIM_SELECTION_COLUMNS: "16384",
+  });
 
-  const sessions = await waitForSessions(3);
+  const sessions = await waitForSessions(4);
   assert(sessions.some((session) => session.host === "et"), "ET session was not registered.");
   assert(sessions.some((session) => session.host === "wpp"), "WPP session was not registered.");
   const largeSession = sessions.find((session) => session.sessionId === "test-et-large-selection");
   assert(largeSession?.activeContext?.previewSkipped === true && largeSession.activeContext.cellCount === 1048576, "Large ET selection heartbeat did not skip preview.");
+  const fullSheetSession = sessions.find((session) => session.sessionId === "test-et-full-sheet-selection");
+  assert(fullSheetSession?.activeContext?.previewSkipped === true && fullSheetSession.activeContext.cellCount > 1000000000, "Full-sheet ET selection heartbeat did not skip preview.");
 
   const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
   const mcpClient = createMcpClient(mcp);
@@ -325,6 +336,11 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-et-large-selection" }),
   });
   assert(etLargeSelection.previewSkipped === true && etLargeSelection.values === null && etLargeSelection.cellCount === 1048576 && etLargeSelection.warning, "ET large selection did not return a safe lightweight response.");
+  const etFullSheetSelection = await request("/api/tools/et/read_selection", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-full-sheet-selection" }),
+  });
+  assert(etFullSheetSelection.previewSkipped === true && etFullSheetSelection.values === null && etFullSheetSelection.cellCount > 1000000000 && etFullSheetSelection.warning, "ET full-sheet selection did not return a safe lightweight response.");
 
   const etScope = await request("/api/sessions/test-et-session/operation-scope", {
     method: "POST",

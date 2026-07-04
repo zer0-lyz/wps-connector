@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.45";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.04-window-pane-routing.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.46";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.04-full-sheet-selection-guard.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
@@ -43,15 +43,22 @@ function wpsConnectorEtAddress(selection) {
   );
 }
 function wpsConnectorEtSelectionShape(selection) {
-  const rowCount = Number(wpsConnectorMember(wpsConnectorMember(selection, "Rows"), "Count") || 1);
-  const columnCount = Number(wpsConnectorMember(wpsConnectorMember(selection, "Columns"), "Count") || 1);
+  const address = wpsConnectorEtAddress(selection);
+  const fullColumn = /^\$?[A-Z]{1,3}:\$?[A-Z]{1,3}$/i.test(address);
+  const fullRow = /^\$?\d{1,7}:\$?\d{1,7}$/.test(address);
+  const fullSheet = /^\$?A\$?1:\$?XFD\$?1048576$/i.test(address);
+  const rowCount = Number(wpsConnectorMember(wpsConnectorMember(selection, "Rows"), "Count") || (fullColumn || fullSheet ? 1048576 : 1));
+  const columnCount = Number(wpsConnectorMember(wpsConnectorMember(selection, "Columns"), "Count") || (fullRow || fullSheet ? 16384 : 1));
   const safeRowCount = Number.isFinite(rowCount) && rowCount > 0 ? rowCount : 1;
   const safeColumnCount = Number.isFinite(columnCount) && columnCount > 0 ? columnCount : 1;
   return {
-    address: wpsConnectorEtAddress(selection),
+    address,
     rowCount: safeRowCount,
     columnCount: safeColumnCount,
     cellCount: safeRowCount * safeColumnCount,
+    fullRowSelection: fullRow,
+    fullColumnSelection: fullColumn,
+    fullSheetSelection: fullSheet || (safeRowCount >= 1048576 && safeColumnCount >= 16384),
   };
 }
 function wpsConnectorLargeSelectionContext(shape) {
