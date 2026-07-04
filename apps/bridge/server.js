@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -18,6 +18,8 @@ const runtimeRoot = process.env.WPS_CONNECTOR_RUNTIME_ROOT || join(homedir(), ".
 const catalogPath = process.env.WPS_CONNECTOR_CATALOG_PATH || join(runtimeRoot, "codex-catalog.snapshot.json");
 const bindingsPath = process.env.WPS_CONNECTOR_BINDINGS_PATH || join(runtimeRoot, "project-bindings.local.json");
 const updateCheckUrl = process.env.WPS_CONNECTOR_UPDATE_CHECK_URL || "https://raw.githubusercontent.com/zer0-lyz/wps-connector/main/apps/wps-addin/main.js";
+const updateCheckFallbackUrl = process.env.WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL || "https://cdn.jsdelivr.net/gh/zer0-lyz/wps-connector@main/apps/wps-addin/main.js";
+const sourceRoot = process.env.WPS_CONNECTOR_SOURCE_ROOT || join(homedir(), ".local/share/wps-connector/source");
 const sessions = new Map();
 const commands = new Map();
 const execFileAsync = promisify(execFile);
@@ -107,28 +109,59 @@ function compareVersions(a = "", b = "") {
   }
   return 0;
 }
+async function fetchUpdateSource(url, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.text();
+  } catch (error) {
+    const aborted = error?.name === "AbortError" || /aborted/i.test(String(error?.message || error));
+    throw new Error(aborted ? "远程检查超时" : (error.message || String(error)));
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function checkForUpdates(input = {}) {
   const cacheMs = Number(process.env.WPS_CONNECTOR_UPDATE_CHECK_CACHE_MS || 300000);
   if (!queryBool(input.refresh, false) && updateCheckCache && Date.now() - updateCheckCache.checkedAtMs < cacheMs) return updateCheckCache.payload;
   const localPath = join(process.cwd(), "apps/wps-addin/main.js");
   const localSource = await readFile(localPath, "utf8");
   const current = parseConnectorVersion(localSource);
-  const payload = { current, latest: null, updateAvailable: false, checkedAt: nowIso(), source: { localPath, updateCheckUrl } };
+  const payload = { current, latest: null, updateAvailable: false, checkedAt: nowIso(), source: { localPath, updateCheckUrl, updateCheckFallbackUrl } };
   if (!queryBool(input.skipRemote, false)) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), Number(process.env.WPS_CONNECTOR_UPDATE_CHECK_TIMEOUT_MS || 15000));
-      const response = await fetch(updateCheckUrl, { signal: controller.signal, cache: "no-store" });
-      clearTimeout(timer);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      payload.latest = parseConnectorVersion(await response.text());
-      payload.updateAvailable = Boolean(payload.latest.version && compareVersions(current.version, payload.latest.version) < 0);
-    } catch (error) {
-      payload.warning = { code: "UPDATE_CHECK_FAILED", message: error.message || String(error) };
+    const timeoutMs = Number(process.env.WPS_CONNECTOR_UPDATE_CHECK_TIMEOUT_MS || 30000);
+    const urls = [updateCheckUrl, updateCheckFallbackUrl].filter(Boolean);
+    const failures = [];
+    for (const url of urls) {
+      try {
+        payload.latest = parseConnectorVersion(await fetchUpdateSource(url, timeoutMs));
+        payload.source.remoteUrl = url;
+        payload.updateAvailable = Boolean(payload.latest.version && compareVersions(current.version, payload.latest.version) < 0);
+        payload.warning = null;
+        break;
+      } catch (error) {
+        failures.push({ url, message: error.message || String(error) });
+      }
     }
+    if (!payload.latest?.version) payload.warning = { code: "UPDATE_CHECK_FAILED", message: failures.map((item) => `${item.url}: ${item.message}`).join("; "), failures };
   }
   updateCheckCache = { checkedAtMs: Date.now(), payload };
   return payload;
+}
+function applyUpdate() {
+  const logPath = join(runtimeRoot, "logs/update-apply.log");
+  const command = [
+    `cd ${JSON.stringify(sourceRoot)}`,
+    "git fetch origin main",
+    "git pull --ff-only origin main",
+    "npm run deploy",
+    "npm run launchd:install"
+  ].join(" && ");
+  const child = spawn("/bin/zsh", ["-lc", `mkdir -p ${JSON.stringify(join(runtimeRoot, "logs"))}; (${command}) >> ${JSON.stringify(logPath)} 2>&1`], { detached: true, stdio: "ignore" });
+  child.unref();
+  return { started: true, sourceRoot, runtimeRoot, logPath, message: "更新已开始。完成后 WPS Connector 服务会自动重启，请稍后刷新窗格。" };
 }
 function sessionLastSeenMs(session) { const value = Date.parse(session.lastSeenAt || session.registeredAt || 0); return Number.isFinite(value) ? value : 0; }
 function pruneOfflineSessions() {
@@ -387,6 +420,7 @@ async function handle(req, res) {
   try {
     if (req.method === "GET" && pathname === "/api/health") return sendJson(res, 200, { ok: true, name: "wps-connector", time: nowIso() });
     if (req.method === "GET" && pathname === "/api/update/check") { const result = await checkForUpdates(Object.fromEntries(url.searchParams.entries())); return sendJson(res, 200, { ok: true, ...result }); }
+    if (req.method === "POST" && pathname === "/api/update/apply") { return sendJson(res, 202, { ok: true, ...applyUpdate() }); }
     if (req.method === "GET" && pathname === "/api/tools/schema") return sendJson(res, 200, { ok: true, tools });
     if (req.method === "POST" && pathname === "/api/catalog/refresh") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source }); }

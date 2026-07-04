@@ -1,11 +1,15 @@
+import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const port = 40216;
+const updatePort = 40218;
 const bridgeUrl = `http://127.0.0.1:${port}`;
+const updateUrl = `http://127.0.0.1:${updatePort}/main.js`;
 const children = [];
+const servers = [];
 
 function startNode(args, env = {}) {
   const child = spawn(process.execPath, args, {
@@ -104,13 +108,23 @@ function assert(condition, message) {
 }
 
 async function main() {
-  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json` });
+  const updateServer = createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+    res.end('const WPS_CONNECTOR_CLIENT_VERSION = "9.9.9";\nconst WPS_CONNECTOR_CLIENT_BUILD = "2099.01.01-test-update.1";\n');
+  });
+  updateServer.listen(updatePort, "127.0.0.1");
+  servers.push(updateServer);
+  await once(updateServer, "listening");
+
+  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "" });
   bridge.on("exit", (code) => {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.36", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.37", "Update check did not return the current connector version.");
+  const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
+  assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
 
   const stalePort = port + 1;
   const staleBridgeUrl = `http://127.0.0.1:${stalePort}`;
@@ -1005,6 +1019,10 @@ async function main() {
 try {
   await main();
 } finally {
+  for (const server of servers.reverse()) {
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  }
   for (const child of children.reverse()) {
     if (!child.killed) child.kill("SIGTERM");
     await Promise.race([once(child, "exit"), sleep(500)]).catch(() => {});
