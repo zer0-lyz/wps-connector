@@ -122,7 +122,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.39", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.40", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
 
@@ -234,8 +234,8 @@ async function main() {
   });
   assert(bindWpp.binding?.threadId === "thread-b", "WPP binding was not saved.");
 
-  const bridgeConnectionStatus = await request("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
-  assert(bridgeConnectionStatus.counts?.online >= 1 && bridgeConnectionStatus.agentUsage?.dottedAndUnderscoreNamesSupported === true, "Bridge connection_status did not return agent diagnostics.");
+  const bridgeConnectionStatus = await rawRequest("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
+  assert(bridgeConnectionStatus.counts?.online >= 1 && bridgeConnectionStatus.agentUsage?.dottedAndUnderscoreNamesSupported === true && bridgeConnectionStatus.issues?.some((issue) => issue.code === "SESSION_AMBIGUOUS"), "Bridge connection_status did not return ambiguity diagnostics for multiple ET sessions.");
 
   const onlineSessions = await request("/api/tools/wps/list_sessions", { method: "POST", body: JSON.stringify({ onlyOnline: true }) });
   assert(onlineSessions.sessions.every((session) => session.status === "online"), "wps.list_sessions onlyOnline returned non-online session.");
@@ -249,6 +249,23 @@ async function main() {
     body: JSON.stringify({ binding: { projectId: "project-a", threadId: "thread-a" } }),
   });
   assert(boundEtSelection.sessionId === "test-et-session", "Bound ET selection did not route to the project-a session.");
+
+  const bindSecondEt = await request("/api/sessions/test-et-large-selection/binding", {
+    method: "POST",
+    body: JSON.stringify({ binding: { projectId: "project-a", projectName: "Project A", projectPath: "/tmp/project-a", threadId: "thread-a" } }),
+  });
+  assert(bindSecondEt.binding?.projectId === "project-a", "Second ET binding was not saved.");
+  const ambiguousEt = await rawRequest("/api/tools/et/read_selection", {
+    method: "POST",
+    body: JSON.stringify({ binding: { projectId: "project-a", threadId: "thread-a" } }),
+  });
+  assert(ambiguousEt.ok === false && ambiguousEt.error?.code === "SESSION_AMBIGUOUS", "Multiple ET sessions with the same binding did not return SESSION_AMBIGUOUS.");
+  assert(ambiguousEt.httpStatus === 409 && ambiguousEt.error?.details?.candidates?.length >= 2, "SESSION_AMBIGUOUS did not return HTTP 409 and candidate sessions.");
+  const ambiguousStatus = await rawRequest("/api/tools/wps/connection_status", {
+    method: "POST",
+    body: JSON.stringify({ onlyOnline: true, host: "et", binding: { projectId: "project-a", threadId: "thread-a" } }),
+  });
+  assert(ambiguousStatus.ok === false && ambiguousStatus.issues?.some((issue) => issue.code === "SESSION_AMBIGUOUS"), "connection_status did not report SESSION_AMBIGUOUS for multiple matching ET sessions.");
 
   const wrongExplicitBinding = await rawRequest("/api/tools/et/read_selection", {
     method: "POST",
