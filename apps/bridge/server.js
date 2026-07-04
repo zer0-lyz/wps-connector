@@ -161,7 +161,7 @@ function applyUpdate() {
   ].join(" && ");
   const child = spawn("/bin/zsh", ["-lc", `mkdir -p ${JSON.stringify(join(runtimeRoot, "logs"))}; (${command}) >> ${JSON.stringify(logPath)} 2>&1`], { detached: true, stdio: "ignore" });
   child.unref();
-  return { started: true, sourceRoot, runtimeRoot, logPath, message: "更新已开始。完成后 WPS Connector 服务会自动重启，请稍后刷新窗格。" };
+  return { started: true, sourceRoot, runtimeRoot, logPath, message: "更新安装已开始。文件和本地服务会更新，但当前 WPS 已加载的插件不会热替换；安装完成后请重启 WPS 使新版本生效。" };
 }
 function sessionLastSeenMs(session) { const value = Date.parse(session.lastSeenAt || session.registeredAt || 0); return Number.isFinite(value) ? value : 0; }
 function pruneOfflineSessions() {
