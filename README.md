@@ -134,8 +134,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.46`
-- clientBuild: `2026.07.04-full-sheet-selection-guard.1`
+- UI/clientVersion: `v1.0.47`
+- clientBuild: `2026.07.04-routable-session-state.1`
 
 ## Current Tool Surface
 
