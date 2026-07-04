@@ -134,8 +134,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.43`
-- clientBuild: `2026.07.04-session-timeout-fuse.1`
+- UI/clientVersion: `v1.0.44`
+- clientBuild: `2026.07.04-fresh-session-routing.1`
 
 ## Current Tool Surface
 
