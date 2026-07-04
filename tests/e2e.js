@@ -122,7 +122,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.47", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.48", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
 
@@ -156,12 +156,43 @@ async function main() {
   const staleDeleted = await requestAt(staleBridgeUrl, "/api/sessions?includeOffline=true");
   assert(staleDeleted.ok === true && staleDeleted.sessions.length === 0, "Retained offline sessions were not deleted after retention window.");
 
+  const routablePort = port + 4;
+  const routableBridgeUrl = `http://127.0.0.1:${routablePort}`;
+  startNode(["apps/bridge/server.js"], {
+    WPS_CONNECTOR_PORT: String(routablePort),
+    WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-routable-bindings-${process.pid}.json`,
+    WPS_CONNECTOR_SESSION_FRESH_MS: "80",
+    WPS_CONNECTOR_SESSION_OFFLINE_MS: "60000",
+    WPS_CONNECTOR_WAIT_ROUTABLE_MS: "500",
+  });
+  await waitForHealthAt(routableBridgeUrl);
+  await requestAt(routableBridgeUrl, "/api/sessions/register", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "stale-online-et", host: "et", documentName: "stale-online.xlsx", documentKey: "/tmp/stale-online.xlsx" }),
+  });
+  await sleep(140);
+  const staleOnline = await requestAt(routableBridgeUrl, "/api/sessions?sessionId=stale-online-et");
+  assert(staleOnline.sessions[0]?.status === "online" && staleOnline.sessions[0]?.routable === false && staleOnline.sessions[0]?.stale === true, "Stale online session did not expose routable=false/stale=true.");
+  const onlyRoutable = await requestAt(routableBridgeUrl, "/api/sessions?onlyRoutable=true");
+  assert(!onlyRoutable.sessions.some((session) => session.sessionId === "stale-online-et"), "onlyRoutable returned a stale session.");
+  const staleTool = await requestAt(routableBridgeUrl, "/api/tools/et/read_selection", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "stale-online-et" }),
+  });
+  assert(staleTool.ok === false && staleTool.httpStatus === 409 && staleTool.error?.code === "SESSION_NOT_ROUTABLE", "Stale session did not return SESSION_NOT_ROUTABLE quickly.");
+  const waitedStaleTool = await requestAt(routableBridgeUrl, "/api/tools/et/read_selection", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "stale-online-et", waitUntilRoutable: true, waitTimeoutMs: 120 }),
+  });
+  assert(waitedStaleTool.ok === false && waitedStaleTool.httpStatus === 409 && waitedStaleTool.error?.code === "SESSION_NOT_ROUTABLE" && waitedStaleTool.error.details?.waitedForRoutableMs >= 100, "waitUntilRoutable did not wait and return SESSION_NOT_ROUTABLE.");
+
   const timeoutPort = port + 3;
   const timeoutBridgeUrl = `http://127.0.0.1:${timeoutPort}`;
   startNode(["apps/bridge/server.js"], {
     WPS_CONNECTOR_PORT: String(timeoutPort),
     WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-timeout-bindings-${process.pid}.json`,
     WPS_CONNECTOR_COMMAND_TIMEOUT_MS: "120",
+    WPS_CONNECTOR_SESSION_FRESH_MS: "60000",
     WPS_CONNECTOR_SESSION_OFFLINE_MS: "60000",
   });
   await waitForHealthAt(timeoutBridgeUrl);

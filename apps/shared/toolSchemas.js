@@ -790,3 +790,16 @@ export const tools = [
     },
   },
 ];
+
+const routableWaitProperties = {
+  waitUntilRoutable: { type: "boolean" },
+  waitTimeoutMs: { type: "number" },
+  requireRoutable: { type: "boolean" },
+};
+
+for (const tool of tools) {
+  if (!/^(et|wpp)\./.test(tool.name || "")) continue;
+  const schema = tool.inputSchema;
+  if (!schema || schema.type !== "object") continue;
+  schema.properties = { ...(schema.properties || {}), ...routableWaitProperties };
+}

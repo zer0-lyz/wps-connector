@@ -11,6 +11,7 @@ const host = process.env.WPS_CONNECTOR_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_PORT || 40215);
 const commandTimeoutMs = Number(process.env.WPS_CONNECTOR_COMMAND_TIMEOUT_MS || 45000);
 const sessionFreshMs = Number(process.env.WPS_CONNECTOR_SESSION_FRESH_MS || 15000);
+const waitRoutableDefaultMs = Number(process.env.WPS_CONNECTOR_WAIT_ROUTABLE_MS || 300000);
 const sessionOfflineMs = Number(process.env.WPS_CONNECTOR_SESSION_OFFLINE_MS || 120000);
 const sessionRetainOfflineMs = Number(process.env.WPS_CONNECTOR_SESSION_RETAIN_OFFLINE_MS || 600000);
 const maxOfflineSessions = Number(process.env.WPS_CONNECTOR_MAX_OFFLINE_SESSIONS || 200);
@@ -46,6 +47,8 @@ async function readJson(req) { let body = ""; for await (const chunk of req) bod
 function normalizeHost(value) { const text = String(value || "").toLowerCase(); if (text.includes("spreadsheet") || text.includes("et") || text.includes("excel")) return "et"; if (text.includes("writer") || text.includes("wpp") || text.includes("word")) return "wpp"; return value || "wps"; }
 function normalizeText(value) { return String(value || "").trim(); }
 function queryBool(value, fallback = false) { if (value === undefined || value === null || value === "") return fallback; return /^(1|true|yes|on)$/i.test(String(value)); }
+function numberInput(value, fallback, min = 0, max = Number.MAX_SAFE_INTEGER) { const number = Number(value); if (!Number.isFinite(number)) return fallback; return Math.min(max, Math.max(min, number)); }
+function sleepMs(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function documentKeyFor(session) { return session.documentIdentity?.fullPath || session.documentIdentity?.url || session.documentName || session.sessionId; }
 const bindingKeys = ["projectName", "projectPath", "projectId", "threadId", "conversationId", "documentRole", "bindingId", "documentKey", "host", "documentName", "createdAt", "updatedAt"];
 const selectorBindingKeys = ["projectName", "projectPath", "projectId", "threadId", "conversationId", "documentRole", "bindingId", "documentKey", "host", "documentName"];
@@ -292,6 +295,37 @@ function toolExists(toolName) {
 function expectedHostForTool(toolName) {
   return toolName.startsWith("et.") ? "et" : toolName.startsWith("wpp.") ? "wpp" : "";
 }
+function sessionNotRoutableError(session, toolName, input, extra = {}) {
+  return {
+    code: "SESSION_NOT_ROUTABLE",
+    message: `Session ${session.sessionId} is registered but not currently polling for commands. Activate the target WPS window or pane before retrying.`,
+    details: {
+      sessionId: session.sessionId,
+      toolName,
+      requestedArgs: input,
+      lastSeenAt: session.lastSeenAt,
+      ageMs: sessionAgeMs(session),
+      documentName: session.documentName,
+      documentKey: session.documentKey,
+      ...extra
+    }
+  };
+}
+async function waitForRoutableSession(session, toolName, input = {}) {
+  if (sessionIsRoutable(session)) return { session, waitedForRoutableMs: 0 };
+  if (!queryBool(input.waitUntilRoutable, false)) throw sessionNotRoutableError(session, toolName, input);
+  const started = Date.now();
+  const waitTimeoutMs = numberInput(input.waitTimeoutMs, waitRoutableDefaultMs, 0, waitRoutableDefaultMs);
+  while (Date.now() - started < waitTimeoutMs) {
+    await sleepMs(Math.min(500, Math.max(50, waitTimeoutMs - (Date.now() - started))));
+    pruneOfflineSessions();
+    const latest = sessions.get(session.sessionId) || session;
+    if (latest.status !== "online") throw { code: "SESSION_OFFLINE", message: `Session ${latest.sessionId} went offline while waiting for it to become routable.`, details: { sessionId: latest.sessionId, toolName, requestedArgs: input, lastSeenAt: latest.lastSeenAt, documentName: latest.documentName, documentKey: latest.documentKey, waitedForRoutableMs: Date.now() - started } };
+    if (sessionIsRoutable(latest)) return { session: latest, waitedForRoutableMs: Date.now() - started };
+  }
+  const latest = sessions.get(session.sessionId) || session;
+  throw sessionNotRoutableError(latest, toolName, input, { waitUntilRoutable: true, waitTimeoutMs, waitedForRoutableMs: Date.now() - started });
+}
 function batchOperationInput(batchInput = {}, operation = {}) {
   return { ...(operation.input || {}), sessionId: operation.input?.sessionId || batchInput.sessionId };
 }
@@ -482,15 +516,16 @@ async function runTool(toolName, input) {
   if (toolName === "wps.connection_status") return connectionStatus(input);
   if (toolName === "wps.batch") return runBatch(input);
   const expectedHost = expectedHostForTool(toolName);
-  const session = selectSession(input, expectedHost, toolName);
+  let session = selectSession(input, expectedHost, toolName);
   if (!session) throw { code: "SESSION_NOT_FOUND", message: `No online WPS session found for ${toolName}.` };
   assertSessionHost(session, expectedHost, toolName);
   pruneOfflineSessions();
   if (session.status !== "online") throw { code: "SESSION_OFFLINE", message: `Session ${session.sessionId} is offline. Reopen the WPS Connector pane for this document.`, details: { sessionId: session.sessionId, toolName, requestedArgs: input, lastSeenAt: session.lastSeenAt, documentName: session.documentName, documentKey: session.documentKey } };
-  if (!sessionIsRoutable(session)) throw { code: "SESSION_NOT_ROUTABLE", message: `Session ${session.sessionId} is registered but not currently polling for commands. Activate the target WPS window or pane before retrying.`, details: { sessionId: session.sessionId, toolName, requestedArgs: input, lastSeenAt: session.lastSeenAt, ageMs: sessionAgeMs(session), documentName: session.documentName, documentKey: session.documentKey } };
+  const routable = await waitForRoutableSession(session, toolName, input);
+  session = routable.session;
   const command = enqueueCommand(session, toolName, input);
   const result = await waitForCommand(command);
-  return { commandId: command.commandId, sessionId: session.sessionId, ...result };
+  return { commandId: command.commandId, sessionId: session.sessionId, waitedForRoutableMs: routable.waitedForRoutableMs, ...result };
 }
 async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || `${host}:${port}`}`);
