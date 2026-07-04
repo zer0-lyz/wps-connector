@@ -134,8 +134,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.48`
-- clientBuild: `2026.07.04-routable-wait.1`
+- UI/clientVersion: `v1.0.49`
+- clientBuild: `2026.07.04-pane-route-state.1`
 
 ## Current Tool Surface
 

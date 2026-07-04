@@ -191,7 +191,7 @@ function sessionDocumentFlags(session) {
   const documentName = String(session.documentName || identity.name || "").trim();
   return { emptyDocumentName: !documentName, emptyDocumentPath: !fullPath, documentPath: fullPath };
 }
-function publicSession(session) { const flags = sessionDocumentFlags(session); return { sessionId: session.sessionId, host: session.host, documentName: session.documentName, documentKey: session.documentKey, documentIdentity: session.documentIdentity || null, status: session.status, routable: sessionIsRoutable(session), stale: session.status === "online" && !sessionIsRoutable(session), ageMs: sessionAgeMs(session), registeredAt: session.registeredAt, lastSeenAt: session.lastSeenAt, activeContext: session.activeContext, operationScope: session.operationScope || { mode: "document" }, capabilities: session.capabilities, clientVersion: session.clientVersion || "", clientBuild: session.clientBuild || "", binding: session.binding, offlineReason: session.offlineReason || "", unresponsiveSince: session.unresponsiveSince || "", lastCommandError: session.lastCommandError || null, ...flags }; }
+function publicSession(session) { const flags = sessionDocumentFlags(session); const pendingCommandCount = Array.isArray(session.queue) ? session.queue.length : 0; return { sessionId: session.sessionId, host: session.host, documentName: session.documentName, documentKey: session.documentKey, documentIdentity: session.documentIdentity || null, status: session.status, routable: sessionIsRoutable(session), stale: session.status === "online" && !sessionIsRoutable(session), ageMs: sessionAgeMs(session), pendingCommandCount, hasPendingCommands: pendingCommandCount > 0, registeredAt: session.registeredAt, lastSeenAt: session.lastSeenAt, activeContext: session.activeContext, operationScope: session.operationScope || { mode: "document" }, capabilities: session.capabilities, clientVersion: session.clientVersion || "", clientBuild: session.clientBuild || "", binding: session.binding, offlineReason: session.offlineReason || "", unresponsiveSince: session.unresponsiveSince || "", lastCommandError: session.lastCommandError || null, ...flags }; }
 function sessionSortScore(session, requested) {
   let score = 0;
   if (requested && bindingMatches(session, requested)) score += 1000;
@@ -405,6 +405,8 @@ function summarizeSessionForAgent(session) {
     routable: Boolean(session.routable),
     stale: Boolean(session.stale),
     ageMs: Number(session.ageMs || 0),
+    pendingCommandCount: Number(session.pendingCommandCount || 0),
+    hasPendingCommands: Boolean(session.hasPendingCommands),
     documentName: session.documentName,
     documentKey: session.documentKey,
     clientVersion: session.clientVersion || "",
