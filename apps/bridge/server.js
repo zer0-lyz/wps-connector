@@ -409,6 +409,40 @@ async function connectionStatus(input = {}) {
     }
   };
 }
+function bridgeHelp() {
+  return {
+    name: "wps-connector",
+    ok: true,
+    bridge: `http://${host}:${port}`,
+    recommendedFirstCalls: [
+      "GET /api/connection_status?onlyOnline=true",
+      "GET /api/sessions?onlyOnline=true",
+      "POST /api/tools/wps/connection_status",
+      "POST /api/tools/wps/list_sessions"
+    ],
+    mcpTools: ["wps.connection_status", "wps.list_sessions", "et.read_selection", "wpp.read_document_identity"],
+    httpAliases: {
+      connectionStatus: ["GET /api/connection_status", "POST /api/connection_status", "GET /connection_status", "POST /connection_status"],
+      listSessions: ["GET /api/sessions", "GET /api/list_sessions", "POST /api/list_sessions", "GET /list_sessions", "POST /list_sessions"],
+      toolCall: "POST /api/tools/{namespace}/{tool}"
+    },
+    note: "If MCP returns unsupported call, use the HTTP aliases above to diagnose bridge/session state, then reconnect the @wps-connector MCP plugin."
+  };
+}
+async function requestInput(req, url) {
+  if (req.method === "GET") return Object.fromEntries(url.searchParams.entries());
+  return readJson(req);
+}
+async function sendConnectionStatus(req, res, url) {
+  const input = await requestInput(req, url);
+  const result = await connectionStatus(input);
+  return sendJson(res, 200, { ok: result.ok, ...result });
+}
+async function sendListSessions(req, res, url) {
+  const input = await requestInput(req, url);
+  const sessionsList = listSessions(input);
+  return sendJson(res, 200, { ok: true, sessions: sessionsList, count: sessionsList.length, filters: { onlyOnline: queryBool(input.onlyOnline, false), includeOffline: queryBool(input.includeOffline, false), sessionId: input.sessionId || "", documentKey: input.documentKey || "", host: input.host || "" }, agentUsage: bridgeHelp() });
+}
 async function runTool(toolName, input) {
   if (toolName === "wps.list_sessions") return { sessions: listSessions(input) };
   if (toolName === "wps.connection_status") return connectionStatus(input);
@@ -428,18 +462,17 @@ async function handle(req, res) {
   const pathname = url.pathname;
   if (req.method === "OPTIONS") return sendJson(res, 200, { ok: true });
   try {
-    if (req.method === "GET" && pathname === "/api/health") return sendJson(res, 200, { ok: true, name: "wps-connector", time: nowIso() });
+    if (req.method === "GET" && pathname === "/api/health") return sendJson(res, 200, { ok: true, name: "wps-connector", time: nowIso(), help: "/api/help", connectionStatus: "/api/connection_status", sessions: "/api/sessions" });
+    if (req.method === "GET" && (pathname === "/api/help" || pathname === "/help" || pathname === "/")) return sendJson(res, 200, bridgeHelp());
+    if (["GET", "POST"].includes(req.method) && (pathname === "/api/connection_status" || pathname === "/connection_status")) return sendConnectionStatus(req, res, url);
+    if (["GET", "POST"].includes(req.method) && (pathname === "/api/list_sessions" || pathname === "/list_sessions")) return sendListSessions(req, res, url);
     if (req.method === "GET" && pathname === "/api/update/check") { const result = await checkForUpdates(Object.fromEntries(url.searchParams.entries())); return sendJson(res, 200, { ok: true, ...result }); }
     if (req.method === "POST" && pathname === "/api/update/apply") { return sendJson(res, 202, { ok: true, ...applyUpdate() }); }
     if (req.method === "GET" && pathname === "/api/tools/schema") return sendJson(res, 200, { ok: true, tools });
     if (req.method === "POST" && pathname === "/api/catalog/refresh") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
-    if (req.method === "GET" && pathname === "/api/sessions") {
-      const input = Object.fromEntries(url.searchParams.entries());
-      const sessionsList = listSessions(input);
-      return sendJson(res, 200, { ok: true, sessions: sessionsList, count: sessionsList.length, filters: { onlyOnline: queryBool(input.onlyOnline, false), includeOffline: queryBool(input.includeOffline, false), sessionId: input.sessionId || "", documentKey: input.documentKey || "", host: input.host || "" } });
-    }
+    if (req.method === "GET" && pathname === "/api/sessions") return sendListSessions(req, res, url);
     if (req.method === "POST" && pathname === "/api/sessions/register") {
       const body = await readJson(req);
       const sessionId = body.sessionId || randomUUID();

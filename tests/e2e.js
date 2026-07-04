@@ -122,7 +122,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.40", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.41", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
 
@@ -236,6 +236,17 @@ async function main() {
 
   const bridgeConnectionStatus = await rawRequest("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
   assert(bridgeConnectionStatus.counts?.online >= 1 && bridgeConnectionStatus.agentUsage?.dottedAndUnderscoreNamesSupported === true && bridgeConnectionStatus.issues?.some((issue) => issue.code === "SESSION_AMBIGUOUS"), "Bridge connection_status did not return ambiguity diagnostics for multiple ET sessions.");
+
+  const bridgeHelp = await request("/api/help");
+  assert(bridgeHelp.httpAliases?.connectionStatus?.includes("GET /api/connection_status"), "Bridge help did not expose HTTP aliases.");
+  const aliasConnectionGet = await rawRequest("/api/connection_status?onlyOnline=true&host=et");
+  assert(aliasConnectionGet.counts?.online >= 1 && aliasConnectionGet.issues?.some((issue) => issue.code === "SESSION_AMBIGUOUS"), "GET /api/connection_status did not return connection diagnostics.");
+  const aliasConnectionPost = await rawRequest("/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "wpp" }) });
+  assert(aliasConnectionPost.counts?.online >= 1 && aliasConnectionPost.agentUsage?.recommendedFirstCall === "wps.connection_status", "POST /connection_status did not return agent usage guidance.");
+  const aliasSessionsGet = await request("/api/list_sessions?onlyOnline=true&host=et");
+  assert(aliasSessionsGet.count >= 1 && aliasSessionsGet.agentUsage?.httpAliases?.listSessions, "GET /api/list_sessions did not return sessions and alias guidance.");
+  const aliasSessionsPost = await request("/list_sessions", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "wpp" }) });
+  assert(aliasSessionsPost.count >= 1, "POST /list_sessions did not return sessions.");
 
   const onlineSessions = await request("/api/tools/wps/list_sessions", { method: "POST", body: JSON.stringify({ onlyOnline: true }) });
   assert(onlineSessions.sessions.every((session) => session.status === "online"), "wps.list_sessions onlyOnline returned non-online session.");

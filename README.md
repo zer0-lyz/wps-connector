@@ -61,6 +61,8 @@ bash scripts/install-mac.sh
 
 ```bash
 curl -sS http://127.0.0.1:40215/api/health
+curl -sS "http://127.0.0.1:40215/api/connection_status?onlyOnline=true"
+curl -sS "http://127.0.0.1:40215/api/sessions?onlyOnline=true"
 curl -sS http://127.0.0.1:3891/health
 node "$HOME/.local/share/wps-connector/runtime/scripts/agent-connection-status.js" --onlyOnline
 ```
@@ -132,8 +134,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.40`
-- clientBuild: `2026.07.04-multi-session-routing.1`
+- UI/clientVersion: `v1.0.41`
+- clientBuild: `2026.07.04-agent-entrypoints.1`
 
 ## Current Tool Surface
 
