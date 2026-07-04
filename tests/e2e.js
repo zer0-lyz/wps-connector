@@ -110,7 +110,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.35", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.36", "Update check did not return the current connector version.");
 
   const stalePort = port + 1;
   const staleBridgeUrl = `http://127.0.0.1:${stalePort}`;
@@ -175,6 +175,7 @@ async function main() {
   const listedTools = await mcpClient.request("tools/list", {});
   assert(listedTools.tools.some((tool) => tool.name === "et.read_selection"), "MCP tools/list missed et.read_selection.");
   assert(listedTools.tools.some((tool) => tool.name === "et.read_range"), "MCP tools/list missed et.read_range.");
+  assert(listedTools.tools.some((tool) => tool.name === "et.save_workbook"), "MCP tools/list missed et.save_workbook.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_document_text"), "MCP tools/list missed wpp.read_document_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.find_text"), "MCP tools/list missed wpp.find_text.");
@@ -951,6 +952,18 @@ async function main() {
   assert(wppImagesAfterDelete.count === 0, "WPP read_images still returned deleted image.");
 
 
+  const etSave = await request("/api/tools/et/save_workbook", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", checksum: true }),
+  });
+  assert(etSave.saved === true && etSave.path && etSave.savedAt && etSave.readback?.checksum, "ET save_workbook did not return save metadata and checksum.");
+
+  const etBatchSave = await request("/api/tools/wps/batch", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", saveAfter: true, operations: [{ tool: "et.write_range", input: { address: "H1", values: [["batch-save"]] } }] }),
+  });
+  assert(etBatchSave.saveResult?.saved === true && etBatchSave.saveResult?.host === "et", "ET wps.batch saveAfter did not call et.save_workbook.");
+
   const wppSave = await request("/api/tools/wpp/save_document", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", checksum: true }),
@@ -984,6 +997,7 @@ async function main() {
     wppReadTable: { rowCount: wppReadTable.rowCount, columnCount: wppReadTable.columnCount },
     wppTableOps: { rows: wppDeleteRows.rowCount, columns: wppDeleteColumns.columnCount, merged: wppMergeCells.merged, cellAfter: wppReadTableCellAfter.text },
     wppImages: { inserted: wppImage.insertedImage, afterDelete: wppImagesAfterDelete.count },
+    etSave: { saved: etSave.saved, path: etSave.path },
     wppSave: { saved: wppSave.saved, path: wppSave.path },
   }, null, 2));
 }

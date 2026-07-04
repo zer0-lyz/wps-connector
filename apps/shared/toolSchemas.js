@@ -221,6 +221,15 @@ export const tools = [
     },
   },
   {
+    name: "et.save_workbook",
+    description: "Save the active WPS Spreadsheet workbook.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, checksum: { type: "boolean" }, readback: { type: "boolean" } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "wpp.read_selection",
     description: "Read the current WPS Writer selection.",
     inputSchema: {

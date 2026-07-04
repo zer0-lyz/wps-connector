@@ -132,8 +132,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.35`
-- clientBuild: `2026.07.03-large-selection-guard.1`
+- UI/clientVersion: `v1.0.36`
+- clientBuild: `2026.07.04-et-save-workbook.1`
 
 ## Current Tool Surface
 
