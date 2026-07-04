@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.38";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.04-update-restart-notice.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.39";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.04-per-document-pane.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
@@ -10,6 +10,7 @@ let wpsConnectorSessionInfo = null;
 const wpsConnectorCommentIdMap = {};
 const wpsConnectorRangeIdMap = {};
 const wpsConnectorFallbackDocumentKeys = {};
+const wpsConnectorTaskPaneIds = {};
 
 function wpsConnectorUuid() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
@@ -2692,22 +2693,38 @@ function OnAddinLoad(ribbonUI) {
   return true;
 }
 function wpsConnectorOpenPane() {
-  const app = wpsConnectorApp();
-  const docKey = encodeURIComponent(`${wpsConnectorCurrentDocumentKey || wpsConnectorScope().documentKey}`);
-  const key = `wps_connector_taskpane_id_${docKey}`;
-  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?doc=${docKey}&t=${Date.now()}`;
-  let taskpaneId = null;
-  try { taskpaneId = app.PluginStorage && app.PluginStorage.getItem(key); } catch {}
-  if (!taskpaneId) {
-    const taskpane = app.CreateTaskPane(taskpaneUrl);
-    if (app.PluginStorage) app.PluginStorage.setItem(key, taskpane.ID);
-    taskpane.Visible = true;
-    return { opened: true, taskpaneId: taskpane.ID, url: taskpaneUrl };
+  const scope = wpsConnectorScope();
+  const app = scope.app;
+  wpsConnectorSessionId = scope.sessionId;
+  wpsConnectorCurrentDocumentKey = scope.documentKey;
+  wpsConnectorSessionInfo = {
+    ...(wpsConnectorSessionInfo || {}),
+    sessionId: scope.sessionId,
+    host: scope.host,
+    documentName: scope.documentIdentity.name,
+    documentKey: scope.documentKey,
+    clientVersion: WPS_CONNECTOR_CLIENT_VERSION,
+    clientBuild: WPS_CONNECTOR_CLIENT_BUILD,
+  };
+  if (typeof window !== "undefined") window.wpsConnectorSessionInfo = wpsConnectorSessionInfo;
+  wpsConnectorRegister().catch((error) => console.error("WPS Connector register before opening pane failed", error));
+  const docKey = encodeURIComponent(scope.documentKey);
+  const sessionKey = encodeURIComponent(scope.sessionId);
+  const taskpaneKey = `${scope.host}_${scope.sessionId}`;
+  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?doc=${docKey}&session=${sessionKey}&host=${encodeURIComponent(scope.host)}&t=${Date.now()}`;
+  let taskpane = null;
+  const existingId = wpsConnectorTaskPaneIds[taskpaneKey];
+  if (existingId) {
+    try { taskpane = app.GetTaskPane(existingId); } catch { delete wpsConnectorTaskPaneIds[taskpaneKey]; }
   }
-  const taskpane = app.GetTaskPane(taskpaneId);
-  try { taskpane.Url = taskpaneUrl; } catch {}
+  if (!taskpane) {
+    taskpane = app.CreateTaskPane(taskpaneUrl);
+    wpsConnectorTaskPaneIds[taskpaneKey] = taskpane.ID;
+  } else {
+    try { taskpane.Url = taskpaneUrl; } catch {}
+  }
   taskpane.Visible = true;
-  return { opened: true, taskpaneId, url: taskpaneUrl };
+  return { opened: true, taskpaneId: taskpane.ID, sessionId: scope.sessionId, documentKey: scope.documentKey, url: taskpaneUrl };
 }
 function OnAction(control) {
   const id = control && (control.Id || control.id);

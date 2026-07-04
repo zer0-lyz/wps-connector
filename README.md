@@ -132,8 +132,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.38`
-- clientBuild: `2026.07.04-update-restart-notice.1`
+- UI/clientVersion: `v1.0.39`
+- clientBuild: `2026.07.04-per-document-pane.1`
 
 ## Current Tool Surface
 
