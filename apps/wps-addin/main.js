@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.44";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.04-fresh-session-routing.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.45";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.04-window-pane-routing.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
@@ -269,6 +269,15 @@ function wpsConnectorDocumentKey(host, identity) {
   wpsConnectorFallbackDocumentKeys[host] ||= `${host}::${wpsConnectorUuid()}`;
   return wpsConnectorFallbackDocumentKeys[host];
 }
+function wpsConnectorWindowKey(app, host, identity) {
+  try {
+    const win = app.ActiveWindow;
+    const raw = wpsConnectorMember(win, "Hwnd") || wpsConnectorMember(win, "hWnd") || wpsConnectorMember(win, "hwnd") || wpsConnectorMember(win, "WindowNumber") || wpsConnectorMember(win, "Index");
+    if (raw !== undefined && raw !== null && String(raw) !== "") return `${host}::window::${raw}`;
+  } catch {}
+  const stable = identity?.fullPath || identity?.url || identity?.windowTitle || identity?.name || "";
+  return stable ? `${host}::document-window-fallback::${stable}` : `${host}::window-fallback`;
+}
 function wpsConnectorActiveContext(app, host) {
   try {
     if (host === "et") {
@@ -317,8 +326,9 @@ function wpsConnectorScope() {
   const documentIdentity = wpsConnectorDocumentIdentity(app, host);
   const documentKey = wpsConnectorDocumentKey(host, documentIdentity);
   const sessionId = `wps-${host}-${wpsConnectorHash(documentKey)}`;
+  const windowKey = wpsConnectorWindowKey(app, host, documentIdentity);
   const capabilities = host === "et" ? ["et.read_selection", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.read_format_sample", "et.verify_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks", "et.save_workbook"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
-  return { app, host, documentIdentity, documentKey, sessionId, capabilities };
+  return { app, host, documentIdentity, documentKey, sessionId, windowKey, capabilities };
 }
 async function wpsConnectorRegister() {
   const { app, host, documentIdentity, documentKey, sessionId, capabilities } = wpsConnectorScope();
@@ -2714,10 +2724,9 @@ function wpsConnectorOpenPane() {
   };
   if (typeof window !== "undefined") window.wpsConnectorSessionInfo = wpsConnectorSessionInfo;
   wpsConnectorRegister().catch((error) => console.error("WPS Connector register before opening pane failed", error));
-  const docKey = encodeURIComponent(scope.documentKey);
-  const sessionKey = encodeURIComponent(scope.sessionId);
-  const taskpaneKey = `${scope.host}_${scope.sessionId}`;
-  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?doc=${docKey}&session=${sessionKey}&host=${encodeURIComponent(scope.host)}&t=${Date.now()}`;
+  const windowKey = encodeURIComponent(scope.windowKey);
+  const taskpaneKey = `${scope.host}_${scope.windowKey}`;
+  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?mode=window&window=${windowKey}&host=${encodeURIComponent(scope.host)}&t=${Date.now()}`;
   let taskpane = null;
   const existingId = wpsConnectorTaskPaneIds[taskpaneKey];
   if (existingId) {
@@ -2730,7 +2739,7 @@ function wpsConnectorOpenPane() {
     try { taskpane.Url = taskpaneUrl; } catch {}
   }
   taskpane.Visible = true;
-  return { opened: true, taskpaneId: taskpane.ID, sessionId: scope.sessionId, documentKey: scope.documentKey, url: taskpaneUrl };
+  return { opened: true, taskpaneId: taskpane.ID, sessionId: scope.sessionId, documentKey: scope.documentKey, windowKey: scope.windowKey, url: taskpaneUrl };
 }
 function OnAction(control) {
   const id = control && (control.Id || control.id);
