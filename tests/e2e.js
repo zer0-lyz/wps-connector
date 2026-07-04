@@ -122,7 +122,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.41", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.42", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
 

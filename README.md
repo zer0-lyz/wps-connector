@@ -134,8 +134,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.41`
-- clientBuild: `2026.07.04-agent-entrypoints.1`
+- UI/clientVersion: `v1.0.42`
+- clientBuild: `2026.07.04-pane-session-lock.1`
 
 ## Current Tool Surface
 
