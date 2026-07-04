@@ -185,7 +185,7 @@ function sessionDocumentFlags(session) {
   const documentName = String(session.documentName || identity.name || "").trim();
   return { emptyDocumentName: !documentName, emptyDocumentPath: !fullPath, documentPath: fullPath };
 }
-function publicSession(session) { const flags = sessionDocumentFlags(session); return { sessionId: session.sessionId, host: session.host, documentName: session.documentName, documentKey: session.documentKey, documentIdentity: session.documentIdentity || null, status: session.status, registeredAt: session.registeredAt, lastSeenAt: session.lastSeenAt, activeContext: session.activeContext, operationScope: session.operationScope || { mode: "document" }, capabilities: session.capabilities, clientVersion: session.clientVersion || "", clientBuild: session.clientBuild || "", binding: session.binding, ...flags }; }
+function publicSession(session) { const flags = sessionDocumentFlags(session); return { sessionId: session.sessionId, host: session.host, documentName: session.documentName, documentKey: session.documentKey, documentIdentity: session.documentIdentity || null, status: session.status, registeredAt: session.registeredAt, lastSeenAt: session.lastSeenAt, activeContext: session.activeContext, operationScope: session.operationScope || { mode: "document" }, capabilities: session.capabilities, clientVersion: session.clientVersion || "", clientBuild: session.clientBuild || "", binding: session.binding, offlineReason: session.offlineReason || "", unresponsiveSince: session.unresponsiveSince || "", lastCommandError: session.lastCommandError || null, ...flags }; }
 function sessionSortScore(session, requested) {
   let score = 0;
   if (requested && bindingMatches(session, requested)) score += 1000;
@@ -258,7 +258,28 @@ function commandInputWithScope(session, toolName, input = {}) {
   return next;
 }
 function enqueueCommand(session, toolName, input) { const commandId = randomUUID(); const command = { commandId, sessionId: session.sessionId, toolName, input: commandInputWithScope(session, toolName, input), status: "queued", createdAt: nowIso() }; commands.set(commandId, command); session.queue.push(commandId); return command; }
-function waitForCommand(command) { return new Promise((resolve, reject) => { const timer = setTimeout(() => { command.status = "timed_out"; command.timedOutAt = nowIso(); command.error = { code: "COMMAND_TIMEOUT", message: `Command timed out after ${commandTimeoutMs}ms.` }; reject(command.error); }, commandTimeoutMs); command.resolve = (result) => { clearTimeout(timer); resolve(result); }; command.reject = (error) => { clearTimeout(timer); reject(error); }; }); }
+function rejectQueuedCommands(session, reason) {
+  const queued = Array.isArray(session.queue) ? session.queue.splice(0) : [];
+  for (const commandId of queued) {
+    const command = commands.get(commandId);
+    if (!command || command.status === "completed" || command.status === "failed" || command.status === "timed_out") continue;
+    command.status = "cancelled";
+    command.error = reason;
+    command.reject?.(reason);
+  }
+}
+function markSessionUnresponsive(session, command, error) {
+  if (!session) return;
+  const details = { sessionId: session.sessionId, toolName: command.toolName, documentName: session.documentName, documentKey: session.documentKey, commandId: command.commandId, lastSeenAt: session.lastSeenAt };
+  const enriched = { ...error, details: { ...(error.details || {}), ...details } };
+  session.status = "offline";
+  session.offlineReason = "COMMAND_TIMEOUT";
+  session.unresponsiveSince = nowIso();
+  session.lastCommandError = enriched;
+  rejectQueuedCommands(session, { code: "SESSION_UNRESPONSIVE", message: "Session command queue was cleared after a command timeout.", details });
+  return enriched;
+}
+function waitForCommand(command) { return new Promise((resolve, reject) => { const timer = setTimeout(() => { command.status = "timed_out"; command.timedOutAt = nowIso(); const session = sessions.get(command.sessionId); const error = markSessionUnresponsive(session, command, { code: "COMMAND_TIMEOUT", message: `Command timed out after ${commandTimeoutMs}ms. Reopen or refresh the WPS Connector pane for this document.` }); command.error = error; reject(error); }, commandTimeoutMs); command.resolve = (result) => { clearTimeout(timer); resolve(result); }; command.reject = (error) => { clearTimeout(timer); reject(error); }; }); }
 function toolExists(toolName) {
   return tools.some((tool) => tool.name === toolName);
 }
@@ -494,9 +515,9 @@ async function handle(req, res) {
     const sessionScope = /^\/api\/sessions\/([^/]+)\/operation-scope$/.exec(pathname);
     if (sessionScope && req.method === "POST") { const session = sessions.get(sessionScope[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionScope[1]}`); const body = await readJson(req); const mode = body.mode === "selection" ? "selection" : "document"; session.operationScope = mode === "selection" ? { mode, confirmedAt: nowIso(), context: body.context || session.activeContext || {} } : { mode: "document", confirmedAt: nowIso() }; session.lastSeenAt = nowIso(); return sendJson(res, 200, { ok: true, session: publicSession(session), operationScope: session.operationScope }); }
     const heartbeat = /^\/api\/sessions\/([^/]+)\/heartbeat$/.exec(pathname);
-    if (req.method === "POST" && heartbeat) { const session = sessions.get(heartbeat[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${heartbeat[1]}`); const body = await readJson(req); session.status = "online"; session.lastSeenAt = nowIso(); session.activeContext = body.activeContext || session.activeContext; session.clientVersion = body.clientVersion || session.clientVersion || ""; session.clientBuild = body.clientBuild || session.clientBuild || ""; if (body.documentIdentity || body.documentName || body.documentPath || body.host) { session.documentIdentity = body.documentIdentity || session.documentIdentity; session.documentName = body.documentName || session.documentName; session.host = normalizeHost(body.host || session.host); session.documentKey = documentKeyFor(session); } session.binding = findBindingForSession(session) || session.binding || null; return sendJson(res, 200, { ok: true, session: publicSession(session) }); }
+    if (req.method === "POST" && heartbeat) { const session = sessions.get(heartbeat[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${heartbeat[1]}`); const body = await readJson(req); if (!session.unresponsiveSince) session.status = "online"; session.lastSeenAt = nowIso(); session.activeContext = body.activeContext || session.activeContext; session.clientVersion = body.clientVersion || session.clientVersion || ""; session.clientBuild = body.clientBuild || session.clientBuild || ""; if (body.documentIdentity || body.documentName || body.documentPath || body.host) { session.documentIdentity = body.documentIdentity || session.documentIdentity; session.documentName = body.documentName || session.documentName; session.host = normalizeHost(body.host || session.host); session.documentKey = documentKeyFor(session); } session.binding = findBindingForSession(session) || session.binding || null; return sendJson(res, 200, { ok: true, session: publicSession(session) }); }
     const nextCommand = /^\/api\/sessions\/([^/]+)\/commands\/next$/.exec(pathname);
-    if (req.method === "GET" && nextCommand) { const session = sessions.get(nextCommand[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${nextCommand[1]}`); session.status = "online"; session.lastSeenAt = nowIso(); const commandId = session.queue.shift(); if (!commandId) return sendJson(res, 200, { ok: true, command: null }); const command = commands.get(commandId); command.status = "delivered"; command.deliveredAt = nowIso(); return sendJson(res, 200, { ok: true, command: { commandId, toolName: command.toolName, input: command.input } }); }
+    if (req.method === "GET" && nextCommand) { const session = sessions.get(nextCommand[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${nextCommand[1]}`); session.status = "online"; session.offlineReason = ""; session.unresponsiveSince = ""; session.lastCommandError = null; session.lastSeenAt = nowIso(); const commandId = session.queue.shift(); if (!commandId) return sendJson(res, 200, { ok: true, command: null }); const command = commands.get(commandId); command.status = "delivered"; command.deliveredAt = nowIso(); return sendJson(res, 200, { ok: true, command: { commandId, toolName: command.toolName, input: command.input } }); }
     const commandResult = /^\/api\/commands\/([^/]+)\/result$/.exec(pathname);
     if (req.method === "POST" && commandResult) { const command = commands.get(commandResult[1]); if (!command) return sendError(res, 404, "COMMAND_NOT_FOUND", `Command not found: ${commandResult[1]}`); const body = await readJson(req); command.completedAt = nowIso(); if (body.ok === false) { command.status = "failed"; command.error = body.error || { code: "COMMAND_FAILED", message: "Command failed." }; command.reject?.(command.error); } else { command.status = "completed"; command.result = body.result || {}; command.resolve?.(command.result); } return sendJson(res, 200, { ok: true, commandId: command.commandId, status: command.status }); }
     const toolCall = /^\/api\/tools\/([^/]+)\/([^/]+)$/.exec(pathname);

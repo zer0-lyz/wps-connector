@@ -122,7 +122,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.42", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.43", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
 
@@ -155,6 +155,29 @@ async function main() {
   await sleep(140);
   const staleDeleted = await requestAt(staleBridgeUrl, "/api/sessions?includeOffline=true");
   assert(staleDeleted.ok === true && staleDeleted.sessions.length === 0, "Retained offline sessions were not deleted after retention window.");
+
+  const timeoutPort = port + 3;
+  const timeoutBridgeUrl = `http://127.0.0.1:${timeoutPort}`;
+  startNode(["apps/bridge/server.js"], {
+    WPS_CONNECTOR_PORT: String(timeoutPort),
+    WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-timeout-bindings-${process.pid}.json`,
+    WPS_CONNECTOR_COMMAND_TIMEOUT_MS: "120",
+    WPS_CONNECTOR_SESSION_OFFLINE_MS: "60000",
+  });
+  await waitForHealthAt(timeoutBridgeUrl);
+  await requestAt(timeoutBridgeUrl, "/api/sessions/register", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "hung-et-session", host: "et", documentName: "hung.xlsx", documentKey: "/tmp/hung.xlsx" }),
+  });
+  const hungTool = await requestAt(timeoutBridgeUrl, "/api/tools/et/read_selection", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "hung-et-session" }),
+  });
+  assert(hungTool.ok === false && hungTool.httpStatus === 504 && hungTool.error?.code === "COMMAND_TIMEOUT", "Unresponsive session did not return COMMAND_TIMEOUT.");
+  const hungOnline = await requestAt(timeoutBridgeUrl, "/api/sessions?onlyOnline=true");
+  assert(hungOnline.ok === true && !hungOnline.sessions.some((session) => session.sessionId === "hung-et-session"), "Timed-out session was still listed as online.");
+  const hungAll = await requestAt(timeoutBridgeUrl, "/api/sessions?sessionId=hung-et-session&includeOffline=true");
+  assert(hungAll.sessions[0]?.status === "offline" && hungAll.sessions[0]?.offlineReason === "COMMAND_TIMEOUT", "Timed-out session did not retain offline diagnostics.");
 
   startNode(["apps/wps-addin/simulator.js"], {
     WPS_CONNECTOR_BRIDGE_URL: bridgeUrl,

@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.42";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.04-pane-session-lock.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.43";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.04-session-timeout-fuse.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
@@ -302,7 +302,13 @@ function wpsConnectorActiveContext(app, host) {
 async function wpsConnectorRequest(path, options = {}) {
   const response = await fetch(`${wpsConnectorBridgeUrl}${path}`, { ...options, headers: { "content-type": "application/json", ...(options.headers || {}) } });
   const json = await response.json();
-  if (!json.ok) throw new Error(json.error?.message || `Bridge request failed: ${path}`);
+  if (!json.ok) {
+    const error = new Error(json.error?.message || `Bridge request failed: ${path}`);
+    error.code = json.error?.code || "BRIDGE_REQUEST_FAILED";
+    error.details = json.error?.details || {};
+    error.httpStatus = response.status;
+    throw error;
+  }
   return json;
 }
 function wpsConnectorScope() {
@@ -2861,10 +2867,19 @@ async function wpsConnectorHeartbeat() {
   if (wpsConnectorSessionId !== `wps-${host}-${wpsConnectorHash(documentKey)}` || wpsConnectorCurrentDocumentKey !== documentKey) {
     await wpsConnectorRegister();
   }
-  const json = await wpsConnectorRequest(`/api/sessions/${wpsConnectorSessionId}/heartbeat`, {
-    method: "POST",
-    body: JSON.stringify({ activeContext: wpsConnectorActiveContext(app, host), documentIdentity, documentName: documentIdentity.name, documentKey, clientVersion: WPS_CONNECTOR_CLIENT_VERSION, clientBuild: WPS_CONNECTOR_CLIENT_BUILD }),
-  });
+  let json;
+  try {
+    json = await wpsConnectorRequest(`/api/sessions/${wpsConnectorSessionId}/heartbeat`, {
+      method: "POST",
+      body: JSON.stringify({ activeContext: wpsConnectorActiveContext(app, host), documentIdentity, documentName: documentIdentity.name, documentKey, clientVersion: WPS_CONNECTOR_CLIENT_VERSION, clientBuild: WPS_CONNECTOR_CLIENT_BUILD }),
+    });
+  } catch (error) {
+    if (error?.code === "SESSION_NOT_FOUND") {
+      await wpsConnectorRegister();
+      return;
+    }
+    throw error;
+  }
   wpsConnectorSessionInfo = {
     ...(window.wpsConnectorSessionInfo || wpsConnectorSessionInfo),
     host: json.session?.host || host,
