@@ -1,12 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
   <ribbon startFromScratch="false">
-    <tabs>
-      <tab id="wpsConnectorTab" label="WPS Connector">
-        <group id="wpsConnectorGroup" label="Connector">
-          <button id="btnShowConnectorPane" label="连接面板" onAction="OnAction" getEnabled="OnGetEnabled" getImage="GetImage" visible="true" size="large"/>
-        </group>
-      </tab>
-    </tabs>
+    <tabs/>
   </ribbon>
 </customUI>

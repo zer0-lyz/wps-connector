@@ -37,13 +37,13 @@ function readJson(file, fallback) {
 }
 
 function connectorItem(item) {
-  return item && typeof item === "object" && String(item.name || "").startsWith("wps_connector_") && String(item.path || "").replace(/\/$/, "") === addinUrl;
+  return item && typeof item === "object" && String(item.name || "").startsWith("wps_connector_");
 }
 
 const publishPath = path.join(jsaddonsDir, "publish.xml");
 let publish = '<?xml version="1.0" encoding="UTF-8"?>\n<jsplugins>\n</jsplugins>\n';
 try { publish = fs.readFileSync(publishPath, "utf8"); } catch {}
-publish = publish.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")(?=[^>]*url="http:\/\/127\.0\.0\.1:3891\/?")[^>]*\/?>(?:<\/jspluginonline>)?\s*/g, "");
+publish = publish.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")[^>]*\/?>(?:<\/jspluginonline>)?\s*/g, "");
 const tags = entries.map((entry) => `    <jspluginonline name="${escapeXml(entry.name)}" url="${escapeXml(`${addinUrl}/`)}" type="${entry.type}" enable="enable" install="null" icon="${escapeXml(iconUrl)}" image="${escapeXml(iconUrl)}" imageUrl="${escapeXml(iconUrl)}" debug=""/>\n`).join("");
 if (publish.includes("</jsplugins>")) publish = publish.replace("</jsplugins>", `${tags}</jsplugins>`);
 else publish = `<?xml version="1.0" encoding="UTF-8"?>\n<jsplugins>\n${tags}</jsplugins>\n`;
@@ -75,7 +75,12 @@ for (const sectionName of ["wps", "et"]) {
 }
 fs.writeFileSync(authPath, `${JSON.stringify(auth, null, 4)}\n`);
 
+const publishText = fs.readFileSync(publishPath, "utf8");
+const authText = fs.readFileSync(authPath, "utf8");
+if (/enable_dev|js-debug/.test(publishText) || /"isload"\s*:\s*true|"mode"\s*:\s*2|js-debug/.test(authText)) {
+  throw new Error("WPS Connector add-in registration still contains unsafe legacy settings.");
+}
 console.log(JSON.stringify({ ok: true, jsaddonsDir, addinUrl, publishPath, authPath, installed: entries }, null, 2));
 NODE
 
-echo "WPS Connector add-in enabled with lazy activation. Restart WPS to reload add-in registration."
+echo "WPS Connector add-in enabled for background connection without a visible ribbon tab. Restart WPS to reload add-in registration."

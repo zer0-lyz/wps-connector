@@ -22,13 +22,13 @@ const jsaddonsDir = process.env.JSADDONS_DIR;
 const addinUrl = String(process.env.ADDIN_URL || "http://127.0.0.1:3891").replace(/\/$/, "");
 
 function connectorItem(item) {
-  return item && typeof item === "object" && String(item.name || "").startsWith("wps_connector_") && String(item.path || item.url || "").replace(/\/$/, "") === addinUrl;
+  return item && typeof item === "object" && String(item.name || "").startsWith("wps_connector_");
 }
 
 const publishPath = path.join(jsaddonsDir, "publish.xml");
 if (fs.existsSync(publishPath)) {
   const before = fs.readFileSync(publishPath, "utf8");
-  const after = before.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")(?=[^>]*url="http:\/\/127\.0\.0\.1:3891\/?")[^>]*\/?>(?:<\/jspluginonline>)?\s*/g, "");
+  const after = before.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")[^>]*\/?>(?:<\/jspluginonline>)?\s*/g, "");
   fs.writeFileSync(publishPath, after);
 }
 

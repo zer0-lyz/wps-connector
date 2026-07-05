@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.50";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.05-lazy-activation.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.51";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.06-background-no-pane.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
@@ -2707,19 +2707,19 @@ function wpsConnectorGetUrlPath() {
   if (value.includes("/")) value = value.substring(0, value.lastIndexOf("/"));
   return value;
 }
-function wpsConnectorAutostartEnabled() {
+function wpsConnectorBackgroundEnabled() {
   try {
-    if (/\b(?:autostart|wpsConnectorAutostart)=1\b/i.test(String(document.location || ""))) return true;
-    if (typeof localStorage !== "undefined" && /^(1|true|yes|on)$/i.test(String(localStorage.getItem("WPS_CONNECTOR_ADDIN_AUTOSTART") || ""))) return true;
-    if (typeof window !== "undefined" && window.WPS_CONNECTOR_ADDIN_AUTOSTART === true) return true;
+    if (/\b(?:autostart|wpsConnectorAutostart)=0\b/i.test(String(document.location || ""))) return false;
+    if (typeof localStorage !== "undefined" && /^(0|false|no|off)$/i.test(String(localStorage.getItem("WPS_CONNECTOR_ADDIN_AUTOSTART") || ""))) return false;
+    if (typeof window !== "undefined" && window.WPS_CONNECTOR_ADDIN_AUTOSTART === false) return false;
   } catch {}
-  return false;
+  return true;
 }
 function OnAddinLoad(ribbonUI) {
   try {
     const app = wpsConnectorApp();
     if (typeof app.ribbonUI !== "object") app.ribbonUI = ribbonUI;
-    if (wpsConnectorAutostartEnabled()) setTimeout(() => wpsConnectorStart().catch(console.error), 0);
+    if (wpsConnectorBackgroundEnabled()) setTimeout(() => wpsConnectorStart().catch(console.error), 0);
   } catch (error) {
     console.error(error);
   }

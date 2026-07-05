@@ -23,7 +23,7 @@ function normalizeUrl(value) {
 }
 
 function isConnectorItem(item) {
-  return item && typeof item === "object" && String(item.name || "").startsWith(connectorNamePrefix) && normalizeUrl(item.path || item.url) === connectorUrl;
+  return item && typeof item === "object" && String(item.name || "").startsWith(connectorNamePrefix);
 }
 
 function escapeXmlAttr(value) {
@@ -44,7 +44,7 @@ function normalizePublishXml() {
   backup(path);
   const before = readFileSync(path, "utf8");
   let after = before.replace(/enable="enable_dev"/g, 'enable="enable"').replace(/debug="code"/g, 'debug=""');
-  after = after.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")(?=[^>]*url="http:\/\/127\.0\.0\.1:3891\/?")[^>]*\/?>(?:<\/jspluginonline>)?/g, (tag) => {
+  after = after.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")[^>]*\/?>(?:<\/jspluginonline>)?/g, (tag) => {
     let next = tag.replace(/<\/jspluginonline>$/, "");
     next = setXmlAttr(next, "debug", "");
     next = setXmlAttr(next, "icon", debugIconUrl);

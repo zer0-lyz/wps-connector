@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const port = 40216;
@@ -123,12 +125,25 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.50", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.51", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
   const addinSource = await readFile("apps/wps-addin/main.js", "utf8");
-  assert(!/\n\s*wpsConnectorStart\(\)\.catch\(console\.error\);\s*$/.test(addinSource), "WPS add-in should not autostart at script load.");
-  assert(/function OnAddinLoad[\s\S]*wpsConnectorAutostartEnabled\(\)/.test(addinSource), "OnAddinLoad should gate startup behind the explicit autostart switch.");
+  const onLoadSource = /function OnAddinLoad[\s\S]*?\n}/.exec(addinSource)?.[0] || "";
+  assert(/wpsConnectorBackgroundEnabled\(\)[\s\S]*wpsConnectorStart\(\)/.test(onLoadSource), "OnAddinLoad should start the background connector by default.");
+  assert(!/CreateTaskPane/.test(onLoadSource), "OnAddinLoad must not create or show a taskpane.");
+  const ribbonSource = await readFile("apps/wps-addin/ribbon.xml", "utf8");
+  assert(!/wpsConnectorTab|btnShowConnectorPane|<button\b/.test(ribbonSource), "ribbon.xml should not create a visible WPS Connector tab or button.");
+  const jsaddonsDir = await mkdtemp(join(tmpdir(), "wps-connector-jsaddons-"));
+  await writeFile(join(jsaddonsDir, "publish.xml"), '<?xml version="1.0" encoding="UTF-8"?><jsplugins><jspluginonline name="wps_connector_old" url="http://127.0.0.1:3891/" type="et" enable="enable_dev" icon="js-debug"/><jspluginonline name="wps_connector_other_url" url="http://127.0.0.1:3999/" type="wps" enable="enable_dev"/></jsplugins>');
+  await writeFile(join(jsaddonsDir, "authaddin.json"), JSON.stringify({ wps: { old: { name: "wps_connector_old", path: "http://127.0.0.1:3999", enable: true, isload: true, mode: 2 }, namelist: "old" }, et: { old: { name: "wps_connector_old", path: "http://127.0.0.1:3891", enable: true, isload: true, mode: 2 }, namelist: "old" } }, null, 2));
+  const enable = spawnSync("bash", ["scripts/enable-wps-addin-mac.sh"], { env: { ...process.env, WPS_JSADDONS_DIR: jsaddonsDir, WPS_CONNECTOR_ADDIN_URL: "http://127.0.0.1:3891" }, encoding: "utf8" });
+  assert(enable.status === 0, `enable-wps-addin-mac.sh failed: ${enable.stderr || enable.stdout}`);
+  const publishAfter = await readFile(join(jsaddonsDir, "publish.xml"), "utf8");
+  const authAfter = await readFile(join(jsaddonsDir, "authaddin.json"), "utf8");
+  assert(!/wps_connector_old|wps_connector_other_url|enable_dev|js-debug/.test(publishAfter + authAfter), "enable script did not remove legacy WPS Connector registration.");
+  assert(!/"isload"\s*:\s*true|"mode"\s*:\s*2/.test(authAfter), "enable script left unsafe autoload settings.");
+  assert((publishAfter.match(/wps_connector_/g) || []).length === 2, "enable script should write one Writer and one Spreadsheet connector entry.");
 
   const stalePort = port + 1;
   const staleBridgeUrl = `http://127.0.0.1:${stalePort}`;
