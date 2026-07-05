@@ -45,7 +45,7 @@ The installer will:
 - install the Codex plugin into `$HOME/.codex/plugins/cache/personal/wps-connector/0.1.0`;
 - deploy runtime files to `$HOME/.local/share/wps-connector/runtime`;
 - install LaunchAgents for the bridge and add-in server;
-- configure the WPS jsaddons files for the current macOS user;
+- configure the WPS jsaddons files for the current macOS user with lazy activation;
 - run basic health checks.
 
 No `/Users/<name>` path is hard-coded. Override paths with environment variables when needed:
@@ -121,6 +121,21 @@ WPS jsaddons:
 $HOME/Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons
 ```
 
+## WPS Mac Lazy Activation
+
+WPS Connector does not start sessions, heartbeat, or command polling during `OnAddinLoad` by default. Opening a Writer or Spreadsheet document only registers the ribbon button. The connector starts when the user clicks **WPS Connector / 连接面板**.
+
+This avoids WPS Mac UI ghosting in the Writer toolbar and Spreadsheet sheet tabs caused by an always-running JS add-in context.
+
+Manual controls:
+
+```bash
+bash "$HOME/.local/share/wps-connector/runtime/scripts/enable-wps-addin-mac.sh"
+bash "$HOME/.local/share/wps-connector/runtime/scripts/disable-wps-addin-mac.sh"
+```
+
+`disable-wps-addin-mac.sh` backs up WPS jsaddons files before removing WPS Connector registration. Use it if WPS itself still shows ribbon or sheet-tab ghosting from merely having the add-in registered.
+
 ## Development Commands
 
 ```bash
@@ -134,8 +149,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.49`
-- clientBuild: `2026.07.04-pane-route-state.1`
+- UI/clientVersion: `v1.0.50`
+- clientBuild: `2026.07.05-lazy-activation.1`
 
 ## Current Tool Surface
 
@@ -161,6 +176,6 @@ WPS Writer (`wpp`) tools:
 
 ## Known Boundaries
 
-- The installer configures the local runtime and WPS jsaddons files. The user may still need to open the WPS Connector pane in WPS manually.
+- The installer configures the local runtime and WPS jsaddons files in lazy mode. The user must open the WPS Connector pane before Codex can operate the document.
 - Track changes tools return `TRACK_CHANGES_UNSUPPORTED` when the WPS host does not expose a compatible revisions API.
 - Codex Desktop may cache MCP tool discovery per conversation. If a newly installed tool is not visible in `tool_search`, reload the plugin or start a new Codex thread.

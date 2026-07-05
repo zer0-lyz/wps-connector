@@ -10,7 +10,7 @@ const jsaddonsDir = process.env.WPS_JSADDONS_DIR || join(
 const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 12);
 const connectorUrl = "http://127.0.0.1:3891";
 const connectorNamePrefix = "wps_connector_";
-const debugIconUrl = `${connectorUrl}/images/js-debug.svg`;
+const debugIconUrl = `${connectorUrl}/images/connector.svg`;
 
 function backup(path) {
   if (!existsSync(path)) return;

@@ -71,7 +71,8 @@ else
   echo "Install the plugin manually from: $MARKETPLACE_PATH" >&2
 fi
 
-bash "$PLUGIN_TARGET/scripts/install-local-runtime.sh"
+npm run deploy
+npm run launchd:install
 
 echo
 echo "WPS Connector bootstrap completed."

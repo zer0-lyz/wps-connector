@@ -1,12 +1,14 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.49";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.04-pane-route-state.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.50";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.05-lazy-activation.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 let wpsConnectorBridgeUrl = WPS_CONNECTOR_DEFAULT_BRIDGE;
 let wpsConnectorSessionId = "";
 let wpsConnectorCurrentDocumentKey = "";
 let wpsConnectorStarted = false;
 let wpsConnectorSessionInfo = null;
+let wpsConnectorPollTimer = null;
+let wpsConnectorHeartbeatTimer = null;
 const wpsConnectorCommentIdMap = {};
 const wpsConnectorRangeIdMap = {};
 const wpsConnectorFallbackDocumentKeys = {};
@@ -2705,11 +2707,19 @@ function wpsConnectorGetUrlPath() {
   if (value.includes("/")) value = value.substring(0, value.lastIndexOf("/"));
   return value;
 }
+function wpsConnectorAutostartEnabled() {
+  try {
+    if (/\b(?:autostart|wpsConnectorAutostart)=1\b/i.test(String(document.location || ""))) return true;
+    if (typeof localStorage !== "undefined" && /^(1|true|yes|on)$/i.test(String(localStorage.getItem("WPS_CONNECTOR_ADDIN_AUTOSTART") || ""))) return true;
+    if (typeof window !== "undefined" && window.WPS_CONNECTOR_ADDIN_AUTOSTART === true) return true;
+  } catch {}
+  return false;
+}
 function OnAddinLoad(ribbonUI) {
   try {
     const app = wpsConnectorApp();
     if (typeof app.ribbonUI !== "object") app.ribbonUI = ribbonUI;
-    setTimeout(() => wpsConnectorStart().catch(console.error), 0);
+    if (wpsConnectorAutostartEnabled()) setTimeout(() => wpsConnectorStart().catch(console.error), 0);
   } catch (error) {
     console.error(error);
   }
@@ -2746,12 +2756,14 @@ function wpsConnectorOpenPane() {
     try { taskpane.Url = taskpaneUrl; } catch {}
   }
   taskpane.Visible = true;
+  wpsConnectorStart().catch(console.error);
   return { opened: true, taskpaneId: taskpane.ID, sessionId: scope.sessionId, documentKey: scope.documentKey, windowKey: scope.windowKey, url: taskpaneUrl };
 }
 function OnAction(control) {
   const id = control && (control.Id || control.id);
-  if (id === "btnShowConnectorPane" || id === "wpsConnectorPaneButton") wpsConnectorOpenPane();
-  wpsConnectorStart().catch(console.error);
+  if (id === "btnShowConnectorPane" || id === "wpsConnectorPaneButton") {
+    wpsConnectorOpenPane();
+  }
   return true;
 }
 function OnGetEnabled() { return true; }
@@ -2913,8 +2925,8 @@ async function wpsConnectorStart() {
   if (wpsConnectorStarted) return;
   await wpsConnectorRegister();
   wpsConnectorStarted = true;
-  setInterval(() => wpsConnectorPollOnce().catch(console.error), 1000);
-  setInterval(() => wpsConnectorHeartbeat().catch(console.error), 1000);
+  if (!wpsConnectorPollTimer) wpsConnectorPollTimer = setInterval(() => wpsConnectorPollOnce().catch(console.error), 1000);
+  if (!wpsConnectorHeartbeatTimer) wpsConnectorHeartbeatTimer = setInterval(() => wpsConnectorHeartbeat().catch(console.error), 1000);
 }
 if (typeof window !== "undefined") {
   window.wpsConnectorStart = wpsConnectorStart;
@@ -2926,4 +2938,3 @@ if (typeof window !== "undefined") {
   window.GetImage = GetImage;
   window.OnGetImage = GetImage;
 }
-wpsConnectorStart().catch(console.error);

@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
+import { readFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const port = 40216;
@@ -122,9 +123,12 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.49", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.50", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
+  const addinSource = await readFile("apps/wps-addin/main.js", "utf8");
+  assert(!/\n\s*wpsConnectorStart\(\)\.catch\(console\.error\);\s*$/.test(addinSource), "WPS add-in should not autostart at script load.");
+  assert(/function OnAddinLoad[\s\S]*wpsConnectorAutostartEnabled\(\)/.test(addinSource), "OnAddinLoad should gate startup behind the explicit autostart switch.");
 
   const stalePort = port + 1;
   const staleBridgeUrl = `http://127.0.0.1:${stalePort}`;
