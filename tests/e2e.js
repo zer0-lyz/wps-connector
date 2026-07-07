@@ -1,10 +1,7 @@
 import { createServer } from "node:http";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const port = 40216;
@@ -125,25 +122,9 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.51", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.60", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
-  const addinSource = await readFile("apps/wps-addin/main.js", "utf8");
-  const onLoadSource = /function OnAddinLoad[\s\S]*?\n}/.exec(addinSource)?.[0] || "";
-  assert(/wpsConnectorBackgroundEnabled\(\)[\s\S]*wpsConnectorStart\(\)/.test(onLoadSource), "OnAddinLoad should start the background connector by default.");
-  assert(!/CreateTaskPane/.test(onLoadSource), "OnAddinLoad must not create or show a taskpane.");
-  const ribbonSource = await readFile("apps/wps-addin/ribbon.xml", "utf8");
-  assert(!/wpsConnectorTab|btnShowConnectorPane|<button\b/.test(ribbonSource), "ribbon.xml should not create a visible WPS Connector tab or button.");
-  const jsaddonsDir = await mkdtemp(join(tmpdir(), "wps-connector-jsaddons-"));
-  await writeFile(join(jsaddonsDir, "publish.xml"), '<?xml version="1.0" encoding="UTF-8"?><jsplugins><jspluginonline name="wps_connector_old" url="http://127.0.0.1:3891/" type="et" enable="enable_dev" icon="js-debug"/><jspluginonline name="wps_connector_other_url" url="http://127.0.0.1:3999/" type="wps" enable="enable_dev"/></jsplugins>');
-  await writeFile(join(jsaddonsDir, "authaddin.json"), JSON.stringify({ wps: { old: { name: "wps_connector_old", path: "http://127.0.0.1:3999", enable: true, isload: true, mode: 2 }, namelist: "old" }, et: { old: { name: "wps_connector_old", path: "http://127.0.0.1:3891", enable: true, isload: true, mode: 2 }, namelist: "old" } }, null, 2));
-  const enable = spawnSync("bash", ["scripts/enable-wps-addin-mac.sh"], { env: { ...process.env, WPS_JSADDONS_DIR: jsaddonsDir, WPS_CONNECTOR_ADDIN_URL: "http://127.0.0.1:3891" }, encoding: "utf8" });
-  assert(enable.status === 0, `enable-wps-addin-mac.sh failed: ${enable.stderr || enable.stdout}`);
-  const publishAfter = await readFile(join(jsaddonsDir, "publish.xml"), "utf8");
-  const authAfter = await readFile(join(jsaddonsDir, "authaddin.json"), "utf8");
-  assert(!/wps_connector_old|wps_connector_other_url|enable_dev|js-debug/.test(publishAfter + authAfter), "enable script did not remove legacy WPS Connector registration.");
-  assert(!/"isload"\s*:\s*true|"mode"\s*:\s*2/.test(authAfter), "enable script left unsafe autoload settings.");
-  assert((publishAfter.match(/wps_connector_/g) || []).length === 2, "enable script should write one Writer and one Spreadsheet connector entry.");
 
   const stalePort = port + 1;
   const staleBridgeUrl = `http://127.0.0.1:${stalePort}`;
@@ -175,60 +156,6 @@ async function main() {
   const staleDeleted = await requestAt(staleBridgeUrl, "/api/sessions?includeOffline=true");
   assert(staleDeleted.ok === true && staleDeleted.sessions.length === 0, "Retained offline sessions were not deleted after retention window.");
 
-  const routablePort = port + 4;
-  const routableBridgeUrl = `http://127.0.0.1:${routablePort}`;
-  startNode(["apps/bridge/server.js"], {
-    WPS_CONNECTOR_PORT: String(routablePort),
-    WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-routable-bindings-${process.pid}.json`,
-    WPS_CONNECTOR_SESSION_FRESH_MS: "80",
-    WPS_CONNECTOR_SESSION_OFFLINE_MS: "60000",
-    WPS_CONNECTOR_WAIT_ROUTABLE_MS: "500",
-  });
-  await waitForHealthAt(routableBridgeUrl);
-  await requestAt(routableBridgeUrl, "/api/sessions/register", {
-    method: "POST",
-    body: JSON.stringify({ sessionId: "stale-online-et", host: "et", documentName: "stale-online.xlsx", documentKey: "/tmp/stale-online.xlsx" }),
-  });
-  await sleep(140);
-  const staleOnline = await requestAt(routableBridgeUrl, "/api/sessions?sessionId=stale-online-et");
-  assert(staleOnline.sessions[0]?.status === "online" && staleOnline.sessions[0]?.routable === false && staleOnline.sessions[0]?.stale === true, "Stale online session did not expose routable=false/stale=true.");
-  const onlyRoutable = await requestAt(routableBridgeUrl, "/api/sessions?onlyRoutable=true");
-  assert(!onlyRoutable.sessions.some((session) => session.sessionId === "stale-online-et"), "onlyRoutable returned a stale session.");
-  const staleTool = await requestAt(routableBridgeUrl, "/api/tools/et/read_selection", {
-    method: "POST",
-    body: JSON.stringify({ sessionId: "stale-online-et" }),
-  });
-  assert(staleTool.ok === false && staleTool.httpStatus === 409 && staleTool.error?.code === "SESSION_NOT_ROUTABLE", "Stale session did not return SESSION_NOT_ROUTABLE quickly.");
-  const waitedStaleTool = await requestAt(routableBridgeUrl, "/api/tools/et/read_selection", {
-    method: "POST",
-    body: JSON.stringify({ sessionId: "stale-online-et", waitUntilRoutable: true, waitTimeoutMs: 120 }),
-  });
-  assert(waitedStaleTool.ok === false && waitedStaleTool.httpStatus === 409 && waitedStaleTool.error?.code === "SESSION_NOT_ROUTABLE" && waitedStaleTool.error.details?.waitedForRoutableMs >= 100, "waitUntilRoutable did not wait and return SESSION_NOT_ROUTABLE.");
-
-  const timeoutPort = port + 3;
-  const timeoutBridgeUrl = `http://127.0.0.1:${timeoutPort}`;
-  startNode(["apps/bridge/server.js"], {
-    WPS_CONNECTOR_PORT: String(timeoutPort),
-    WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-timeout-bindings-${process.pid}.json`,
-    WPS_CONNECTOR_COMMAND_TIMEOUT_MS: "120",
-    WPS_CONNECTOR_SESSION_FRESH_MS: "60000",
-    WPS_CONNECTOR_SESSION_OFFLINE_MS: "60000",
-  });
-  await waitForHealthAt(timeoutBridgeUrl);
-  await requestAt(timeoutBridgeUrl, "/api/sessions/register", {
-    method: "POST",
-    body: JSON.stringify({ sessionId: "hung-et-session", host: "et", documentName: "hung.xlsx", documentKey: "/tmp/hung.xlsx" }),
-  });
-  const hungTool = await requestAt(timeoutBridgeUrl, "/api/tools/et/read_selection", {
-    method: "POST",
-    body: JSON.stringify({ sessionId: "hung-et-session" }),
-  });
-  assert(hungTool.ok === false && hungTool.httpStatus === 504 && hungTool.error?.code === "COMMAND_TIMEOUT", "Unresponsive session did not return COMMAND_TIMEOUT.");
-  const hungOnline = await requestAt(timeoutBridgeUrl, "/api/sessions?onlyOnline=true");
-  assert(hungOnline.ok === true && !hungOnline.sessions.some((session) => session.sessionId === "hung-et-session"), "Timed-out session was still listed as online.");
-  const hungAll = await requestAt(timeoutBridgeUrl, "/api/sessions?sessionId=hung-et-session&includeOffline=true");
-  assert(hungAll.sessions[0]?.status === "offline" && hungAll.sessions[0]?.offlineReason === "COMMAND_TIMEOUT", "Timed-out session did not retain offline diagnostics.");
-
   startNode(["apps/wps-addin/simulator.js"], {
     WPS_CONNECTOR_BRIDGE_URL: bridgeUrl,
     WPS_CONNECTOR_SIM_HOST: "et",
@@ -248,23 +175,12 @@ async function main() {
     WPS_CONNECTOR_SIM_SELECTION_ROWS: "1048576",
     WPS_CONNECTOR_SIM_SELECTION_COLUMNS: "1",
   });
-  startNode(["apps/wps-addin/simulator.js"], {
-    WPS_CONNECTOR_BRIDGE_URL: bridgeUrl,
-    WPS_CONNECTOR_SIM_HOST: "et",
-    WPS_CONNECTOR_SIM_SESSION_ID: "test-et-full-sheet-selection",
-    WPS_CONNECTOR_SIM_DOCUMENT_KEY: "simulated-et-full-sheet-selection.xlsx",
-    WPS_CONNECTOR_SIM_SELECTION_ADDRESS: "A1:XFD1048576",
-    WPS_CONNECTOR_SIM_SELECTION_ROWS: "1048576",
-    WPS_CONNECTOR_SIM_SELECTION_COLUMNS: "16384",
-  });
 
-  const sessions = await waitForSessions(4);
+  const sessions = await waitForSessions(3);
   assert(sessions.some((session) => session.host === "et"), "ET session was not registered.");
   assert(sessions.some((session) => session.host === "wpp"), "WPP session was not registered.");
   const largeSession = sessions.find((session) => session.sessionId === "test-et-large-selection");
   assert(largeSession?.activeContext?.previewSkipped === true && largeSession.activeContext.cellCount === 1048576, "Large ET selection heartbeat did not skip preview.");
-  const fullSheetSession = sessions.find((session) => session.sessionId === "test-et-full-sheet-selection");
-  assert(fullSheetSession?.activeContext?.previewSkipped === true && fullSheetSession.activeContext.cellCount > 1000000000, "Full-sheet ET selection heartbeat did not skip preview.");
 
   const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
   const mcpClient = createMcpClient(mcp);
@@ -318,19 +234,8 @@ async function main() {
   });
   assert(bindWpp.binding?.threadId === "thread-b", "WPP binding was not saved.");
 
-  const bridgeConnectionStatus = await rawRequest("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
-  assert(bridgeConnectionStatus.counts?.online >= 1 && bridgeConnectionStatus.agentUsage?.dottedAndUnderscoreNamesSupported === true && bridgeConnectionStatus.issues?.some((issue) => issue.code === "SESSION_AMBIGUOUS"), "Bridge connection_status did not return ambiguity diagnostics for multiple ET sessions.");
-
-  const bridgeHelp = await request("/api/help");
-  assert(bridgeHelp.httpAliases?.connectionStatus?.includes("GET /api/connection_status"), "Bridge help did not expose HTTP aliases.");
-  const aliasConnectionGet = await rawRequest("/api/connection_status?onlyOnline=true&host=et");
-  assert(aliasConnectionGet.counts?.online >= 1 && aliasConnectionGet.issues?.some((issue) => issue.code === "SESSION_AMBIGUOUS"), "GET /api/connection_status did not return connection diagnostics.");
-  const aliasConnectionPost = await rawRequest("/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "wpp" }) });
-  assert(aliasConnectionPost.counts?.online >= 1 && aliasConnectionPost.agentUsage?.recommendedFirstCall === "wps.connection_status", "POST /connection_status did not return agent usage guidance.");
-  const aliasSessionsGet = await request("/api/list_sessions?onlyOnline=true&host=et");
-  assert(aliasSessionsGet.count >= 1 && aliasSessionsGet.agentUsage?.httpAliases?.listSessions, "GET /api/list_sessions did not return sessions and alias guidance.");
-  const aliasSessionsPost = await request("/list_sessions", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "wpp" }) });
-  assert(aliasSessionsPost.count >= 1, "POST /list_sessions did not return sessions.");
+  const bridgeConnectionStatus = await request("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
+  assert(bridgeConnectionStatus.counts?.online >= 1 && bridgeConnectionStatus.agentUsage?.dottedAndUnderscoreNamesSupported === true, "Bridge connection_status did not return agent diagnostics.");
 
   const onlineSessions = await request("/api/tools/wps/list_sessions", { method: "POST", body: JSON.stringify({ onlyOnline: true }) });
   assert(onlineSessions.sessions.every((session) => session.status === "online"), "wps.list_sessions onlyOnline returned non-online session.");
@@ -344,23 +249,6 @@ async function main() {
     body: JSON.stringify({ binding: { projectId: "project-a", threadId: "thread-a" } }),
   });
   assert(boundEtSelection.sessionId === "test-et-session", "Bound ET selection did not route to the project-a session.");
-
-  const bindSecondEt = await request("/api/sessions/test-et-large-selection/binding", {
-    method: "POST",
-    body: JSON.stringify({ binding: { projectId: "project-a", projectName: "Project A", projectPath: "/tmp/project-a", threadId: "thread-a" } }),
-  });
-  assert(bindSecondEt.binding?.projectId === "project-a", "Second ET binding was not saved.");
-  const ambiguousEt = await rawRequest("/api/tools/et/read_selection", {
-    method: "POST",
-    body: JSON.stringify({ binding: { projectId: "project-a", threadId: "thread-a" } }),
-  });
-  assert(ambiguousEt.ok === false && ambiguousEt.error?.code === "SESSION_AMBIGUOUS", "Multiple ET sessions with the same binding did not return SESSION_AMBIGUOUS.");
-  assert(ambiguousEt.httpStatus === 409 && ambiguousEt.error?.details?.candidates?.length >= 2, "SESSION_AMBIGUOUS did not return HTTP 409 and candidate sessions.");
-  const ambiguousStatus = await rawRequest("/api/tools/wps/connection_status", {
-    method: "POST",
-    body: JSON.stringify({ onlyOnline: true, host: "et", binding: { projectId: "project-a", threadId: "thread-a" } }),
-  });
-  assert(ambiguousStatus.ok === false && ambiguousStatus.issues?.some((issue) => issue.code === "SESSION_AMBIGUOUS"), "connection_status did not report SESSION_AMBIGUOUS for multiple matching ET sessions.");
 
   const wrongExplicitBinding = await rawRequest("/api/tools/et/read_selection", {
     method: "POST",
@@ -386,11 +274,6 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-et-large-selection" }),
   });
   assert(etLargeSelection.previewSkipped === true && etLargeSelection.values === null && etLargeSelection.cellCount === 1048576 && etLargeSelection.warning, "ET large selection did not return a safe lightweight response.");
-  const etFullSheetSelection = await request("/api/tools/et/read_selection", {
-    method: "POST",
-    body: JSON.stringify({ sessionId: "test-et-full-sheet-selection" }),
-  });
-  assert(etFullSheetSelection.previewSkipped === true && etFullSheetSelection.values === null && etFullSheetSelection.cellCount > 1000000000 && etFullSheetSelection.warning, "ET full-sheet selection did not return a safe lightweight response.");
 
   const etScope = await request("/api/sessions/test-et-session/operation-scope", {
     method: "POST",

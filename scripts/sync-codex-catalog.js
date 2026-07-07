@@ -1,10 +1,9 @@
 import { readdir, readFile, writeFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
-import { createInterface } from "node:readline";
 
 const execFileAsync = promisify(execFile);
 
@@ -52,57 +51,9 @@ function msToIso(value, fallback = "") {
   const n = Number(value || 0);
   return n > 0 ? isoLocal(new Date(n)) : fallback;
 }
-function codexBinary() {
-  return process.env.CODEX_BIN || (existsSync("/Applications/Codex.app/Contents/Resources/codex") ? "/Applications/Codex.app/Contents/Resources/codex" : "codex");
-}
-function epochToMs(value) {
-  const n = Number(value || 0);
-  return n > 0 ? Math.round(n * 1000) : 0;
-}
-async function readCodexAppServerThreads(codexHome) {
-  if (/^(1|true|yes|on)$/i.test(String(process.env.WPS_CONNECTOR_DISABLE_CODEX_APP_SERVER || ""))) return null;
-  return new Promise((resolve) => {
-    const child = spawn(codexBinary(), ["app-server", "--stdio"], { env: { ...process.env, CODEX_HOME: codexHome }, stdio: ["pipe", "pipe", "ignore"] });
-    const lines = createInterface({ input: child.stdout });
-    const rows = [];
-    let nextId = 1;
-    let cursor = null;
-    let finished = false;
-    const done = (value) => { if (finished) return; finished = true; clearTimeout(timer); lines.close(); child.kill(); resolve(value); };
-    const send = (method, params) => child.stdin.write(`${JSON.stringify({ id: nextId++, method, params })}\n`);
-    const timer = setTimeout(() => done(null), Number(process.env.WPS_CONNECTOR_CODEX_APP_SERVER_TIMEOUT_MS || 8000));
-    lines.on("line", (line) => {
-      let message;
-      try { message = JSON.parse(line); } catch { return; }
-      if (message.error) return done(null);
-      if (message.id === 1) return send("thread/list", { archived: false, limit: 500, cursor, sortKey: "recency_at", sortDirection: "desc" });
-      if (!message.id || !message.result?.data) return;
-      const baseOrder = rows.length;
-      for (const [offset, thread] of message.result.data.entries()) {
-        rows.push({
-          id: String(thread.id || thread.sessionId || ""),
-          cwd: String(thread.cwd || ""),
-          title: titleFromText(thread.name) || titleFromText(thread.title) || titleFromText(thread.preview) || String(thread.id || ""),
-          preview: titleFromText(thread.preview) || titleFromText(thread.name) || String(thread.id || ""),
-          created_at_ms: epochToMs(thread.createdAt),
-          updated_at_ms: epochToMs(thread.updatedAt),
-          recency_at_ms: epochToMs(thread.recencyAt || thread.updatedAt),
-          rollout_path: String(thread.path || ""),
-          catalogOrder: baseOrder + offset,
-        });
-      }
-      cursor = message.result.nextCursor || null;
-      if (cursor) send("thread/list", { archived: false, limit: 500, cursor, sortKey: "recency_at", sortDirection: "desc" });
-      else done({ byId: new Map(rows.map((row) => [String(row.id), row])), rows, source: "Codex app-server thread/list" });
-    });
-    child.on("error", () => done(null));
-    child.on("exit", () => { if (!finished && !rows.length) done(null); });
-    send("initialize", { clientInfo: { name: "wps-connector", version: "0.1.0" }, capabilities: { experimentalApi: true } });
-  });
-}
-async function readCodexThreadIndexSqlite(codexHome) {
+async function readCodexThreadIndex(codexHome) {
   const dbPath = join(codexHome, "state_5.sqlite");
-  if (!existsSync(dbPath)) return { byId: new Map(), rows: [], source: "local Codex state_5.sqlite" };
+  if (!existsSync(dbPath)) return { byId: new Map(), rows: [] };
   const sql = [
     "select id,cwd,title,preview,created_at_ms,updated_at_ms,recency_at_ms,rollout_path",
     "from threads where cwd<>'' and archived=0",
@@ -111,13 +62,10 @@ async function readCodexThreadIndexSqlite(codexHome) {
   try {
     const { stdout } = await execFileAsync("sqlite3", ["-json", dbPath, sql], { maxBuffer: 1024 * 1024 * 20 });
     const rows = JSON.parse(stdout || "[]").map((row, index) => ({ ...row, catalogOrder: index }));
-    return { byId: new Map(rows.map((row) => [String(row.id), row])), rows, source: "local Codex state_5.sqlite" };
+    return { byId: new Map(rows.map((row) => [String(row.id), row])), rows };
   } catch {
-    return { byId: new Map(), rows: [], source: "local Codex session scan" };
+    return { byId: new Map(), rows: [] };
   }
-}
-async function readCodexThreadIndex(codexHome) {
-  return await readCodexAppServerThreads(codexHome) || await readCodexThreadIndexSqlite(codexHome);
 }
 async function parseThreadFile(path, existingTitle, globalState, codexThread) {
   const thread = { id: "", hostId: "local", title: "", preview: "", cwd: "", status: "active", createdAt: "", updatedAt: "", catalogOrder: 999999 };
@@ -214,7 +162,7 @@ async function main() {
   const projects = [...projectMap.values()]
     .map((project) => ({ ...project, catalogOrder: projectOrder.has(normPath(project.path || project.projectId)) ? projectOrder.get(normPath(project.path || project.projectId)) : 999999 }))
     .sort((a, b) => Number(a.catalogOrder ?? 999999) - Number(b.catalogOrder ?? 999999) || String(a.label || a.projectId || "").localeCompare(String(b.label || b.projectId || ""), "zh-Hans-CN"));
-  const catalog = { updatedAt: isoLocal(), source: `${codexThreads.source || "local Codex state"} + ~/.codex session scan`, projects, threads };
+  const catalog = { updatedAt: isoLocal(), source: "local Codex state_5.sqlite + ~/.codex session scan", projects, threads };
   await writeFile(output, `${JSON.stringify(catalog, null, 2)}\n`);
   console.log(JSON.stringify({ ok: true, output, projectCount: catalog.projects.length, threadCount: catalog.threads.length, updatedAt: catalog.updatedAt }, null, 2));
 }

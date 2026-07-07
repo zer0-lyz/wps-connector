@@ -45,7 +45,7 @@ The installer will:
 - install the Codex plugin into `$HOME/.codex/plugins/cache/personal/wps-connector/0.1.0`;
 - deploy runtime files to `$HOME/.local/share/wps-connector/runtime`;
 - install LaunchAgents for the bridge and add-in server;
-- configure the WPS jsaddons files for the current macOS user with background connection without a visible ribbon tab;
+- configure the WPS jsaddons files for the current macOS user;
 - run basic health checks.
 
 No `/Users/<name>` path is hard-coded. Override paths with environment variables when needed:
@@ -61,8 +61,6 @@ bash scripts/install-mac.sh
 
 ```bash
 curl -sS http://127.0.0.1:40215/api/health
-curl -sS "http://127.0.0.1:40215/api/connection_status?onlyOnline=true"
-curl -sS "http://127.0.0.1:40215/api/sessions?onlyOnline=true"
 curl -sS http://127.0.0.1:3891/health
 node "$HOME/.local/share/wps-connector/runtime/scripts/agent-connection-status.js" --onlyOnline
 ```
@@ -121,21 +119,6 @@ WPS jsaddons:
 $HOME/Library/Containers/com.kingsoft.wpsoffice.mac/Data/.kingsoft/wps/jsaddons
 ```
 
-## WPS Mac Background Mode
-
-WPS Connector starts its session, heartbeat, and command polling during `OnAddinLoad`, but it does not create or show a WPS JS taskpane by default. The right-side pane is only a temporary settings and binding page.
-
-The add-in registration does not create a visible `WPS Connector` ribbon tab. This avoids WPS Mac UI ghosting in the Writer toolbar and Spreadsheet sheet tabs caused by visible custom ribbon or taskpane surfaces.
-
-Manual controls:
-
-```bash
-bash "$HOME/.local/share/wps-connector/runtime/scripts/enable-wps-addin-mac.sh"
-bash "$HOME/.local/share/wps-connector/runtime/scripts/disable-wps-addin-mac.sh"
-```
-
-`disable-wps-addin-mac.sh` backs up WPS jsaddons files before removing WPS Connector registration. Use it if WPS itself still shows ribbon, page, scroll-bar, or sheet-tab ghosting from merely having the add-in registered.
-
 ## Development Commands
 
 ```bash
@@ -149,8 +132,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.51`
-- clientBuild: `2026.07.06-background-no-pane.1`
+- UI/clientVersion: `v1.0.60`
+- clientBuild: `2026.07.06-stable-entry-low-impact.1`
 
 ## Current Tool Surface
 
@@ -176,6 +159,6 @@ WPS Writer (`wpp`) tools:
 
 ## Known Boundaries
 
-- The installer configures the local runtime and WPS jsaddons files in background mode. Codex can operate the document without the WPS Connector pane staying open; the pane is only for manual binding/settings.
+- The installer configures the local runtime and WPS jsaddons files. The user may still need to open the WPS Connector pane in WPS manually.
 - Track changes tools return `TRACK_CHANGES_UNSUPPORTED` when the WPS host does not expose a compatible revisions API.
 - Codex Desktop may cache MCP tool discovery per conversation. If a newly installed tool is not visible in `tool_search`, reload the plugin or start a new Codex thread.

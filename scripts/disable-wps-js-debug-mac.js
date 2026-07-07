@@ -10,7 +10,7 @@ const jsaddonsDir = process.env.WPS_JSADDONS_DIR || join(
 const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 12);
 const connectorUrl = "http://127.0.0.1:3891";
 const connectorNamePrefix = "wps_connector_";
-const debugIconUrl = `${connectorUrl}/images/connector.svg`;
+const debugIconUrl = `${connectorUrl}/images/js-debug.svg`;
 
 function backup(path) {
   if (!existsSync(path)) return;
@@ -23,7 +23,7 @@ function normalizeUrl(value) {
 }
 
 function isConnectorItem(item) {
-  return item && typeof item === "object" && String(item.name || "").startsWith(connectorNamePrefix);
+  return item && typeof item === "object" && String(item.name || "").startsWith(connectorNamePrefix) && normalizeUrl(item.path || item.url) === connectorUrl;
 }
 
 function escapeXmlAttr(value) {
@@ -44,7 +44,7 @@ function normalizePublishXml() {
   backup(path);
   const before = readFileSync(path, "utf8");
   let after = before.replace(/enable="enable_dev"/g, 'enable="enable"').replace(/debug="code"/g, 'debug=""');
-  after = after.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")[^>]*\/?>(?:<\/jspluginonline>)?/g, (tag) => {
+  after = after.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")(?=[^>]*url="http:\/\/127\.0\.0\.1:3891\/?")[^>]*\/?>(?:<\/jspluginonline>)?/g, (tag) => {
     let next = tag.replace(/<\/jspluginonline>$/, "");
     next = setXmlAttr(next, "debug", "");
     next = setXmlAttr(next, "icon", debugIconUrl);

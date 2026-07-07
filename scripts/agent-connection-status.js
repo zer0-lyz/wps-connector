@@ -21,7 +21,7 @@ function parseArgs(args) {
 
 async function main() {
   const payload = parseArgs(argv);
-  const response = await fetch(`${bridgeUrl}/api/connection_status`, {
+  const response = await fetch(`${bridgeUrl}/api/tools/wps/connection_status`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
