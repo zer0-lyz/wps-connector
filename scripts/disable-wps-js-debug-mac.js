@@ -10,7 +10,7 @@ const jsaddonsDir = process.env.WPS_JSADDONS_DIR || join(
 const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 12);
 const connectorUrl = "http://127.0.0.1:3891";
 const connectorNamePrefix = "wps_connector_";
-const debugIconUrl = `${connectorUrl}/images/js-debug.svg`;
+const connectorIconUrl = `${connectorUrl}/images/connector.svg`;
 
 function backup(path) {
   if (!existsSync(path)) return;
@@ -47,9 +47,10 @@ function normalizePublishXml() {
   after = after.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")(?=[^>]*url="http:\/\/127\.0\.0\.1:3891\/?")[^>]*\/?>(?:<\/jspluginonline>)?/g, (tag) => {
     let next = tag.replace(/<\/jspluginonline>$/, "");
     next = setXmlAttr(next, "debug", "");
-    next = setXmlAttr(next, "icon", debugIconUrl);
-    next = setXmlAttr(next, "image", debugIconUrl);
-    next = setXmlAttr(next, "imageUrl", debugIconUrl);
+    next = setXmlAttr(next, "enable", "enable");
+    next = setXmlAttr(next, "icon", connectorIconUrl);
+    next = setXmlAttr(next, "image", connectorIconUrl);
+    next = setXmlAttr(next, "imageUrl", connectorIconUrl);
     return next;
   });
   if (after !== before) writeFileSync(path, after);
@@ -65,28 +66,13 @@ function normalizeAuthAddin() {
   for (const sectionName of ["et", "wps"]) {
     const section = data[sectionName];
     if (!section || typeof section !== "object") continue;
-    const keepByName = new Map();
     for (const [key, item] of Object.entries(section)) {
       if (!isConnectorItem(item)) continue;
-      const name = String(item.name || "");
-      const existing = keepByName.get(name);
-      const score = (item.mode === 1 ? 4 : 0) + (item.isload === false ? 2 : 0) + (key.length < 40 ? 1 : 0);
-      if (!existing || score > existing.score) keepByName.set(name, { key, item, score });
-    }
-    const keepKeys = new Set([...keepByName.values()].map((entry) => entry.key));
-    for (const [key, item] of Object.entries(section)) {
-      if (!isConnectorItem(item)) continue;
-      if (!keepKeys.has(key)) {
-        delete section[key];
-        changed = true;
-        continue;
-      }
-      if (item.mode !== 1) { item.mode = 1; changed = true; }
-      if (item.isload !== false) { item.isload = false; changed = true; }
       if (item.enable !== true) { item.enable = true; changed = true; }
-      if (item.icon !== debugIconUrl) { item.icon = debugIconUrl; changed = true; }
-      if (item.image !== debugIconUrl) { item.image = debugIconUrl; changed = true; }
-      if (item.imageUrl !== debugIconUrl) { item.imageUrl = debugIconUrl; changed = true; }
+      if (item.mode === 1 && item.isload !== false) { item.isload = false; changed = true; }
+      if (item.icon !== connectorIconUrl) { item.icon = connectorIconUrl; changed = true; }
+      if (item.image !== connectorIconUrl) { item.image = connectorIconUrl; changed = true; }
+      if (item.imageUrl !== connectorIconUrl) { item.imageUrl = connectorIconUrl; changed = true; }
     }
     const keys = Object.entries(section).filter(([, item]) => isConnectorItem(item)).map(([key]) => key);
     const current = String(section.namelist || "").split(";").filter(Boolean);
@@ -101,4 +87,4 @@ function normalizeAuthAddin() {
 mkdirSync(jsaddonsDir, { recursive: true });
 const publishChanged = normalizePublishXml();
 const authChanged = normalizeAuthAddin();
-console.log(JSON.stringify({ ok: true, jsaddonsDir, debugIconUrl, publishChanged, authChanged }, null, 2));
+console.log(JSON.stringify({ ok: true, jsaddonsDir, connectorIconUrl, publishChanged, authChanged }, null, 2));

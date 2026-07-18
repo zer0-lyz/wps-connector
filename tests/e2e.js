@@ -123,7 +123,7 @@ function assert(condition, message) {
 
 async function main() {
   const pluginSkill = readFileSync("plugins/wps-connector/skills/wps-connector/SKILL.md", "utf8");
-  assert(pluginSkill.includes("Mandatory Routing") && pluginSkill.includes("without asking the user to provide an extra prompt"), "Plugin skill missed mandatory automatic MCP fallback guidance.");
+  assert(pluginSkill.includes("Two-Path Routing") && pluginSkill.includes("unsupported call") && pluginSkill.includes("restart WPS"), "Plugin skill missed mandatory automatic MCP fallback guidance.");
   for (const deployScript of ["scripts/deploy-runtime-mac.sh", "plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh"]) {
     const source = readFileSync(deployScript, "utf8");
     assert(source.includes("--exclude 'project-bindings.local.json'"), `${deployScript} may delete saved bindings during deployment.`);
@@ -143,9 +143,9 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.70", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.72", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
-  assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true, "Update check did not discover a newer remote version.");
+  assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true && remoteUpdateCheck.versionState === "update_available", "Update check did not discover a newer remote version.");
 
   const stalePort = port + 1;
   const staleBridgeUrl = `http://127.0.0.1:${stalePort}`;
@@ -196,8 +196,14 @@ async function main() {
     WPS_CONNECTOR_SIM_SELECTION_ROWS: "1048576",
     WPS_CONNECTOR_SIM_SELECTION_COLUMNS: "1",
   });
+  startNode(["apps/wps-addin/simulator.js"], {
+    WPS_CONNECTOR_BRIDGE_URL: bridgeUrl,
+    WPS_CONNECTOR_SIM_HOST: "et",
+    WPS_CONNECTOR_SIM_SESSION_ID: "test-et-parallel",
+    WPS_CONNECTOR_SIM_DOCUMENT_KEY: "simulated-et-parallel.xlsx",
+  });
 
-  const sessions = await waitForSessions(3);
+  const sessions = await waitForSessions(4);
   assert(sessions.some((session) => session.host === "et"), "ET session was not registered.");
   assert(sessions.some((session) => session.host === "wpp"), "WPP session was not registered.");
   const largeSession = sessions.find((session) => session.sessionId === "test-et-large-selection");
@@ -257,6 +263,14 @@ async function main() {
     body: JSON.stringify({ binding: { projectId: "project-a", projectName: "Project A", projectPath: "/tmp/project-a", threadId: "thread-a" } }),
   });
   assert(bindEt.binding?.projectId === "project-a", "ET binding was not saved.");
+  const bindParallelEt = await request("/api/sessions/test-et-parallel/binding", {
+    method: "POST",
+    body: JSON.stringify({ binding: { projectId: "project-a", projectName: "Project A", projectPath: "/tmp/project-a", threadId: "thread-a", bindingId: bindEt.binding.bindingId } }),
+  });
+  assert(bindParallelEt.binding?.projectId === "project-a", "Parallel ET binding was not saved.");
+  assert(bindParallelEt.binding?.bindingId !== bindEt.binding.bindingId, "Separate ET documents reused the same bindingId.");
+  const originalEtBindingAfterParallel = await request("/api/sessions/test-et-session/binding");
+  assert(originalEtBindingAfterParallel.binding?.bindingId === bindEt.binding.bindingId, "Binding another ET document overwrote the original document binding.");
   const bindWpp = await request("/api/sessions/test-wpp-session/binding", {
     method: "POST",
     body: JSON.stringify({ binding: { projectId: "project-b", projectName: "Project B", projectPath: "/tmp/project-b", threadId: "thread-b" } }),
@@ -265,6 +279,11 @@ async function main() {
 
   const unboundExecution = await rawRequest("/api/tools/et/list_worksheets", { method: "POST", body: JSON.stringify({ sessionId: "test-et-large-selection" }) });
   assert(unboundExecution.ok === false && unboundExecution.error?.code === "PROJECT_BINDING_REQUIRED", "Unbound execution was not rejected.");
+  const bindLargeEt = await request("/api/sessions/test-et-large-selection/binding", {
+    method: "POST",
+    body: JSON.stringify({ binding: { projectId: "project-a", projectName: "Project A", projectPath: "/tmp/project-a", threadId: "thread-a" } }),
+  });
+  assert(bindLargeEt.binding?.projectId === "project-a", "Large-selection ET binding was not saved.");
   const agentStatus = await runNode(["scripts/agent-tool-call.js", "wps.connection_status", JSON.stringify({ onlyOnline: true })], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
   assert(agentStatus.ok === true && agentStatus.counts?.online >= 2, "Agent gateway did not return live connection status.");
   const agentSheets = await runNode(["scripts/agent-tool-call.js", "et.list_worksheets", JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" })], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
@@ -272,8 +291,9 @@ async function main() {
   const mcpSheetsGenerated = await mcpClient.request("tools/call", { name: "et_list_worksheets_fca6f791e28c", arguments: { sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" } });
   assert(mcpSheetsGenerated.content?.[0]?.text?.includes("Sheet1"), "MCP generated ET tool name did not route to bound et.list_worksheets.");
 
-  const bridgeConnectionStatus = await request("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
-  assert(bridgeConnectionStatus.counts?.online >= 1 && bridgeConnectionStatus.agentUsage?.dottedAndUnderscoreNamesSupported === true, "Bridge connection_status did not return agent diagnostics.");
+  const bridgeConnectionStatus = await rawRequest("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
+  assert(bridgeConnectionStatus.ok === false && bridgeConnectionStatus.issues?.some((issue) => issue.code === "AMBIGUOUS_SESSION"), `Bridge connection_status did not expose ambiguous multiple-ET routing: ${JSON.stringify(bridgeConnectionStatus)}`);
+  assert(bridgeConnectionStatus.issues.find((issue) => issue.code === "AMBIGUOUS_SESSION")?.details?.candidates?.length >= 2, "Bridge connection_status did not return ET candidates for disambiguation.");
 
   const onlineSessions = await request("/api/tools/wps/list_sessions", { method: "POST", body: JSON.stringify({ onlyOnline: true }) });
   assert(onlineSessions.sessions.every((session) => session.status === "online"), "wps.list_sessions onlyOnline returned non-online session.");
@@ -284,7 +304,7 @@ async function main() {
 
   const boundEtSelection = await request("/api/tools/et/read_selection", {
     method: "POST",
-    body: JSON.stringify({ binding: { projectId: "project-a", threadId: "thread-a" } }),
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" }),
   });
   assert(boundEtSelection.sessionId === "test-et-session", "Bound ET selection did not route to the project-a session.");
 
@@ -294,6 +314,29 @@ async function main() {
   });
   assert(missingExplicitBinding.ok === false && missingExplicitBinding.error?.code === "SESSION_BINDING_REQUIRED", "Bound sessionId without binding did not return SESSION_BINDING_REQUIRED.");
   assert(missingExplicitBinding.httpStatus === 409, "SESSION_BINDING_REQUIRED for explicit bound session did not return HTTP 409.");
+
+  const ambiguousEt = await rawRequest("/api/tools/et/read_selection", {
+    method: "POST",
+    body: JSON.stringify({ projectId: "project-a", threadId: "thread-a" }),
+  });
+  assert(ambiguousEt.ok === false && ambiguousEt.error?.code === "AMBIGUOUS_SESSION", "Multiple bound ET documents without an explicit selector were not rejected as ambiguous.");
+  assert(ambiguousEt.httpStatus === 409 && ambiguousEt.error?.details?.candidates?.length >= 2, "AMBIGUOUS_SESSION did not return the spreadsheet candidates.");
+
+  const parallelStarted = performance.now();
+  const [parallelEtA, parallelEtB] = await Promise.all([
+    request("/api/tools/et/read_selection", {
+      method: "POST",
+      body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" }),
+    }),
+    request("/api/tools/et/read_selection", {
+      method: "POST",
+      body: JSON.stringify({ sessionId: "test-et-parallel", projectId: "project-a", threadId: "thread-a" }),
+    }),
+  ]);
+  const parallelElapsed = performance.now() - parallelStarted;
+  assert(parallelEtA.sessionId === "test-et-session" && parallelEtB.sessionId === "test-et-parallel", "Explicit ET sessionIds did not route to their own spreadsheets.");
+  assert(parallelEtA.values?.[0]?.[0] === "Name" && parallelEtB.values?.[0]?.[0] === "Name", "Parallel ET calls did not both execute successfully.");
+  assert(parallelElapsed < 5000, `Parallel ET calls took unexpectedly long: ${parallelElapsed}ms.`);
 
   const wrongExplicitBinding = await rawRequest("/api/tools/et/read_selection", {
     method: "POST",

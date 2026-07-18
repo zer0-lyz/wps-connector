@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.70";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.18-lightweight-format-readback.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.72";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.18-multi-document-stable.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 const WPS_CONNECTOR_POLL_INTERVAL_MS = 750;
 const WPS_CONNECTOR_HEARTBEAT_INTERVAL_MS = 2000;
@@ -14,6 +14,7 @@ let wpsConnectorHeartbeatTimer = null;
 const wpsConnectorCommentIdMap = {};
 const wpsConnectorRangeIdMap = {};
 const wpsConnectorFallbackDocumentKeys = {};
+const wpsConnectorDocumentObjectKeys = new WeakMap();
 
 function wpsConnectorUuid() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
@@ -245,13 +246,7 @@ function wpsConnectorDocumentIdentity(app, host) {
   try {
     if (host === "et") {
       const workbook = app.ActiveWorkbook;
-      const sheet = app.ActiveSheet;
-      return {
-        name: String(wpsConnectorCall(workbook?.Name) || wpsConnectorCall(workbook?.FullName) || ""),
-        fullPath: String(wpsConnectorCall(workbook?.FullName) || ""),
-        windowTitle: String(wpsConnectorCall(workbook?.Name) || ""),
-        sheetName: String(wpsConnectorCall(sheet?.Name) || ""),
-      };
+      return wpsConnectorEtWorkbookIdentity(workbook, app.ActiveSheet);
     }
     if (host === "wpp") {
       const document = app.ActiveDocument;
@@ -259,6 +254,7 @@ function wpsConnectorDocumentIdentity(app, host) {
         name: String(wpsConnectorCall(document?.Name) || wpsConnectorCall(document?.FullName) || ""),
         fullPath: String(wpsConnectorCall(document?.FullName) || ""),
         windowTitle: String(wpsConnectorCall(document?.Name) || ""),
+        runtimeKey: wpsConnectorRuntimeDocumentKey(host, document),
       };
     }
   } catch (error) {
@@ -266,8 +262,26 @@ function wpsConnectorDocumentIdentity(app, host) {
   }
   return { name: "" };
 }
+function wpsConnectorEtWorkbookIdentity(workbook, sheet) {
+  return {
+    name: String(wpsConnectorCall(workbook?.Name) || wpsConnectorCall(workbook?.FullName) || ""),
+    fullPath: String(wpsConnectorCall(workbook?.FullName) || ""),
+    windowTitle: String(wpsConnectorCall(workbook?.Name) || ""),
+    sheetName: String(wpsConnectorCall(sheet?.Name) || ""),
+    runtimeKey: wpsConnectorRuntimeDocumentKey("et", workbook),
+  };
+}
+function wpsConnectorRuntimeDocumentKey(host, documentObject) {
+  if (documentObject && (typeof documentObject === "object" || typeof documentObject === "function")) {
+    if (!wpsConnectorDocumentObjectKeys.has(documentObject)) wpsConnectorDocumentObjectKeys.set(documentObject, `${host}::runtime-${wpsConnectorUuid()}`);
+    return wpsConnectorDocumentObjectKeys.get(documentObject);
+  }
+  return "";
+}
 function wpsConnectorDocumentKey(host, identity) {
-  const stable = identity?.fullPath || identity?.url || identity?.windowTitle || identity?.name || identity?.caption || identity?.title || "";
+  const savedPath = identity?.fullPath || identity?.url || "";
+  if (savedPath) return String(savedPath);
+  const stable = identity?.runtimeKey || identity?.windowTitle || identity?.name || identity?.caption || identity?.title || "";
   if (stable) return `${host}::${stable}`;
   wpsConnectorFallbackDocumentKeys[host] ||= `${host}::${wpsConnectorUuid()}`;
   return wpsConnectorFallbackDocumentKeys[host];
@@ -356,7 +370,37 @@ async function wpsConnectorRegister() {
     clientBuild: json.session?.clientBuild || WPS_CONNECTOR_CLIENT_BUILD,
   };
   if (typeof window !== "undefined") window.wpsConnectorSessionInfo = wpsConnectorSessionInfo;
+  if (host === "et") await wpsConnectorRegisterOpenEtWorkbooks(app, sessionId, capabilities);
   return json.session;
+}
+async function wpsConnectorRegisterOpenEtWorkbooks(app, currentSessionId, capabilities) {
+  const workbooks = app?.Workbooks;
+  const count = Number(wpsConnectorMember(workbooks, "Count") || 0);
+  for (let index = 1; index <= count; index += 1) {
+    let workbook;
+    try { workbook = wpsConnectorMember(workbooks, "Item", index) || workbooks.Item(index); } catch { continue; }
+    if (!workbook) continue;
+    let sheet = null;
+    try { sheet = workbook.ActiveSheet || wpsConnectorMember(workbook.Worksheets, "Item", 1); } catch {}
+    const documentIdentity = wpsConnectorEtWorkbookIdentity(workbook, sheet);
+    const documentKey = wpsConnectorDocumentKey("et", documentIdentity);
+    const sessionId = `wps-et-${wpsConnectorHash(documentKey)}`;
+    if (sessionId === currentSessionId) continue;
+    await wpsConnectorRequest("/api/sessions/register", {
+      method: "POST",
+      body: JSON.stringify({
+        sessionId,
+        host: "et",
+        documentName: documentIdentity.name,
+        documentIdentity,
+        documentKey,
+        activeContext: null,
+        capabilities,
+        clientVersion: WPS_CONNECTOR_CLIENT_VERSION,
+        clientBuild: WPS_CONNECTOR_CLIENT_BUILD,
+      }),
+    }).catch(() => null);
+  }
 }
 async function wpsConnectorEnsureSession() {
   const { documentKey, sessionId } = wpsConnectorScope();
@@ -364,6 +408,86 @@ async function wpsConnectorEnsureSession() {
     return wpsConnectorRegister();
   }
   return wpsConnectorSessionInfo;
+}
+function wpsConnectorTargetPath(target = {}) {
+  const identity = target.documentIdentity || {};
+  const values = [identity.fullPath, identity.url, target.documentKey, target.documentPath].filter(Boolean).map((value) => String(value));
+  return values.flatMap((value) => [value, value.replace(/^(et|wpp)::/, "")]);
+}
+function wpsConnectorFindEtWorkbook(app, target = {}) {
+  const workbooks = app?.Workbooks;
+  const count = Number(wpsConnectorMember(workbooks, "Count") || 0);
+  const targetPaths = new Set(wpsConnectorTargetPath(target));
+  const targetName = String(target.documentName || target.documentIdentity?.name || "").trim();
+  let nameMatch = null;
+  for (let index = 1; index <= count; index += 1) {
+    let workbook;
+    try { workbook = wpsConnectorMember(workbooks, "Item", index) || workbooks.Item(index); } catch { continue; }
+    if (!workbook) continue;
+    const fullPath = String(wpsConnectorCall(workbook.FullName) || "");
+    const name = String(wpsConnectorCall(workbook.Name) || "");
+    if (targetPaths.has(fullPath) || targetPaths.has(name)) return workbook;
+    if (!nameMatch && targetName && name === targetName) nameMatch = workbook;
+  }
+  return nameMatch;
+}
+function wpsConnectorFindWppDocument(app, target = {}) {
+  const documents = app?.Documents;
+  const count = Number(wpsConnectorMember(documents, "Count") || 0);
+  const targetPaths = new Set(wpsConnectorTargetPath(target));
+  const targetName = String(target.documentName || target.documentIdentity?.name || "").trim();
+  let nameMatch = null;
+  for (let index = 1; index <= count; index += 1) {
+    let document;
+    try { document = wpsConnectorMember(documents, "Item", index) || documents.Item(index); } catch { continue; }
+    if (!document) continue;
+    const fullPath = String(wpsConnectorCall(document.FullName) || "");
+    const name = String(wpsConnectorCall(document.Name) || "");
+    if (targetPaths.has(fullPath) || targetPaths.has(name)) return document;
+    if (!nameMatch && targetName && name === targetName) nameMatch = document;
+  }
+  return nameMatch;
+}
+function wpsConnectorFindTargetDocument(app, target = {}) {
+  if (String(target.host || "").startsWith("et")) return wpsConnectorFindEtWorkbook(app, target);
+  if (String(target.host || "").startsWith("wpp")) return wpsConnectorFindWppDocument(app, target);
+  return null;
+}
+function wpsConnectorActivateCommandTarget(command) {
+  if (!command?.toolName?.startsWith("et.") && !command?.toolName?.startsWith("wpp.")) return;
+  const target = command.input?.__wpsConnectorTarget;
+  if (!target) return;
+  const app = wpsConnectorApp();
+  const targetDocument = wpsConnectorFindTargetDocument(app, target);
+  if (!targetDocument) {
+    wpsConnectorFail("SESSION_DOCUMENT_NOT_FOUND", `Target WPS document is not open: ${target.documentName || target.documentKey || target.sessionId}`, {
+      sessionId: target.sessionId,
+      documentName: target.documentName,
+      documentKey: target.documentKey,
+    });
+  }
+  try {
+    if (typeof targetDocument.Activate === "function") targetDocument.Activate();
+    if (String(target.host || "").startsWith("et")) {
+      const sheetName = String(target.documentIdentity?.sheetName || "").trim();
+      if (sheetName) {
+        const sheets = targetDocument.Worksheets;
+        const sheet = wpsConnectorMember(sheets, "Item", sheetName) || sheets?.Item?.(sheetName);
+        if (sheet && typeof sheet.Activate === "function") sheet.Activate();
+      }
+    }
+  } catch (error) {
+    wpsConnectorFail("SESSION_DOCUMENT_ACTIVATE_FAILED", `Failed to activate target WPS document: ${target.documentName || target.documentKey || target.sessionId}`, {
+      sessionId: target.sessionId,
+      documentName: target.documentName,
+      documentKey: target.documentKey,
+      hostMessage: error.message,
+    });
+  }
+}
+async function wpsConnectorListHostSessions(host) {
+  const json = await wpsConnectorRequest(`/api/sessions?onlyOnline=true&host=${encodeURIComponent(host)}`);
+  return Array.isArray(json.sessions) ? json.sessions : [];
 }
 function wpsConnectorNormalizeValues(values) {
   if (!Array.isArray(values)) return [[values]];
@@ -2903,27 +3027,38 @@ async function wpsConnectorExecute(command) {
   if (command.toolName === "wps.open_pane") return wpsConnectorOpenPane(command.input || {});
   throw new Error(`Unsupported command: ${command.toolName}`);
 }
-async function wpsConnectorPollOnce() {
-  await wpsConnectorEnsureSession();
+async function wpsConnectorPollSession(sessionId) {
   let json;
   try {
-    json = await wpsConnectorRequest(`/api/sessions/${wpsConnectorSessionId}/commands/next`);
+    json = await wpsConnectorRequest(`/api/sessions/${sessionId}/commands/next`);
   } catch (error) {
     if (error?.code === "SESSION_NOT_FOUND") {
-      await wpsConnectorRegister();
       return;
     }
     throw error;
   }
   if (!json.command) return;
   try {
+    wpsConnectorActivateCommandTarget(json.command);
     const result = await wpsConnectorExecute(json.command);
     await wpsConnectorRequest(`/api/commands/${json.command.commandId}/result`, { method: "POST", body: JSON.stringify({ ok: true, result }) });
   } catch (error) {
     const details = wpsConnectorErrorDetails(error, json.command.toolName);
-    details.details = { ...(details.details || {}), sessionId: wpsConnectorSessionId, toolName: json.command.toolName, requestedArgs: json.command.input || {}, hostMessage: details.details?.hostMessage || error?.message || String(error) };
+    details.details = { ...(details.details || {}), sessionId, toolName: json.command.toolName, requestedArgs: json.command.input || {}, hostMessage: details.details?.hostMessage || error?.message || String(error) };
     await wpsConnectorRequest(`/api/commands/${json.command.commandId}/result`, { method: "POST", body: JSON.stringify({ ok: false, error: details }) });
   }
+}
+async function wpsConnectorPollOnce() {
+  await wpsConnectorEnsureSession();
+  const { host } = wpsConnectorScope();
+  let sessionIds = [wpsConnectorSessionId];
+  if (host === "et" || host === "wpp") {
+    try {
+      const sessions = await wpsConnectorListHostSessions(host);
+      sessionIds = [...new Set([wpsConnectorSessionId, ...sessions.map((session) => session.sessionId).filter(Boolean)])];
+    } catch {}
+  }
+  await Promise.all(sessionIds.map((sessionId) => wpsConnectorPollSession(sessionId)));
 }
 async function wpsConnectorHeartbeat() {
   const { app, host, documentIdentity, documentKey } = wpsConnectorScope();
@@ -2955,6 +3090,18 @@ async function wpsConnectorHeartbeat() {
   if (typeof window !== "undefined") {
     window.wpsConnectorSessionInfo = wpsConnectorSessionInfo;
     window.dispatchEvent?.(new CustomEvent("wpsConnectorStateChanged"));
+  }
+  if (host === "et" || host === "wpp") {
+    try {
+      const sessions = await wpsConnectorListHostSessions(host);
+      await Promise.all(sessions
+        .filter((session) => session.sessionId && session.sessionId !== wpsConnectorSessionId)
+        .filter((session) => Boolean(wpsConnectorFindTargetDocument(app, session)))
+        .map((session) => wpsConnectorRequest(`/api/sessions/${session.sessionId}/heartbeat`, {
+          method: "POST",
+          body: JSON.stringify({ clientVersion: WPS_CONNECTOR_CLIENT_VERSION, clientBuild: WPS_CONNECTOR_CLIENT_BUILD }),
+        }).catch(() => null)));
+    } catch {}
   }
 }
 async function wpsConnectorStart() {

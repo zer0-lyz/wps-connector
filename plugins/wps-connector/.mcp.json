@@ -3,8 +3,10 @@
     "wps-connector": {
       "command": "node",
       "args": ["./runtime/apps/mcp/server.js"],
+      "cwd": ".",
       "env": {
-        "WPS_CONNECTOR_BRIDGE_URL": "http://127.0.0.1:40215"
+        "WPS_CONNECTOR_BRIDGE_URL": "http://127.0.0.1:40215",
+        "WPS_CONNECTOR_MCP_EXPOSE_DOTTED": "true"
       }
     }
   }

@@ -34,7 +34,7 @@ function sendJson(res, status, payload) {
 function sendError(res, status, code, message, details = {}) { sendJson(res, status, { ok: false, error: { code, message, details } }); }
 function statusForError(error) {
   const code = String(error?.code || "");
-  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code.endsWith("_REFUSED")) return 409;
+  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code === "AMBIGUOUS_SESSION" || code.endsWith("_REFUSED")) return 409;
   if (code === "INVALID_ARGUMENT" || code === "INVALID_ADDRESS") return 400;
   if (code.endsWith("_NOT_FOUND")) return 404;
   if (code === "HOST_UNSUPPORTED") return 501;
@@ -44,8 +44,12 @@ function statusForError(error) {
 async function readJson(req) { let body = ""; for await (const chunk of req) body += chunk; if (!body.trim()) return {}; return JSON.parse(body); }
 function normalizeHost(value) { const text = String(value || "").toLowerCase(); if (text.includes("spreadsheet") || text.includes("et") || text.includes("excel")) return "et"; if (text.includes("writer") || text.includes("wpp") || text.includes("word")) return "wpp"; return value || "wps"; }
 function normalizeText(value) { return String(value || "").trim(); }
+function canonicalDocumentKey(value) {
+  const text = normalizeText(value);
+  return /^(et|wpp)::\//.test(text) ? text.replace(/^(et|wpp)::/, "") : text;
+}
 function queryBool(value, fallback = false) { if (value === undefined || value === null || value === "") return fallback; return /^(1|true|yes|on)$/i.test(String(value)); }
-function documentKeyFor(session) { return session.documentIdentity?.fullPath || session.documentIdentity?.url || session.documentName || session.sessionId; }
+function documentKeyFor(session) { return session.documentKey || session.documentIdentity?.fullPath || session.documentIdentity?.url || session.documentName || session.sessionId; }
 const bindingKeys = ["projectName", "projectPath", "projectId", "threadId", "conversationId", "documentRole", "bindingId", "documentKey", "host", "documentName", "createdAt", "updatedAt"];
 const selectorBindingKeys = ["projectName", "projectPath", "projectId", "threadId", "conversationId", "documentRole", "bindingId", "documentKey", "host", "documentName"];
 function normalizeBinding(binding) {
@@ -86,20 +90,27 @@ function bindingMatches(session, requested) {
 }
 async function loadBindings() { try { const raw = await readFile(bindingsPath, "utf8"); const json = JSON.parse(raw); bindingsStore = { bindings: Array.isArray(json.bindings) ? json.bindings : [] }; } catch { bindingsStore = { bindings: [] }; } }
 async function saveBindings() { await mkdir(dirname(bindingsPath), { recursive: true }); await writeFile(bindingsPath, `${JSON.stringify(bindingsStore, null, 2)}\n`); }
-function findBindingForSession(session) { const key = documentKeyFor(session); return bindingsStore.bindings.find((b) => b.documentKey === key) || null; }
+function findBindingForSession(session) {
+  const key = canonicalDocumentKey(documentKeyFor(session));
+  return bindingsStore.bindings.find((binding) => canonicalDocumentKey(binding.documentKey) === key) || null;
+}
 function upsertBinding(session, inputBinding) {
   const binding = normalizeBinding(inputBinding);
   if (!binding) return clearBinding(session);
   if (!hasProjectBinding(binding)) throw { code: "PROJECT_BINDING_REQUIRED", message: "至少需要选择一个 Codex 项目后才能保存绑定。", details: { sessionId: session.sessionId, required: ["projectId", "projectPath", "projectName"] } };
   const now = nowIso();
   const previous = findBindingForSession(session);
-  const next = { ...previous, ...binding, bindingId: previous?.bindingId || binding.bindingId || randomUUID(), documentKey: documentKeyFor(session), host: session.host, documentName: session.documentName, documentIdentity: session.documentIdentity || null, createdAt: previous?.createdAt || now, updatedAt: now };
-  const idx = bindingsStore.bindings.findIndex((b) => b.documentKey === next.documentKey || b.bindingId === next.bindingId);
+  const documentKey = documentKeyFor(session);
+  const requestedBindingId = binding.bindingId || "";
+  const requestedIdBelongsToAnotherDocument = requestedBindingId && bindingsStore.bindings.some((item) => item.bindingId === requestedBindingId && canonicalDocumentKey(item.documentKey) !== canonicalDocumentKey(documentKey));
+  const bindingId = previous?.bindingId || (!requestedIdBelongsToAnotherDocument && requestedBindingId) || randomUUID();
+  const next = { ...previous, ...binding, bindingId, documentKey, host: session.host, documentName: session.documentName, documentIdentity: session.documentIdentity || null, createdAt: previous?.createdAt || now, updatedAt: now };
+  const idx = bindingsStore.bindings.findIndex((binding) => canonicalDocumentKey(binding.documentKey) === canonicalDocumentKey(next.documentKey));
   if (idx >= 0) bindingsStore.bindings[idx] = next; else bindingsStore.bindings.push(next);
   session.binding = next;
   return next;
 }
-function clearBinding(session) { const key = documentKeyFor(session); const before = bindingsStore.bindings.length; bindingsStore.bindings = bindingsStore.bindings.filter((b) => b.documentKey !== key && b.bindingId !== session.binding?.bindingId); session.binding = null; return before !== bindingsStore.bindings.length; }
+function clearBinding(session) { const key = canonicalDocumentKey(documentKeyFor(session)); const before = bindingsStore.bindings.length; bindingsStore.bindings = bindingsStore.bindings.filter((binding) => canonicalDocumentKey(binding.documentKey) !== key && binding.bindingId !== session.binding?.bindingId); session.binding = null; return before !== bindingsStore.bindings.length; }
 async function loadCatalog() { try { const raw = await readFile(catalogPath, "utf8"); const json = JSON.parse(raw); return { projects: Array.isArray(json.projects) ? json.projects : [], threads: Array.isArray(json.threads) ? json.threads : [], updatedAt: json.updatedAt || "", source: json.source || "" }; } catch { return { projects: [], threads: [], updatedAt: "", source: "" }; } }
 async function refreshCatalog() {
   const script = join(process.cwd(), "scripts/sync-codex-catalog.js");
@@ -140,7 +151,7 @@ async function checkForUpdates(input = {}) {
   const localPath = join(process.cwd(), "apps/wps-addin/main.js");
   const localSource = await readFile(localPath, "utf8");
   const current = parseConnectorVersion(localSource);
-  const payload = { current, latest: null, updateAvailable: false, checkedAt: nowIso(), source: { localPath, updateCheckUrl, updateCheckFallbackUrl } };
+  const payload = { current, latest: null, updateAvailable: false, versionState: "unknown", checkedAt: nowIso(), source: { localPath, updateCheckUrl, updateCheckFallbackUrl } };
   if (!queryBool(input.skipRemote, false)) {
     const timeoutMs = Number(process.env.WPS_CONNECTOR_UPDATE_CHECK_TIMEOUT_MS || 30000);
     const urls = [updateCheckUrl, updateCheckFallbackUrl].filter(Boolean);
@@ -149,14 +160,19 @@ async function checkForUpdates(input = {}) {
       try {
         payload.latest = parseConnectorVersion(await fetchUpdateSource(url, timeoutMs));
         payload.source.remoteUrl = url;
-        payload.updateAvailable = Boolean(payload.latest.version && compareVersions(current.version, payload.latest.version) < 0);
+        const comparison = payload.latest.version ? compareVersions(current.version, payload.latest.version) : 0;
+        payload.versionState = comparison < 0 ? "update_available" : comparison > 0 ? "local_ahead" : "up_to_date";
+        payload.updateAvailable = payload.versionState === "update_available";
         payload.warning = null;
         break;
       } catch (error) {
         failures.push({ url, message: error.message || String(error) });
       }
     }
-    if (!payload.latest?.version) payload.warning = { code: "UPDATE_CHECK_FAILED", message: failures.map((item) => `${item.url}: ${item.message}`).join("; "), failures };
+    if (!payload.latest?.version) {
+      payload.versionState = "unknown";
+      payload.warning = { code: "UPDATE_CHECK_FAILED", message: failures.map((item) => `${item.url}: ${item.message}`).join("; "), failures };
+    }
   }
   updateCheckCache = { checkedAtMs: Date.now(), payload };
   return payload;
@@ -259,6 +275,23 @@ function selectSession(input = {}, expectedHostPrefix, toolName = "tool") {
     }
     throw { code: "SESSION_BINDING_REQUIRED", message: "No online WPS session is bound to the requested Codex project/thread for " + toolName + ".", details: { requestedBinding: requested, candidateCount: candidates.length, candidates: candidates.map((session) => ({ sessionId: session.sessionId, host: session.host, documentName: session.documentName, binding: session.binding || null })) } };
   }
+  const explicitDocumentSelector = Boolean(input.documentKey || input.documentName || input.bindingId);
+  if (matches.length > 1 && !explicitDocumentSelector) {
+    throw {
+      code: "AMBIGUOUS_SESSION",
+      message: `${toolName} matched multiple online ${expectedHostPrefix || "WPS"} documents. Provide sessionId, documentKey, documentName, or bindingId.`,
+      details: {
+        requestedBinding: requested,
+        candidates: matches.map((session) => ({
+          sessionId: session.sessionId,
+          host: session.host,
+          documentName: session.documentName,
+          documentKey: session.documentKey,
+          binding: session.binding || null,
+        })),
+      },
+    };
+  }
   return matches.sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))[0];
 }
 function assertSessionHost(session, expectedHostPrefix, toolName) {
@@ -268,6 +301,13 @@ function assertSessionHost(session, expectedHostPrefix, toolName) {
 function commandInputWithScope(session, toolName, input = {}) {
   const scope = session.operationScope?.mode === "selection" ? session.operationScope : { mode: "document" };
   const next = { ...input, operationScope: scope };
+  next.__wpsConnectorTarget = {
+    sessionId: session.sessionId,
+    host: session.host,
+    documentName: session.documentName,
+    documentKey: session.documentKey,
+    documentIdentity: session.documentIdentity || null,
+  };
   if (scope.mode !== "selection") return next;
   const context = scope.context || {};
   if (toolName.startsWith("et.")) {
@@ -409,6 +449,20 @@ async function connectionStatus(input = {}) {
     if (waitingBound.length) issues.push({ code: "SESSION_WAITING_FOR_DOCUMENT", message: "The requested binding exists, but its WPS document is not currently executable. Switch back to the bound document.", details: { requestedBinding: requested, sessions: waitingBound.map((session) => ({ sessionId: session.sessionId, host: session.host, documentName: session.documentName, documentKey: session.documentKey, lastSeenAt: session.lastSeenAt, displayStatus: session.displayStatus })) } });
     else issues.push({ code: "NO_BOUND_SESSION", message: "No online session is bound to the requested Codex project/thread.", details: { requestedBinding: requested } });
   }
+  if (input.host && candidates.filter((session) => session.status === "online").length > 1 && !input.sessionId && !input.documentKey && !input.documentName && !input.bindingId) {
+    issues.push({
+      code: "AMBIGUOUS_SESSION",
+      message: `Multiple online ${normalizeHost(input.host)} documents match the current selector. Choose a sessionId or document identifier before executing.`,
+      details: {
+        candidates: candidates.filter((session) => session.status === "online").map((session) => ({
+          sessionId: session.sessionId,
+          host: session.host,
+          documentName: session.documentName,
+          documentKey: session.documentKey,
+        })),
+      },
+    });
+  }
   if (input.sessionId && !filtered.some((session) => session.sessionId === input.sessionId)) issues.push({ code: "SESSION_NOT_FOUND", message: "The requested sessionId is not registered.", details: { sessionId: input.sessionId } });
   if (input.sessionId) {
     const exact = filtered.find((session) => session.sessionId === input.sessionId);
@@ -420,6 +474,7 @@ async function connectionStatus(input = {}) {
   if (issues.some((issue) => issue.code === "SESSION_WAITING_FOR_DOCUMENT")) nextActions.push("Switch back to the bound WPS document shown in details, wait for it to become 当前可执行, then retry.");
   if (issues.some((issue) => issue.code === "NO_ONLINE_SESSIONS" || issue.code === "SESSION_OFFLINE" || issue.code === "NO_ONLINE_HOST_SESSION")) nextActions.push("Open WPS, show the WPS Connector pane, and confirm the pane version is current before retrying.");
   if (issues.some((issue) => issue.code === "NO_BOUND_SESSION" || issue.code === "SESSION_BINDING_MISMATCH")) nextActions.push("Save the project/thread binding in the WPS Connector pane for the target document, then retry with the same binding selector.");
+  if (issues.some((issue) => issue.code === "AMBIGUOUS_SESSION")) nextActions.push("Use the sessionId from candidates for each spreadsheet, or pass documentKey/documentName; parallel calls with different sessionIds are supported.");
   const bridgeHealth = { ok: true, url: `http://${host}:${port}/api/health`, time: nowIso() };
   const addinHealth = await probeJson(`${addinUrl}/health`);
   return {
@@ -482,7 +537,7 @@ async function handle(req, res) {
       const body = await readJson(req);
       const sessionId = body.sessionId || randomUUID();
       const previous = sessions.get(sessionId);
-      const session = { sessionId, host: normalizeHost(body.host), documentName: body.documentName || "", documentKey: normalizeText(body.documentKey) || "", documentIdentity: body.documentIdentity || null, status: "online", registeredAt: previous?.registeredAt || nowIso(), lastSeenAt: nowIso(), activeContext: body.activeContext || null, operationScope: previous?.operationScope || { mode: "document" }, capabilities: body.capabilities || [], clientVersion: body.clientVersion || previous?.clientVersion || "", clientBuild: body.clientBuild || previous?.clientBuild || "", queue: previous?.queue || [], binding: previous?.binding || null };
+      const session = { sessionId, host: normalizeHost(body.host), documentName: body.documentName || "", documentKey: canonicalDocumentKey(body.documentKey), documentIdentity: body.documentIdentity || null, status: "online", registeredAt: previous?.registeredAt || nowIso(), lastSeenAt: nowIso(), activeContext: body.activeContext || null, operationScope: previous?.operationScope || { mode: "document" }, capabilities: body.capabilities || [], clientVersion: body.clientVersion || previous?.clientVersion || "", clientBuild: body.clientBuild || previous?.clientBuild || "", queue: previous?.queue || [], binding: previous?.binding || null };
       if (!session.documentKey) session.documentKey = documentKeyFor(session);
       if (session.documentKey) {
         for (const [existingId, existing] of sessions.entries()) {

@@ -5,12 +5,20 @@ const bridgeUrl = (process.env.WPS_CONNECTOR_BRIDGE_URL || "http://127.0.0.1:402
 const exposeDottedTools = /^(1|true|yes|on)$/i.test(String(process.env.WPS_CONNECTOR_MCP_EXPOSE_DOTTED || ""));
 const bridgeTimeoutMs = Number(process.env.WPS_CONNECTOR_MCP_TIMEOUT_MS || 65000);
 
-function writeMessage(message) {
-  stdout.write(`${JSON.stringify(message)}\n`);
+function writeMessage(message, framing = "line") {
+  const payload = JSON.stringify(message);
+  if (framing === "content-length") {
+    stdout.write(`Content-Length: ${Buffer.byteLength(payload, "utf8")}\r\n\r\n${payload}`);
+    return;
+  }
+  stdout.write(`${payload}\n`);
 }
 
 function textResult(payload) {
-  return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+    ...(payload?.ok === false ? { isError: true } : {}),
+  };
 }
 
 function normalizeToolName(name) {
@@ -55,7 +63,7 @@ async function handleRequest(request) {
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "wps-connector", version: "0.1.0" },
+        serverInfo: { name: "wps-connector", version: "1.0.72" },
       },
     };
   }
@@ -71,26 +79,65 @@ async function handleRequest(request) {
   throw new Error(`Unsupported method: ${method}`);
 }
 
-let buffer = "";
-stdin.setEncoding("utf8");
-stdin.on("data", async (chunk) => {
-  buffer += chunk;
-  let newline;
-  while ((newline = buffer.indexOf("\n")) >= 0) {
-    const line = buffer.slice(0, newline).trim();
-    buffer = buffer.slice(newline + 1);
-    if (!line) continue;
-    let request;
-    try {
-      request = JSON.parse(line);
-      const response = await handleRequest(request);
-      if (response) writeMessage(response);
-    } catch (error) {
-      writeMessage({
-        jsonrpc: "2.0",
-        id: request?.id ?? null,
-        error: { code: error.rpcCode || -32000, message: error.message, data: error.data || error.details || {} },
-      });
+let inputBuffer = Buffer.alloc(0);
+let processing = Promise.resolve();
+
+function takeMessages() {
+  const messages = [];
+  while (inputBuffer.length) {
+    // MCP stdio uses Content-Length framing. Keep newline JSON as a compatibility
+    // path for the existing local smoke tests and older agent gateways.
+    const headerEnd = inputBuffer.indexOf(Buffer.from("\r\n\r\n"));
+    const firstLineEnd = inputBuffer.indexOf(0x0a);
+    const firstBytes = inputBuffer.subarray(0, Math.max(firstLineEnd, 0)).toString("utf8").trim();
+    if (/^content-length\s*:/i.test(firstBytes)) {
+      if (headerEnd < 0) break;
+      const headers = inputBuffer.subarray(0, headerEnd).toString("ascii").split(/\r?\n/);
+      const lengthHeader = headers.find((header) => /^content-length\s*:/i.test(header));
+      const contentLength = Number(lengthHeader?.split(":").slice(1).join(":").trim());
+      if (!Number.isSafeInteger(contentLength) || contentLength < 0) {
+        inputBuffer = inputBuffer.subarray(headerEnd + 4);
+        messages.push({ error: new Error("Invalid MCP Content-Length header"), framing: "content-length" });
+        continue;
+      }
+      const bodyStart = headerEnd + 4;
+      if (inputBuffer.length < bodyStart + contentLength) break;
+      const body = inputBuffer.subarray(bodyStart, bodyStart + contentLength).toString("utf8");
+      inputBuffer = inputBuffer.subarray(bodyStart + contentLength);
+      messages.push({ body, framing: "content-length" });
+      continue;
     }
+    if (firstLineEnd < 0) break;
+    const line = inputBuffer.subarray(0, firstLineEnd).toString("utf8").trim();
+    inputBuffer = inputBuffer.subarray(firstLineEnd + 1);
+    if (line) messages.push({ body: line, framing: "line" });
   }
+  return messages;
+}
+
+async function processMessage(message) {
+  let request;
+  try {
+    if (message.error) throw message.error;
+    request = JSON.parse(message.body);
+    const response = await handleRequest(request);
+    if (response) writeMessage(response, message.framing);
+  } catch (error) {
+    writeMessage({
+      jsonrpc: "2.0",
+      id: request?.id ?? null,
+      error: { code: error.rpcCode || -32000, message: error.message, data: error.data || error.details || {} },
+    }, message.framing);
+  }
+}
+
+function drainInput() {
+  for (const message of takeMessages()) {
+    processing = processing.then(() => processMessage(message)).catch(() => {});
+  }
+}
+
+stdin.on("data", (chunk) => {
+  inputBuffer = Buffer.concat([inputBuffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+  drainInput();
 });

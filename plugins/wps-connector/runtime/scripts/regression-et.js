@@ -1,6 +1,8 @@
 const bridgeUrl = process.env.WPS_CONNECTOR_BRIDGE_URL || 'http://127.0.0.1:40215';
 const requestedSessionId = process.env.WPS_SESSION_ID || '';
+const expectedClientVersion = process.env.WPS_EXPECTED_CLIENT_VERSION || '1.0.72';
 const logSheetName = process.env.WPS_ET_LOG_SHEET || '__WPS_Test_Log__';
+let toolBinding = {};
 
 async function getJson(path, options = {}) {
   const res = await fetch(`${bridgeUrl}${path}`, { ...options, headers: { 'content-type': 'application/json', ...(options.headers || {}) } });
@@ -14,14 +16,14 @@ async function getJson(path, options = {}) {
 }
 
 async function tool(name, input) {
-  return getJson(`/api/tools/${name.replaceAll('.', '/')}`, { method: 'POST', body: JSON.stringify(input) });
+  return getJson(`/api/tools/${name.replaceAll('.', '/')}`, { method: 'POST', body: JSON.stringify({ ...toolBinding, ...input }) });
 }
 
 async function rawTool(name, input) {
   const res = await fetch(`${bridgeUrl}/api/tools/${name.replaceAll('.', '/')}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(input),
+    body: JSON.stringify({ ...toolBinding, ...input }),
   });
   return res.json();
 }
@@ -77,7 +79,13 @@ async function main() {
     : sessions.sessions.filter((s) => s.host === 'et' && s.status === 'online').sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))[0];
   assert(session, 'No online WPS Spreadsheet session found. Set WPS_SESSION_ID if needed.');
   const sessionId = session.sessionId;
-  assert(String(session.clientVersion || '') === '1.0.4', `Expected clientVersion 1.0.4, got ${session.clientVersion || '<empty>'}. Reopen Connector Pane before running real regression.`);
+  toolBinding = {
+    sessionId,
+    bindingId: session.binding?.bindingId || undefined,
+    projectId: session.binding?.projectId || undefined,
+    threadId: session.binding?.threadId || undefined,
+  };
+  assert(String(session.clientVersion || '') === expectedClientVersion, `Expected clientVersion ${expectedClientVersion}, got ${session.clientVersion || '<empty>'}. Reopen Connector Pane before running real regression.`);
   const listedForTarget = await tool('et.list_worksheets', { sessionId });
   const sheetName = listedForTarget.worksheets?.some((sheet) => sheet.name === 'Sheet1')
     ? 'Sheet1'

@@ -1,6 +1,9 @@
 const scalarCellSchema = { type: ["string", "number", "boolean", "null"] };
 const matrixSchema = { type: "array", items: { type: "array", items: scalarCellSchema } };
 const tableFormatSchema = { type: "object", additionalProperties: true };
+const tableCellAddressSchema = { type: "object", properties: { row: { type: "number" }, col: { type: "number" }, column: { type: "number" } }, required: ["row"], additionalProperties: false };
+const tableFieldsSchema = { type: "array", items: { type: "string" } };
+const batchOperationSchema = { type: "object", properties: { operationId: { type: "string" }, tool: { type: "string" }, input: { type: "object", additionalProperties: true } }, required: ["tool"], additionalProperties: false };
 const textFormatSchema = { type: "object", properties: { fontName: { type: "string" }, fontSize: { type: "number" }, bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" }, color: { type: "string" }, highlightColor: { type: "string" } }, additionalProperties: false };
 const paragraphFormatSchema = { type: "object", properties: { alignment: { type: "string" }, lineSpacing: { type: "number" }, lineSpacingRule: { type: ["string", "number"] }, lineSpacingValue: { type: "number" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" } }, additionalProperties: false };
 const fontFormatSchema = { type: "object", properties: { fontName: { type: "string" }, fontSize: { type: "number" }, bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" }, color: { type: "string" } }, additionalProperties: false };
@@ -9,7 +12,7 @@ export const tools = [
   {
     name: "wps.list_sessions",
     description: "List active WPS add-in sessions registered with the local bridge.",
-    inputSchema: { type: "object", properties: { onlyOnline: { type: "boolean" }, onlyBound: { type: "boolean" }, host: { type: "string" }, projectId: { type: "string" }, threadId: { type: "string" }, binding: { type: "object", additionalProperties: true } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { onlyOnline: { type: "boolean" }, includeOffline: { type: "boolean" }, onlyBound: { type: "boolean" }, host: { type: "string" }, sessionId: { type: "string" }, documentKey: { type: "string" }, projectId: { type: "string" }, threadId: { type: "string" }, binding: { type: "object", additionalProperties: true } }, additionalProperties: false },
   },
   {
     name: "wps.connection_status",
@@ -28,6 +31,23 @@ export const tools = [
         conversationId: { type: "string" },
         binding: { type: "object", additionalProperties: true }
       },
+      additionalProperties: false
+    },
+  },
+  {
+    name: "wps.batch",
+    description: "Run multiple WPS Connector tool operations sequentially in one bridge call, with per-step timing, dryRun, optional saveAfter, and optional verifyAfter operations.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        operations: { type: "array", items: batchOperationSchema },
+        stopOnError: { type: "boolean" },
+        dryRun: { type: "boolean" },
+        saveAfter: { type: "boolean" },
+        verifyAfter: { type: "array", items: batchOperationSchema }
+      },
+      required: ["operations"],
       additionalProperties: false
     },
   },
@@ -132,6 +152,25 @@ export const tools = [
     },
   },
   {
+    name: "et.read_format_sample",
+    description: "Read selected WPS Spreadsheet cell formats for specific addresses and fields without scanning a whole range.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, cells: { type: "array", items: { type: ["string", "object"], additionalProperties: true } }, fields: tableFieldsSchema },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.verify_range",
+    description: "Verify a WPS Spreadsheet range for common daily-use acceptance checks, currently including formula error cells.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, checks: { type: "object", additionalProperties: true } },
+      required: ["address"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "et.clear_range",
     description: "Clear contents, formats, or all from a WPS Spreadsheet range.",
     inputSchema: {
@@ -178,6 +217,15 @@ export const tools = [
       type: "object",
       properties: { sessionId: { type: "string" }, continueOnError: { type: "boolean" }, blocks: { type: "array", items: { type: "object", properties: { sheetName: { type: "string" }, address: { type: "string" }, values: matrixSchema, formulas: matrixSchema, formulaRanges: { type: "array", items: { type: "object", properties: { address: { type: "string" }, formulas: matrixSchema }, required: ["address", "formulas"], additionalProperties: false } }, numberFormats: matrixSchema, format: { type: "object", additionalProperties: true } }, required: ["address"], additionalProperties: false } } },
       required: ["blocks"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.save_workbook",
+    description: "Save the active WPS Spreadsheet workbook.",
+    inputSchema: {
+      type: "object",
+      properties: { sessionId: { type: "string" }, checksum: { type: "boolean" }, readback: { type: "boolean" } },
       additionalProperties: false,
     },
   },
@@ -333,7 +381,7 @@ export const tools = [
   {
     name: "wpp.apply_paragraph_format_by_indexes",
     description: "Apply paragraph formatting to one or more one-based WPS Writer paragraph indexes without relying on the current selection.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, font: fontFormatSchema, dryRun: { type: "boolean" }, preview: { type: "boolean" }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, font: fontFormatSchema, dryRun: { type: "boolean" }, fastPath: { type: "boolean" }, preview: { type: "boolean" }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, additionalProperties: false },
   },
   {
     name: "wpp.copy_paragraph_format",
@@ -439,9 +487,44 @@ export const tools = [
     },
   },
   {
+    name: "wpp.format_table_range",
+    description: "Apply formatting to a rectangular range of WPS Writer table cells without changing text or structure.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, startRow: { type: "number" }, endRow: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, startColumn: { type: "number" }, endColumn: { type: "number" }, format: tableFormatSchema, dryRun: { type: "boolean" }, fastPath: { type: "boolean" }, includeResults: { type: "boolean" }, continueOnError: { type: "boolean" } }, required: ["tableIndex", "format"], additionalProperties: false },
+  },
+  {
+    name: "wpp.format_table_rows",
+    description: "Apply formatting to selected rows of a WPS Writer table, optionally limited to a column span.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, rows: { type: "array", items: { type: "number" } }, row: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, startColumn: { type: "number" }, endColumn: { type: "number" }, format: tableFormatSchema, dryRun: { type: "boolean" }, fastPath: { type: "boolean" }, includeResults: { type: "boolean" }, continueOnError: { type: "boolean" } }, required: ["tableIndex", "format"], additionalProperties: false },
+  },
+  {
+    name: "wpp.format_table_columns",
+    description: "Apply formatting to selected columns of a WPS Writer table, optionally limited to a row span.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, columns: { type: "array", items: { type: "number" } }, column: { type: "number" }, col: { type: "number" }, startRow: { type: "number" }, endRow: { type: "number" }, format: tableFormatSchema, dryRun: { type: "boolean" }, fastPath: { type: "boolean" }, includeResults: { type: "boolean" }, continueOnError: { type: "boolean" } }, required: ["tableIndex", "format"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_table_format_sample",
+    description: "Read only selected WPS Writer table cell style fields for fast format acceptance checks.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, cells: { type: "array", items: tableCellAddressSchema }, fields: tableFieldsSchema }, required: ["tableIndex", "cells"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_table_format_range",
+    description: "Read selected style fields from a rectangular WPS Writer table range without scanning heavy table metadata.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, startRow: { type: "number" }, endRow: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, startColumn: { type: "number" }, endColumn: { type: "number" }, fields: tableFieldsSchema }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_table_structure",
+    description: "Read lightweight WPS Writer table structure, with optional merged cells, row heights, and column widths.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, includeMergedCells: { type: "boolean" }, includeRowHeights: { type: "boolean" }, includeColumnWidths: { type: "boolean" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.read_table_cell_styles",
+    description: "Read selected WPS Writer table cell styles by explicit cells or by range; lightweight wrapper around sample/range readers.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, cells: { type: "array", items: tableCellAddressSchema }, startRow: { type: "number" }, endRow: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, fields: tableFieldsSchema }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
     name: "wpp.read_table_format",
     description: "Read complete WPS Writer table formatting, including table, cell, row height, column width, borders, padding, and merged-cell metadata.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, summaryOnly: { type: "boolean" }, cells: { type: "array", items: tableCellAddressSchema }, fields: tableFieldsSchema, startRow: { type: "number" }, endRow: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, startColumn: { type: "number" }, endColumn: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
   },
   {
     name: "wpp.apply_table_format",
@@ -706,3 +789,19 @@ export const tools = [
     },
   },
 ];
+
+const bindingSelectorSchema = {
+  projectId: { type: "string" },
+  projectName: { type: "string" },
+  projectPath: { type: "string" },
+  threadId: { type: "string" },
+  conversationId: { type: "string" },
+  documentRole: { type: "string" },
+  bindingId: { type: "string" },
+  documentKey: { type: "string" },
+  binding: { type: "object", additionalProperties: true }
+};
+for (const tool of tools) {
+  if (!tool.inputSchema || tool.inputSchema.type !== "object") continue;
+  tool.inputSchema.properties = { ...(tool.inputSchema.properties || {}), ...bindingSelectorSchema };
+}
