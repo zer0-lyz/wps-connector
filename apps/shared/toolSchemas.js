@@ -381,7 +381,7 @@ export const tools = [
   {
     name: "wpp.apply_paragraph_format_by_indexes",
     description: "Apply paragraph formatting to one or more one-based WPS Writer paragraph indexes without relying on the current selection.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, font: fontFormatSchema, dryRun: { type: "boolean" }, preview: { type: "boolean" }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, paragraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, format: paragraphFormatSchema, font: fontFormatSchema, dryRun: { type: "boolean" }, fastPath: { type: "boolean" }, preview: { type: "boolean" }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, additionalProperties: false },
   },
   {
     name: "wpp.copy_paragraph_format",
@@ -489,17 +489,17 @@ export const tools = [
   {
     name: "wpp.format_table_range",
     description: "Apply formatting to a rectangular range of WPS Writer table cells without changing text or structure.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, startRow: { type: "number" }, endRow: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, startColumn: { type: "number" }, endColumn: { type: "number" }, format: tableFormatSchema, dryRun: { type: "boolean" }, includeResults: { type: "boolean" }, continueOnError: { type: "boolean" } }, required: ["tableIndex", "format"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, startRow: { type: "number" }, endRow: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, startColumn: { type: "number" }, endColumn: { type: "number" }, format: tableFormatSchema, dryRun: { type: "boolean" }, fastPath: { type: "boolean" }, includeResults: { type: "boolean" }, continueOnError: { type: "boolean" } }, required: ["tableIndex", "format"], additionalProperties: false },
   },
   {
     name: "wpp.format_table_rows",
     description: "Apply formatting to selected rows of a WPS Writer table, optionally limited to a column span.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, rows: { type: "array", items: { type: "number" } }, row: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, startColumn: { type: "number" }, endColumn: { type: "number" }, format: tableFormatSchema, dryRun: { type: "boolean" }, includeResults: { type: "boolean" }, continueOnError: { type: "boolean" } }, required: ["tableIndex", "format"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, rows: { type: "array", items: { type: "number" } }, row: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, startColumn: { type: "number" }, endColumn: { type: "number" }, format: tableFormatSchema, dryRun: { type: "boolean" }, fastPath: { type: "boolean" }, includeResults: { type: "boolean" }, continueOnError: { type: "boolean" } }, required: ["tableIndex", "format"], additionalProperties: false },
   },
   {
     name: "wpp.format_table_columns",
     description: "Apply formatting to selected columns of a WPS Writer table, optionally limited to a row span.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, columns: { type: "array", items: { type: "number" } }, column: { type: "number" }, col: { type: "number" }, startRow: { type: "number" }, endRow: { type: "number" }, format: tableFormatSchema, dryRun: { type: "boolean" }, includeResults: { type: "boolean" }, continueOnError: { type: "boolean" } }, required: ["tableIndex", "format"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, columns: { type: "array", items: { type: "number" } }, column: { type: "number" }, col: { type: "number" }, startRow: { type: "number" }, endRow: { type: "number" }, format: tableFormatSchema, dryRun: { type: "boolean" }, fastPath: { type: "boolean" }, includeResults: { type: "boolean" }, continueOnError: { type: "boolean" } }, required: ["tableIndex", "format"], additionalProperties: false },
   },
   {
     name: "wpp.read_table_format_sample",
@@ -524,7 +524,7 @@ export const tools = [
   {
     name: "wpp.read_table_format",
     description: "Read complete WPS Writer table formatting, including table, cell, row height, column width, borders, padding, and merged-cell metadata.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, summaryOnly: { type: "boolean" }, cells: { type: "array", items: tableCellAddressSchema }, fields: tableFieldsSchema, startRow: { type: "number" }, endRow: { type: "number" }, startCol: { type: "number" }, endCol: { type: "number" }, startColumn: { type: "number" }, endColumn: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
   },
   {
     name: "wpp.apply_table_format",
@@ -789,3 +789,19 @@ export const tools = [
     },
   },
 ];
+
+const bindingSelectorSchema = {
+  projectId: { type: "string" },
+  projectName: { type: "string" },
+  projectPath: { type: "string" },
+  threadId: { type: "string" },
+  conversationId: { type: "string" },
+  documentRole: { type: "string" },
+  bindingId: { type: "string" },
+  documentKey: { type: "string" },
+  binding: { type: "object", additionalProperties: true }
+};
+for (const tool of tools) {
+  if (!tool.inputSchema || tool.inputSchema.type !== "object") continue;
+  tool.inputSchema.properties = { ...(tool.inputSchema.properties || {}), ...bindingSelectorSchema };
+}

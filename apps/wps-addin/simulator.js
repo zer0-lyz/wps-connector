@@ -363,9 +363,9 @@ function execute(command) {
       const item = simParagraphItem(index);
       return { paragraphIndex: index, ok: true, dryRun, affectedRange: item.range, textPreview: item.preview, styleName: item.styleName, beforeFormat: before, effectiveFormat: dryRun ? before : state.wpp.paragraphFormats[index], hostAcceptedFields: dryRun ? [] : Object.keys(format), hostRejectedFields: [] };
     });
-    const full = { host: "wpp", applied: !dryRun && affectedParagraphs.length > 0, dryRun, affectedCount: affectedParagraphs.length, affectedParagraphIndexes: indexes, affectedParagraphs, perParagraphFormats: affectedParagraphs.map((p) => ({ paragraphIndex: p.paragraphIndex, affectedRange: p.affectedRange, textPreview: p.textPreview, styleName: p.styleName, format: p.effectiveFormat })), hostAcceptedFields: Object.keys(format), hostRejectedFields: [] };
+    const full = { host: "wpp", applied: !dryRun && affectedParagraphs.length > 0, dryRun, fastPath: !dryRun && command.input.fastPath !== false ? "contiguous-range" : "per-paragraph", hostCallsSaved: !dryRun && command.input.fastPath !== false ? Math.max(0, indexes.length - 1) : 0, affectedCount: affectedParagraphs.length, affectedParagraphIndexes: indexes, affectedParagraphs, perParagraphFormats: affectedParagraphs.map((p) => ({ paragraphIndex: p.paragraphIndex, affectedRange: p.affectedRange, textPreview: p.textPreview, styleName: p.styleName, format: p.effectiveFormat })), hostAcceptedFields: Object.keys(format), hostRejectedFields: [] };
     if (command.input.summaryOnly === false) return full;
-    return { host: "wpp", applied: full.applied, dryRun, affectedCount: affectedParagraphs.length, affectedParagraphIndexes: indexes, acceptedFields: Object.keys(format), rejectedFields: [] };
+    return { host: "wpp", applied: full.applied, dryRun, fastPath: full.fastPath, hostCallsSaved: full.hostCallsSaved, affectedCount: affectedParagraphs.length, affectedParagraphIndexes: indexes, acceptedFields: Object.keys(format), rejectedFields: [] };
   }
   if (command.toolName === "wpp.copy_paragraph_format" || command.toolName === "wpp.copy_selected_paragraph_format_to_indexes") {
     const source = command.toolName === "wpp.copy_selected_paragraph_format_to_indexes" ? 1 : simIndex(command.input.sourceParagraphIndex, "sourceParagraphIndex");
@@ -604,11 +604,19 @@ function execute(command) {
       if (!input.dryRun) simMergeFormat(simCellFormat(table, target.row, target.column), { ...(input.format || {}), row: target.row, column: target.column });
       Object.keys(input.format || {}).forEach((key) => accepted.add(key));
     }
-    const out = { host: "wpp", tableIndex, applied: !input.dryRun, dryRun: Boolean(input.dryRun), affectedCells: targets.length, acceptedFields: [...accepted], durationMs: Date.now() - started };
+    const rangeSafe = Object.keys(input.format || {}).some((key) => ["font", "paragraph", "shading"].includes(key));
+    const out = { host: "wpp", tableIndex, applied: !input.dryRun, dryRun: Boolean(input.dryRun), fastPath: !input.dryRun && input.fastPath !== false && rangeSafe ? "table-range" : "per-cell", hostCallsSaved: !input.dryRun && input.fastPath !== false && rangeSafe ? Math.max(0, targets.length - 1) : 0, affectedCells: targets.length, acceptedFields: [...accepted], durationMs: Date.now() - started };
     if (input.includeResults) out.results = targets.map((target) => ({ ...target, ok: true, applied: [...accepted] }));
     return out;
   }
-  if (command.toolName === "wpp.read_table_format") { const { table, tableIndex } = simTable(command.input); return { host: "wpp", tableIndex, format: simClone(simFormat(table)) }; }
+  if (command.toolName === "wpp.read_table_format") {
+    const { table, tableIndex } = simTable(command.input);
+    if (command.input.summaryOnly || Array.isArray(command.input.cells) || Array.isArray(command.input.fields) || command.input.startRow !== undefined || command.input.endRow !== undefined) {
+      if (Array.isArray(command.input.cells) && command.input.cells.length) return execute({ toolName: "wpp.read_table_format_sample", input: command.input });
+      return { host: "wpp", tableIndex, summaryOnly: true, rowCount: table.rowCount, columnCount: table.columnCount, fields: command.input.fields || [] };
+    }
+    return { host: "wpp", tableIndex, format: simClone(simFormat(table)) };
+  }
   if (command.toolName === "wpp.apply_table_format") { const { table, tableIndex } = simTable(command.input); table.format = simClone(command.input.format || {}); table.format.rowCount = table.rowCount; table.format.columnCount = table.columnCount; return { host: "wpp", tableIndex, applied: ["table_format"], rowCount: table.rowCount, columnCount: table.columnCount }; }
   if (command.toolName === "wpp.format_table_range") {
     const { table, tableIndex } = simTable(command.input);

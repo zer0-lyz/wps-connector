@@ -23,6 +23,48 @@ function titleFromText(text) {
   if (!cleaned || cleaned.startsWith("# AGENTS.md") || cleaned.startsWith("<")) return "";
   return cleaned.length > 120 ? `${cleaned.slice(0, 117)}...` : cleaned;
 }
+function collectThreadListTitles(value, target) {
+  if (value == null) return;
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text || !text.includes("threads")) return;
+    try { collectThreadListTitles(JSON.parse(text), target); } catch { /* not a serialized thread list */ }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectThreadListTitles(item, target);
+    return;
+  }
+  if (typeof value !== "object") return;
+  if (Array.isArray(value.threads)) {
+    value.threads.forEach((thread, index) => {
+      const id = String(thread?.id || thread?.threadId || "");
+      if (!id) return;
+      const title = titleFromText(thread.title || thread.displayTitle || thread.name);
+      if (!target.has(id) || !target.get(id)?.title) target.set(id, {
+        title,
+        catalogOrder: Number(thread.catalogOrder ?? thread.order ?? index)
+      });
+    });
+  }
+  for (const child of Object.values(value)) collectThreadListTitles(child, target);
+}
+async function readCodexSessionIndex(codexHome) {
+  const result = new Map();
+  try {
+    const raw = await readFile(join(codexHome, "session_index.jsonl"), "utf8");
+    for (const [index, line] of raw.split(/\r?\n/).entries()) {
+      if (!line.trim()) continue;
+      try {
+        const row = JSON.parse(line);
+        const id = String(row.id || "");
+        if (!id) continue;
+        result.set(id, { title: titleFromText(row.thread_name), catalogOrder: index });
+      } catch { /* ignore malformed index lines */ }
+    }
+  } catch { /* session_index is optional */ }
+  return result;
+}
 function normPath(value) {
   return String(value || "").replace(/\/$/, "");
 }
@@ -67,7 +109,7 @@ async function readCodexThreadIndex(codexHome) {
     return { byId: new Map(), rows: [] };
   }
 }
-async function parseThreadFile(path, existingTitle, globalState, codexThread) {
+async function parseThreadFile(path, existingTitle, globalState, codexThread, appThreadTitles) {
   const thread = { id: "", hostId: "local", title: "", preview: "", cwd: "", status: "active", createdAt: "", updatedAt: "", catalogOrder: 999999 };
   const fileStat = await stat(path);
   thread.updatedAt = isoLocal(fileStat.mtime);
@@ -76,6 +118,8 @@ async function parseThreadFile(path, existingTitle, globalState, codexThread) {
     if (!line.trim()) continue;
     let event;
     try { event = JSON.parse(line); } catch { continue; }
+    collectThreadListTitles(event.payload?.output, appThreadTitles);
+    collectThreadListTitles(event.payload?.result, appThreadTitles);
     if (event.timestamp) thread.updatedAt = isoLocal(new Date(event.timestamp));
     if (event.type === "session_meta") {
       const payload = event.payload || {};
@@ -103,21 +147,35 @@ async function parseThreadFile(path, existingTitle, globalState, codexThread) {
   }
   if (!thread.id) thread.id = basename(path).match(/rollout-[^-]+-[^-]+-(.+)\.jsonl$/)?.[1] || basename(path, ".jsonl");
   const globalTitle = promptHistoryTitle(globalState, thread.id);
+  const appThread = appThreadTitles.get(thread.id);
   if (codexThread) {
     thread.cwd = String(codexThread.cwd || thread.cwd || "");
-    thread.title = titleFromText(codexThread.title) || globalTitle || thread.title || thread.preview || existingTitle || thread.id;
+    thread.title = appThread?.title || titleFromText(codexThread.title) || globalTitle || thread.title || thread.preview || existingTitle || thread.id;
     thread.preview = titleFromText(codexThread.preview) || thread.preview || thread.title;
     thread.createdAt = msToIso(codexThread.created_at_ms, thread.createdAt);
     thread.updatedAt = msToIso(codexThread.updated_at_ms, thread.updatedAt);
     thread.recencyAt = msToIso(codexThread.recency_at_ms, thread.updatedAt);
-    thread.catalogOrder = Number(codexThread.catalogOrder ?? thread.catalogOrder);
+    thread.catalogOrder = Number(appThread?.catalogOrder ?? codexThread.catalogOrder ?? thread.catalogOrder);
   } else {
-    thread.title = globalTitle || thread.title || thread.preview || existingTitle || thread.id;
+    thread.title = appThread?.title || globalTitle || thread.title || thread.preview || existingTitle || thread.id;
+    thread.catalogOrder = Number(appThread?.catalogOrder ?? thread.catalogOrder);
     thread.recencyAt = thread.updatedAt;
   }
   thread.preview = thread.preview || thread.title;
   thread.createdAt = thread.createdAt || thread.updatedAt;
   return thread.cwd ? thread : null;
+}
+async function collectAppThreadTitles(path, target) {
+  let raw = "";
+  try { raw = await readFile(path, "utf8"); } catch { return; }
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      collectThreadListTitles(event.payload?.output, target);
+      collectThreadListTitles(event.payload?.result, target);
+    } catch { /* ignore malformed rollout lines */ }
+  }
 }
 function projectFromCwd(cwd) {
   const label = basename(cwd) || cwd;
@@ -131,11 +189,14 @@ async function main() {
   const globalState = await readGlobalState(codexHome);
   const projectOrder = new Map((globalState?.["project-order"] || []).map((path, index) => [String(path).replace(/\/$/, ""), index]));
   const codexThreads = await readCodexThreadIndex(codexHome);
+  const appThreadTitles = new Map();
+  for (const [id, meta] of await readCodexSessionIndex(codexHome)) appThreadTitles.set(id, meta);
   const files = await walk(join(codexHome, "sessions"));
   const parsed = [];
+  for (const file of files) await collectAppThreadTitles(file, appThreadTitles);
   for (const file of files) {
     const id = basename(file, ".jsonl").split("-").slice(-5).join("-");
-    const thread = await parseThreadFile(file, existingTitles.get(id), globalState, codexThreads.byId.get(id));
+    const thread = await parseThreadFile(file, existingTitles.get(id), globalState, codexThreads.byId.get(id), appThreadTitles);
     if (thread) parsed.push(thread);
   }
   for (const row of codexThreads.rows) {
@@ -143,14 +204,14 @@ async function main() {
     parsed.push({
       id: String(row.id),
       hostId: "local",
-      title: titleFromText(row.title) || String(row.id),
-      preview: titleFromText(row.preview) || titleFromText(row.title) || String(row.id),
+      title: appThreadTitles.get(String(row.id))?.title || titleFromText(row.title) || String(row.id),
+      preview: appThreadTitles.get(String(row.id))?.title || titleFromText(row.preview) || titleFromText(row.title) || String(row.id),
       cwd: String(row.cwd || ""),
       status: "active",
       createdAt: msToIso(row.created_at_ms),
       updatedAt: msToIso(row.updated_at_ms),
       recencyAt: msToIso(row.recency_at_ms, msToIso(row.updated_at_ms)),
-      catalogOrder: Number(row.catalogOrder ?? 999999)
+      catalogOrder: Number(appThreadTitles.get(String(row.id))?.catalogOrder ?? row.catalogOrder ?? 999999)
     });
   }
   const threadMap = new Map();
