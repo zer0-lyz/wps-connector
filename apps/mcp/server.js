@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
 import { stdin, stdout } from "node:process";
 import { tools } from "../shared/toolSchemas.js";
 
 const bridgeUrl = (process.env.WPS_CONNECTOR_BRIDGE_URL || "http://127.0.0.1:40215").replace(/\/$/, "");
+const exposeDottedTools = /^(1|true|yes|on)$/i.test(String(process.env.WPS_CONNECTOR_MCP_EXPOSE_DOTTED || ""));
+const bridgeTimeoutMs = Number(process.env.WPS_CONNECTOR_MCP_TIMEOUT_MS || 65000);
 
 function writeMessage(message) {
   stdout.write(`${JSON.stringify(message)}\n`);
@@ -13,7 +14,10 @@ function textResult(payload) {
 }
 
 function normalizeToolName(name) {
-  const text = String(name || "");
+  let text = String(name || "");
+  const wrapped = /^mcp__wps[_-]connector__(.+)$/i.exec(text);
+  if (wrapped) text = wrapped[1];
+  text = text.replace(/_[0-9a-f]{8,64}$/i, "");
   if (tools.some((tool) => tool.name === text)) return text;
   const match = /^(wps|wpp|et)_(.+)$/.exec(text);
   if (!match) return text;
@@ -27,36 +31,19 @@ function toolAliases() {
 async function callBridgeTool(name, args) {
   const canonicalName = normalizeToolName(name);
   const path = canonicalName.replaceAll(".", "/");
-  const payload = JSON.stringify(args || {});
-  const result = await new Promise((resolve, reject) => {
-    const child = spawn("curl", [
-      "-sS",
-      "-X",
-      "POST",
-      `${bridgeUrl}/api/tools/${path}`,
-      "-H",
-      "content-type: application/json",
-      "--data-binary",
-      "@-",
-    ]);
-    let out = "";
-    let err = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk) => {
-      out += chunk;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), bridgeTimeoutMs);
+  try {
+    const response = await fetch(`${bridgeUrl}/api/tools/${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args || {}),
+      signal: controller.signal,
     });
-    child.stderr.on("data", (chunk) => {
-      err += chunk;
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve(out);
-      else reject(new Error(err || `curl exited with code ${code}`));
-    });
-    child.stdin.end(payload);
-  });
-  return JSON.parse(result);
+    return await response.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function handleRequest(request) {
@@ -72,7 +59,7 @@ async function handleRequest(request) {
       },
     };
   }
-  if (method === "tools/list") return { jsonrpc: "2.0", id, result: { tools: [...tools, ...toolAliases()] } };
+  if (method === "tools/list") return { jsonrpc: "2.0", id, result: { tools: exposeDottedTools ? [...tools, ...toolAliases()] : toolAliases() } };
   if (method === "tools/call") {
     const requestedName = params?.name;
     const canonicalName = normalizeToolName(requestedName);

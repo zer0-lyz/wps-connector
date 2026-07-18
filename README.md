@@ -132,8 +132,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.60`
-- clientBuild: `2026.07.06-stable-entry-low-impact.1`
+- UI/clientVersion: `v1.0.70`
+- clientBuild: `2026.07.18-lightweight-format-readback.1`
 
 ## Current Tool Surface
 

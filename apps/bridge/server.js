@@ -34,7 +34,7 @@ function sendJson(res, status, payload) {
 function sendError(res, status, code, message, details = {}) { sendJson(res, status, { ok: false, error: { code, message, details } }); }
 function statusForError(error) {
   const code = String(error?.code || "");
-  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code.endsWith("_REFUSED")) return 409;
+  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code.endsWith("_REFUSED")) return 409;
   if (code === "INVALID_ARGUMENT" || code === "INVALID_ADDRESS") return 400;
   if (code.endsWith("_NOT_FOUND")) return 404;
   if (code === "HOST_UNSUPPORTED") return 501;
@@ -57,6 +57,8 @@ function normalizeBinding(binding) {
   if (binding.documentIdentity && typeof binding.documentIdentity === "object") out.documentIdentity = binding.documentIdentity;
   return Object.keys(out).length ? out : null;
 }
+function hasProjectBinding(binding) { return Boolean(binding?.projectId || binding?.projectPath || binding?.projectName); }
+function hasProjectSelector(binding) { return Boolean(binding?.bindingId || binding?.projectId || binding?.projectPath || binding?.projectName); }
 function requestedBinding(input = {}) {
   const nested = normalizeBinding(input.binding) || {};
   const direct = {};
@@ -72,7 +74,15 @@ function requestedBinding(input = {}) {
 function bindingMatches(session, requested) {
   if (!requested) return true;
   if (!session?.binding) return false;
-  return Object.entries(requested).every(([key, value]) => String(session.binding?.[key] ?? "") === String(value));
+  if (!hasProjectBinding(session.binding) || !hasProjectSelector(requested)) return false;
+  return Object.entries(requested).every(([key, value]) => {
+    const actual = String(session.binding?.[key] ?? "");
+    if (key === "threadId" || key === "conversationId") {
+      if (value) return !actual || actual === String(value);
+      return !actual;
+    }
+    return actual === String(value);
+  });
 }
 async function loadBindings() { try { const raw = await readFile(bindingsPath, "utf8"); const json = JSON.parse(raw); bindingsStore = { bindings: Array.isArray(json.bindings) ? json.bindings : [] }; } catch { bindingsStore = { bindings: [] }; } }
 async function saveBindings() { await mkdir(dirname(bindingsPath), { recursive: true }); await writeFile(bindingsPath, `${JSON.stringify(bindingsStore, null, 2)}\n`); }
@@ -80,6 +90,7 @@ function findBindingForSession(session) { const key = documentKeyFor(session); r
 function upsertBinding(session, inputBinding) {
   const binding = normalizeBinding(inputBinding);
   if (!binding) return clearBinding(session);
+  if (!hasProjectBinding(binding)) throw { code: "PROJECT_BINDING_REQUIRED", message: "至少需要选择一个 Codex 项目后才能保存绑定。", details: { sessionId: session.sessionId, required: ["projectId", "projectPath", "projectName"] } };
   const now = nowIso();
   const previous = findBindingForSession(session);
   const next = { ...previous, ...binding, bindingId: previous?.bindingId || binding.bindingId || randomUUID(), documentKey: documentKeyFor(session), host: session.host, documentName: session.documentName, documentIdentity: session.documentIdentity || null, createdAt: previous?.createdAt || now, updatedAt: now };
@@ -221,6 +232,13 @@ function selectSession(input = {}, expectedHostPrefix, toolName = "tool") {
   const requested = requestedBinding(input);
   if (input.sessionId) {
     const session = sessions.get(input.sessionId);
+    if (session && !session.binding) {
+      throw { code: "PROJECT_BINDING_REQUIRED", message: "当前 WPS 文档尚未绑定 Codex 项目，不能执行 " + toolName + "。请先在 WPS Connector 面板保存项目绑定。", details: { sessionId: session.sessionId, documentName: session.documentName } };
+    }
+    if (session?.binding && !requested) {
+      throw { code: "SESSION_BINDING_REQUIRED", message: "Session " + session.sessionId + " is bound to a Codex project/thread. Provide matching bindingId, projectId/threadId, or binding to use it.", details: { sessionId: session.sessionId, actualBinding: session.binding || null } };
+    }
+    if (session?.binding && requested && !hasProjectSelector(requested)) throw { code: "PROJECT_BINDING_REQUIRED", message: "请提供项目绑定信息（projectId、projectPath、projectName 或 bindingId）。", details: { sessionId: session.sessionId } };
     if (session && requested && !bindingMatches(session, requested)) {
       throw { code: "SESSION_BINDING_MISMATCH", message: "Session " + session.sessionId + " is not bound to the requested Codex project/thread.", details: { sessionId: session.sessionId, requestedBinding: requested, actualBinding: session.binding || null, aliases: ["BINDING_MISMATCH"] } };
     }
@@ -230,7 +248,9 @@ function selectSession(input = {}, expectedHostPrefix, toolName = "tool") {
   const candidates = [...sessions.values()]
     .filter((s) => s.status === "online")
     .filter((s) => !expectedHostPrefix || String(s.host || "").startsWith(expectedHostPrefix));
-  const matches = requested ? candidates.filter((session) => bindingMatches(session, requested)) : candidates;
+  if (!requested) throw { code: "PROJECT_BINDING_REQUIRED", message: "执行 " + toolName + " 前必须先绑定 Codex 项目。", details: { candidateCount: candidates.length, candidates: candidates.map((session) => ({ sessionId: session.sessionId, host: session.host, documentName: session.documentName })) } };
+  if (!hasProjectSelector(requested)) throw { code: "PROJECT_BINDING_REQUIRED", message: "请提供项目绑定信息后再执行 " + toolName + ".", details: { requestedBinding: requested } };
+  const matches = candidates.filter((session) => bindingMatches(session, requested));
   if (requested && !matches.length) {
     const waiting = [...sessions.values()].filter((session) => (!expectedHostPrefix || String(session.host || "").startsWith(expectedHostPrefix)) && bindingMatches(session, requested));
     if (waiting.length) {
@@ -269,7 +289,12 @@ function expectedHostForTool(toolName) {
   return toolName.startsWith("et.") ? "et" : toolName.startsWith("wpp.") ? "wpp" : "";
 }
 function batchOperationInput(batchInput = {}, operation = {}) {
-  return { ...(operation.input || {}), sessionId: operation.input?.sessionId || batchInput.sessionId };
+  const inherited = {};
+  for (const key of selectorBindingKeys) {
+    if (Object.prototype.hasOwnProperty.call(batchInput, key)) inherited[key] = batchInput[key];
+  }
+  if (batchInput.binding) inherited.binding = batchInput.binding;
+  return { ...inherited, ...(operation.input || {}), sessionId: operation.input?.sessionId || batchInput.sessionId };
 }
 async function runBatch(input = {}) {
   if (!Array.isArray(input.operations) || !input.operations.length) throw { code: "INVALID_ARGUMENT", message: "operations is required.", details: { field: "operations" } };
@@ -321,7 +346,7 @@ async function runBatch(input = {}) {
     const firstTool = input.operations.find((operation) => operation.tool?.startsWith("wpp.") || operation.tool?.startsWith("et."))?.tool || "";
     const saveTool = firstTool.startsWith("wpp.") ? "wpp.save_document" : firstTool.startsWith("et.") ? "et.save_workbook" : "";
     if (saveTool) {
-      try { saveResult = await runTool(saveTool, { sessionId: input.sessionId }); }
+      try { saveResult = await runTool(saveTool, batchOperationInput(input, { input: { sessionId: input.sessionId } })); }
       catch (error) { saveResult = { ok: false, error: { code: error.code || "SAVE_FAILED", message: error.message || String(error), details: error.details || {} } }; }
     } else saveResult = { ok: false, warning: { code: "SAVE_UNSUPPORTED", message: "saveAfter is currently implemented for Writer and Spreadsheet sessions." } };
   }
@@ -445,6 +470,7 @@ async function handle(req, res) {
     if (req.method === "POST" && pathname === "/api/update/apply") { return sendJson(res, 202, { ok: true, ...applyUpdate() }); }
     if (req.method === "GET" && pathname === "/api/tools/schema") return sendJson(res, 200, { ok: true, tools });
     if (req.method === "POST" && pathname === "/api/catalog/refresh") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
+    if (req.method === "GET" && pathname === "/api/catalog") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/sessions") {
