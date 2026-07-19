@@ -1,9 +1,16 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
+import net from "node:net";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
+import WebSocket from "ws";
 
 const bundledCodex = "/Applications/ChatGPT.app/Contents/Resources/codex";
+const execFileAsync = promisify(execFile);
 
 function agentPath() {
   const parts = String(process.env.PATH || "").split(":").filter(Boolean);
@@ -52,18 +59,24 @@ export class CodexAgentClient extends EventEmitter {
   constructor(options = {}) {
     super();
     this.command = options.command || process.env.WPS_CONNECTOR_CODEX_BIN || (existsSync(bundledCodex) ? bundledCodex : "codex");
-    this.args = options.args || parseArgs(process.env.WPS_CONNECTOR_CODEX_ARGS) || ["-c", "features.code_mode_host=true", "app-server"];
+    const configuredArgs = options.args || parseArgs(process.env.WPS_CONNECTOR_CODEX_ARGS);
+    this.args = configuredArgs || ["-c", "features.code_mode_host=true", "app-server"];
+    this.sharedTransport = options.sharedTransport ?? !configuredArgs;
+    this.socketPath = options.socketPath || process.env.WPS_CONNECTOR_CODEX_SOCKET || join(homedir(), ".codex/app-server-control/app-server-control.sock");
     this.requestTimeoutMs = Number(options.requestTimeoutMs || process.env.WPS_CONNECTOR_CODEX_TIMEOUT_MS || 30000);
     this.child = null;
+    this.socket = null;
     this.starting = null;
     this.buffer = "";
     this.nextId = 1;
     this.pending = new Map();
     this.runs = new Map();
+    this.subscribedThreads = new Set();
   }
 
   async ensureStarted() {
     if (this.starting) return this.starting;
+    if (this.socket?.readyState === WebSocket.OPEN) return;
     if (this.child && !this.child.killed) return;
     this.starting = this.start();
     try {
@@ -74,6 +87,11 @@ export class CodexAgentClient extends EventEmitter {
   }
 
   async start() {
+    if (this.sharedTransport) return this.startShared();
+    return this.startStdio();
+  }
+
+  async startStdio() {
     const child = spawn(this.command, this.args, {
       env: { ...process.env, PATH: agentPath() },
       stdio: ["pipe", "pipe", "pipe"],
@@ -94,6 +112,72 @@ export class CodexAgentClient extends EventEmitter {
       capabilities: { experimentalApi: true },
     }, true);
     this.notify("initialized", {});
+  }
+
+  async daemonVersion() {
+    try {
+      const { stdout } = await execFileAsync(this.command, ["app-server", "daemon", "version"], {
+        env: { ...process.env, PATH: agentPath() },
+        timeout: 2500,
+      });
+      const result = JSON.parse(stdout);
+      return result?.status === "running" && result?.socketPath ? result : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async ensureSharedServer() {
+    const running = await this.daemonVersion();
+    if (running?.socketPath === this.socketPath) return running;
+    await mkdir(dirname(this.socketPath), { recursive: true });
+    const child = spawn(this.command, ["-c", "features.code_mode_host=true", "app-server", "--listen", `unix://${this.socketPath}`], {
+      detached: true,
+      env: { ...process.env, PATH: agentPath() },
+      stdio: "ignore",
+    });
+    child.unref();
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const status = await this.daemonVersion();
+      if (status?.socketPath === this.socketPath) return status;
+    }
+    throw Object.assign(new Error("无法启动 Codex 共享会话服务。"), { code: "AGENT_SHARED_SERVER_UNAVAILABLE" });
+  }
+
+  async startShared() {
+    await this.ensureSharedServer();
+    const socket = new WebSocket("ws://localhost/rpc", {
+      createConnection: () => net.createConnection(this.socketPath),
+      perMessageDeflate: false,
+    });
+    this.socket = socket;
+    try {
+      await new Promise((resolve, reject) => {
+        socket.once("open", resolve);
+        socket.once("error", reject);
+      });
+    } catch (error) {
+      this.socket = null;
+      socket.close();
+      throw error;
+    }
+    socket.on("message", (data) => this.onMessageData(String(data)));
+    socket.on("error", (error) => this.emit("log", `Codex shared App Server socket error: ${error.message}`));
+    socket.on("close", (code, reason) => this.onExit(code, String(reason || "")));
+    await this.request("initialize", {
+      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.1" },
+      capabilities: { experimentalApi: true },
+    }, true);
+    this.notify("initialized", {});
+  }
+
+  onMessageData(data) {
+    try {
+      this.onMessage(JSON.parse(data));
+    } catch (error) {
+      this.emit("log", `Invalid Codex shared App Server message: ${error.message}`);
+    }
   }
 
   onData(chunk) {
@@ -131,7 +215,23 @@ export class CodexAgentClient extends EventEmitter {
 
   onNotification(method, params) {
     const threadId = String(params.threadId || "");
-    const run = this.runs.get(threadId);
+    let run = this.runs.get(threadId);
+    if (threadId && method === "turn/started" && (!run || !["starting", "running"].includes(run.status))) {
+      const now = new Date().toISOString();
+      run = {
+        runId: `external:${params.turn?.id || randomUUID()}`,
+        threadId,
+        turnId: params.turn?.id || "",
+        status: "running",
+        delta: "",
+        finalText: "",
+        error: "",
+        source: "external",
+        startedAt: now,
+        updatedAt: now,
+      };
+      this.runs.set(threadId, run);
+    }
     if (run && method === "item/agentMessage/delta") {
       run.turnId = run.turnId || params.turnId || "";
       run.delta += String(params.delta || "");
@@ -171,11 +271,19 @@ export class CodexAgentClient extends EventEmitter {
       }
     }
     this.child = null;
+    this.socket = null;
   }
 
   write(message) {
-    if (!this.child?.stdin?.writable) throw new Error("Codex App Server is not running.");
-    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(JSON.stringify(message));
+      return;
+    }
+    if (this.child?.stdin?.writable) {
+      this.child.stdin.write(`${JSON.stringify(message)}\n`);
+      return;
+    }
+    throw new Error("Codex App Server is not running.");
   }
 
   notify(method, params = {}) {
@@ -197,6 +305,10 @@ export class CodexAgentClient extends EventEmitter {
   }
 
   async readThread(threadId, limit = 200) {
+    if (!this.subscribedThreads.has(threadId)) {
+      await this.request("thread/resume", { threadId, excludeTurns: true });
+      this.subscribedThreads.add(threadId);
+    }
     let thread;
     try {
       const turnLimit = Math.max(10, Math.min(100, Math.ceil((Number(limit) || 80) / 2)));
@@ -222,6 +334,7 @@ export class CodexAgentClient extends EventEmitter {
       throw Object.assign(new Error("The bound Codex conversation already has an active Agent turn."), { code: "AGENT_TURN_ACTIVE" });
     }
     await this.request("thread/resume", { threadId, excludeTurns: true });
+    this.subscribedThreads.add(threadId);
     const now = new Date().toISOString();
     const run = {
       runId: randomUUID(),
@@ -269,8 +382,20 @@ export class CodexAgentClient extends EventEmitter {
     return run ? { ...run } : null;
   }
 
+  getTransportStatus() {
+    return {
+      mode: this.sharedTransport ? "shared-daemon" : "stdio",
+      shared: this.sharedTransport,
+      socketPath: this.sharedTransport ? this.socketPath : "",
+      connected: this.socket?.readyState === WebSocket.OPEN || Boolean(this.child && !this.child.killed),
+      desktopSyncRequired: this.sharedTransport,
+    };
+  }
+
   close() {
     if (this.child && !this.child.killed) this.child.kill("SIGTERM");
+    if (this.socket && this.socket.readyState < WebSocket.CLOSING) this.socket.close();
     this.child = null;
+    this.socket = null;
   }
 }

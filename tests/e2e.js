@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { CodexAgentClient } from "../apps/bridge/codexAgent.js";
 
 const port = 40216;
 const updatePort = 40218;
@@ -122,6 +123,11 @@ function assert(condition, message) {
 }
 
 async function main() {
+  const externalTurnProbe = new CodexAgentClient({ sharedTransport: false });
+  externalTurnProbe.onNotification("turn/started", { threadId: "external-thread", turn: { id: "external-turn" } });
+  externalTurnProbe.onNotification("item/agentMessage/delta", { threadId: "external-thread", turnId: "external-turn", delta: "外部回复" });
+  externalTurnProbe.onNotification("turn/completed", { threadId: "external-thread", turn: { id: "external-turn", status: "completed" } });
+  assert(externalTurnProbe.getRun("external-thread")?.delta === "外部回复" && externalTurnProbe.getRun("external-thread")?.status === "completed", "Agent client did not surface a turn started by Codex Desktop.");
   const pluginSkill = readFileSync("plugins/wps-connector/skills/wps-connector/SKILL.md", "utf8");
   assert(pluginSkill.includes("Two-Path Routing") && pluginSkill.includes("unsupported call") && pluginSkill.includes("restart WPS"), "Plugin skill missed mandatory automatic MCP fallback guidance.");
   for (const deployScript of ["scripts/deploy-runtime-mac.sh", "plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh"]) {

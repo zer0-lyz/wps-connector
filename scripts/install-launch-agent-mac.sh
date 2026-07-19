@@ -4,6 +4,7 @@ RUNTIME_ROOT="${WPS_CONNECTOR_RUNTIME_ROOT:-$HOME/.local/share/wps-connector/run
 AGENT_DIR="$HOME/Library/LaunchAgents"
 UID_VALUE="$(id -u)"
 mkdir -p "$AGENT_DIR" "$RUNTIME_ROOT/logs"
+launchctl setenv CODEX_APP_SERVER_USE_LOCAL_DAEMON 1
 
 unload_agent() {
   local label="$1"
