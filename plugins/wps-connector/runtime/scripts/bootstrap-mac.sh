@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN_NAME="wps-connector"
 PLUGIN_SOURCE="$ROOT_DIR/plugins/$PLUGIN_NAME"
-PLUGIN_TARGET="${WPS_CONNECTOR_PLUGIN_INSTALL_DIR:-$HOME/.codex/plugins/cache/personal/$PLUGIN_NAME/1.0.89}"
+PLUGIN_TARGET="${WPS_CONNECTOR_PLUGIN_INSTALL_DIR:-$HOME/plugins/$PLUGIN_NAME}"
 MARKETPLACE_PATH="${WPS_CONNECTOR_MARKETPLACE_PATH:-$HOME/.agents/plugins/marketplace.json}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -40,7 +40,7 @@ const path = require("node:path");
 const marketplacePath = process.env.MARKETPLACE_PATH;
 const pluginTarget = process.env.PLUGIN_TARGET;
 const pluginName = process.env.PLUGIN_NAME;
-const root = path.dirname(path.dirname(marketplacePath));
+const root = path.dirname(path.dirname(path.dirname(marketplacePath)));
 const relPath = `./${path.relative(root, pluginTarget).split(path.sep).join("/")}`;
 let data = { name: "personal", interface: { displayName: "Personal" }, plugins: [] };
 if (fs.existsSync(marketplacePath)) {

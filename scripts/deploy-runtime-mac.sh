@@ -3,9 +3,9 @@ set -euo pipefail
 
 SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_ROOT="${WPS_CONNECTOR_RUNTIME_ROOT:-$HOME/.local/share/wps-connector/runtime}"
-PLUGIN_DIR="${WPS_CONNECTOR_PLUGIN_DIR:-$HOME/.codex/plugins/cache/personal/wps-connector/1.0.89}"
+PLUGIN_DIR="${WPS_CONNECTOR_PLUGIN_DIR:-$HOME/plugins/wps-connector}"
 
-mkdir -p "$RUNTIME_ROOT" "$PLUGIN_DIR"
+mkdir -p "$RUNTIME_ROOT"
 
 rsync -a --delete \
   --exclude '.git/' \
@@ -16,12 +16,13 @@ rsync -a --delete \
   --exclude 'codex-catalog.snapshot.json' \
   "$SOURCE_DIR/" "$RUNTIME_ROOT/"
 
-mkdir -p "$PLUGIN_DIR/skills/wps-connector" "$PLUGIN_DIR/assets"
-if [ -f "$RUNTIME_ROOT/apps/wps-addin/icon.png" ]; then
-  cp "$RUNTIME_ROOT/apps/wps-addin/icon.png" "$PLUGIN_DIR/assets/icon.png"
-fi
+if [ -f "$PLUGIN_DIR/.codex-plugin/plugin.json" ]; then
+  mkdir -p "$PLUGIN_DIR/skills/wps-connector" "$PLUGIN_DIR/assets"
+  if [ -f "$RUNTIME_ROOT/apps/wps-addin/icon.png" ]; then
+    cp "$RUNTIME_ROOT/apps/wps-addin/icon.png" "$PLUGIN_DIR/assets/icon.png"
+  fi
 
-cat > "$PLUGIN_DIR/.mcp.json" <<JSON
+  cat > "$PLUGIN_DIR/.mcp.json" <<JSON
 {
   "mcpServers": {
     "wps-connector": {
@@ -38,7 +39,7 @@ cat > "$PLUGIN_DIR/.mcp.json" <<JSON
 }
 JSON
 
-cat > "$PLUGIN_DIR/skills/wps-connector/SKILL.md" <<EOF_SKILL
+  cat > "$PLUGIN_DIR/skills/wps-connector/SKILL.md" <<EOF_SKILL
 ---
 name: wps-connector
 description: Use for WPS Writer or Spreadsheet automation. If MCP returns unsupported call, especially through AiMaMi, DeepSeek, or MiniMax, immediately use the local agent-tool-call gateway without retrying MCP or asking the user for another prompt.
@@ -96,6 +97,9 @@ Fallback CLI for non-MCP agents:
 node "\$HOME/.local/share/wps-connector/runtime/scripts/agent-connection-status.js" --onlyOnline
 node "\$HOME/.local/share/wps-connector/runtime/scripts/agent-tool-call.js" wps.connection_status '{"onlyOnline":true}'
 EOF_SKILL
+  printf 'Updated plugin MCP config at %s/.mcp.json\n' "$PLUGIN_DIR"
+else
+  printf 'Skipped plugin metadata update: complete plugin source not found at %s\n' "$PLUGIN_DIR"
+fi
 
 printf 'Deployed WPS Connector runtime to %s\n' "$RUNTIME_ROOT"
-printf 'Updated plugin MCP config at %s/.mcp.json\n' "$PLUGIN_DIR"
