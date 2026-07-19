@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_URL="${WPS_CONNECTOR_REPO_URL:-https://github.com/zer0-lyz/wps-connector.git}"
 INSTALL_ROOT="${WPS_CONNECTOR_SOURCE_ROOT:-$HOME/.local/share/wps-connector/source}"
 RUNTIME_ROOT="${WPS_CONNECTOR_RUNTIME_ROOT:-$HOME/.local/share/wps-connector/runtime}"
-PLUGIN_TARGET="${WPS_CONNECTOR_PLUGIN_INSTALL_DIR:-$HOME/.codex/plugins/cache/personal/wps-connector/1.0.72}"
+PLUGIN_TARGET="${WPS_CONNECTOR_PLUGIN_INSTALL_DIR:-$HOME/.codex/plugins/cache/personal/wps-connector/1.0.89}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "WPS Connector one-command installer currently supports macOS only." >&2

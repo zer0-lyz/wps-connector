@@ -63,7 +63,7 @@ async function handleRequest(request) {
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "wps-connector", version: "1.0.72" },
+        serverInfo: { name: "wps-connector", version: "1.0.89" },
       },
     };
   }

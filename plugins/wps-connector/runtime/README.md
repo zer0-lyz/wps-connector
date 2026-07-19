@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/zer0-lyz/wps-connector/main/scripts
 The installer will:
 
 - clone or update the repo at `$HOME/.local/share/wps-connector/source`;
-- install the Codex plugin into `$HOME/.codex/plugins/cache/personal/wps-connector/1.0.72`;
+- install the Codex plugin into `$HOME/.codex/plugins/cache/personal/wps-connector/1.0.89`;
 - deploy runtime files to `$HOME/.local/share/wps-connector/runtime`;
 - install LaunchAgents for the bridge and add-in server;
 - configure the WPS jsaddons files for the current macOS user;
@@ -53,7 +53,7 @@ No `/Users/<name>` path is hard-coded. Override paths with environment variables
 ```bash
 WPS_CONNECTOR_SOURCE_ROOT="$HOME/Code/wps-connector" \
 WPS_CONNECTOR_RUNTIME_ROOT="$HOME/.local/share/wps-connector/runtime" \
-WPS_CONNECTOR_PLUGIN_INSTALL_DIR="$HOME/.codex/plugins/cache/personal/wps-connector/1.0.72" \
+WPS_CONNECTOR_PLUGIN_INSTALL_DIR="$HOME/.codex/plugins/cache/personal/wps-connector/1.0.89" \
 bash scripts/install-mac.sh
 ```
 
@@ -110,7 +110,7 @@ $HOME/.local/share/wps-connector/source
 Codex plugin install:
 
 ```text
-$HOME/.codex/plugins/cache/personal/wps-connector/1.0.72
+$HOME/.codex/plugins/cache/personal/wps-connector/1.0.89
 ```
 
 WPS jsaddons:
@@ -132,7 +132,7 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.72`
+- UI/clientVersion: `v1.0.89`
 - clientBuild: `2026.07.18-multi-document-stable.1`
 
 ## Current Tool Surface

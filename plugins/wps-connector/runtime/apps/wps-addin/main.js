@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.72";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.18-multi-document-stable.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.89";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.19-session-anchor-stable.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 const WPS_CONNECTOR_POLL_INTERVAL_MS = 750;
 const WPS_CONNECTOR_HEARTBEAT_INTERVAL_MS = 2000;
@@ -2894,9 +2894,10 @@ function OnAddinLoad(ribbonUI) {
 }
 function wpsConnectorOpenPane() {
   const app = wpsConnectorApp();
-  const docKey = encodeURIComponent(`${wpsConnectorCurrentDocumentKey || wpsConnectorScope().documentKey}`);
+  const scope = wpsConnectorScope();
+  const docKey = encodeURIComponent(`${wpsConnectorCurrentDocumentKey || scope.documentKey}`);
   const key = `wps_connector_taskpane_id_${docKey}`;
-  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?doc=${docKey}&t=${Date.now()}`;
+  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?doc=${docKey}&session=${encodeURIComponent(scope.sessionId)}&host=${encodeURIComponent(scope.host)}&t=${Date.now()}`;
   let taskpaneId = null;
   try { taskpaneId = app.PluginStorage && app.PluginStorage.getItem(key); } catch {}
   if (!taskpaneId) {
