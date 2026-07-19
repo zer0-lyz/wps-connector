@@ -6,6 +6,8 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { tools } from "../shared/toolSchemas.js";
+import { CodexAgentClient } from "./codexAgent.js";
+import { connectorPlatformStatus, startConnectorPlatformHeartbeat } from "./connectorPlatform.js";
 
 const host = process.env.WPS_CONNECTOR_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_PORT || 40215);
@@ -22,9 +24,17 @@ const updateCheckFallbackUrl = process.env.WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_U
 const sourceRoot = process.env.WPS_CONNECTOR_SOURCE_ROOT || join(homedir(), ".local/share/wps-connector/source");
 const sessions = new Map();
 const commands = new Map();
+const paneViews = new Map();
+const paneSignals = new Map();
 const execFileAsync = promisify(execFile);
 let bindingsStore = { bindings: [] };
 let updateCheckCache = null;
+const codexAgent = new CodexAgentClient();
+let desktopSyncCache = { checkedAt: 0, value: null };
+codexAgent.on("log", (message) => {
+  const text = String(message || "").trim();
+  if (text) console.error(`[codex-agent] ${text}`);
+});
 
 function nowIso() { return new Date().toISOString(); }
 function sendJson(res, status, payload) {
@@ -34,9 +44,10 @@ function sendJson(res, status, payload) {
 function sendError(res, status, code, message, details = {}) { sendJson(res, status, { ok: false, error: { code, message, details } }); }
 function statusForError(error) {
   const code = String(error?.code || "");
-  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code === "AMBIGUOUS_SESSION" || code.endsWith("_REFUSED")) return 409;
+  if (code === "AGENT_ORIGIN_REFUSED") return 403;
+  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code === "AMBIGUOUS_SESSION" || code === "AGENT_THREAD_BINDING_REQUIRED" || code === "AGENT_TURN_ACTIVE" || code === "AGENT_DESKTOP_SYNC_REQUIRED" || code.endsWith("_REFUSED")) return 409;
   if (code === "INVALID_ARGUMENT" || code === "INVALID_ADDRESS") return 400;
-  if (code.endsWith("_NOT_FOUND")) return 404;
+  if (code.endsWith("_NOT_FOUND") || code === "AGENT_TURN_NOT_FOUND") return 404;
   if (code === "HOST_UNSUPPORTED") return 501;
   if (code === "COMMAND_TIMEOUT") return 504;
   return 500;
@@ -111,6 +122,136 @@ function upsertBinding(session, inputBinding) {
   return next;
 }
 function clearBinding(session) { const key = canonicalDocumentKey(documentKeyFor(session)); const before = bindingsStore.bindings.length; bindingsStore.bindings = bindingsStore.bindings.filter((binding) => canonicalDocumentKey(binding.documentKey) !== key && binding.bindingId !== session.binding?.bindingId); session.binding = null; return before !== bindingsStore.bindings.length; }
+function agentBindingForSession(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
+  session.binding = findBindingForSession(session) || session.binding || null;
+  if (!session.binding?.threadId) throw { code: "AGENT_THREAD_BINDING_REQUIRED", message: "当前 WPS 文档尚未绑定 Codex 对话。", details: { sessionId, documentName: session.documentName } };
+  return { session, binding: session.binding };
+}
+function setPaneView(sessionId, view) {
+  const session = sessions.get(sessionId);
+  if (!session) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
+  const state = { view: view === "agent" ? "agent" : "connector", updatedAt: nowIso() };
+  paneViews.set(sessionId, state);
+  return state;
+}
+
+function paneKeyFromInput(input = {}) {
+  return String(input.windowKey || input.window || input.sessionId || input.documentKey || "default");
+}
+function recordPaneSignal(input = {}, state = "alive") {
+  const key = paneKeyFromInput(input);
+  const previous = paneSignals.get(key) || {};
+  const next = { ...previous, ...input, windowKey: key, state, updatedAt: nowIso() };
+  paneSignals.set(key, next);
+  return next;
+}
+function paneSignalState(input = {}) {
+  const key = paneKeyFromInput(input);
+  return paneSignals.get(key) || { windowKey: key, state: "unknown", updatedAt: "" };
+}
+
+function getPaneView(sessionId) {
+  if (!sessions.has(sessionId)) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
+  return paneViews.get(sessionId) || { view: "connector", updatedAt: "" };
+}
+function assertAgentOrigin(req) {
+  const origin = String(req.headers.origin || "");
+  if (!origin) return;
+  const expected = new URL(addinUrl).origin;
+  if (origin !== expected) throw { code: "AGENT_ORIGIN_REFUSED", message: "Agent 对话接口只允许 WPS Connector 面板访问。", details: { origin, expected } };
+}
+
+function hostLabelForAgent(host = "") {
+  const value = String(host || "").toLowerCase();
+  if (value === "wpp") return "WPS Writer";
+  if (value === "et") return "WPS Spreadsheet";
+  if (value === "wppresentation") return "WPS Presentation";
+  return host || "WPS";
+}
+function contextLabelForAgent(session) {
+  const c = session?.activeContext || {};
+  if (c.error) return `读取失败：${c.error}`;
+  if (session?.host === "et") {
+    const size = c.rowCount && c.columnCount ? `${c.rowCount} 行 x ${c.columnCount} 列` : "";
+    return [`Sheet: ${c.sheetName || ""}`.trim(), `Range: ${c.address || ""}`.trim(), size ? `Size: ${size}` : ""].filter((x) => !/:\s*$/.test(x) && x).join("; ") || "表格当前上下文未读取";
+  }
+  if (session?.host === "wpp") {
+    if (Number(c.length) > 0) {
+      const pos = Number.isFinite(Number(c.start)) && Number.isFinite(Number(c.end)) ? `位置 ${c.start}-${c.end}` : "";
+      const preview = c.textPreview ? `；预览：${String(c.textPreview).slice(0, 120)}` : "";
+      return [`WPS 文字已选择 ${c.length} 字`, pos].filter(Boolean).join(" / ") + preview;
+    }
+    return "WPS 文字当前无选中文本 / 插入点位置";
+  }
+  return JSON.stringify(c || {});
+}
+function operationScopeLabelForAgent(session) {
+  const scope = session?.operationScope || {};
+  if (scope.mode === "selection") return "已确认选区：本轮工具操作必须限定在已确认选区内。";
+  return "未确认选区：默认按用户指令全局操作；若用户说当前选区，则使用下面 Current context。";
+}
+function buildAgentPrompt(session, binding, userText) {
+  const cleanText = String(userText || "").trim();
+  const lines = [
+    "【WPS Connector 来源元数据】",
+    `Host: ${hostLabelForAgent(session?.host)}`,
+    `Document: ${session?.documentName || ""}`,
+    `SessionId: ${session?.sessionId || ""}`,
+    `DocumentKey: ${session?.documentKey || binding?.documentKey || ""}`,
+    `BindingId: ${binding?.bindingId || ""}`,
+    `ThreadId: ${binding?.threadId || ""}`,
+    `Project: ${binding?.projectName || binding?.projectId || ""}`,
+    `Current context: ${contextLabelForAgent(session)}`,
+    `Operation scope: ${operationScopeLabelForAgent(session)}`,
+    "",
+    "路由规则：本轮需求来自上述 Host/SessionId。处理 WPS Writer/Spreadsheet/Presentation 工具调用时，必须优先使用该 SessionId、bindingId 和 documentKey；不要因为同一对话里还有 Office 或其他 WPS session 在线就改用 recommended session。",
+    "",
+    "【用户需求】",
+    cleanText,
+  ];
+  return lines.join("\n");
+}
+
+async function desktopSyncStatus() {
+  const transport = codexAgent.getTransportStatus();
+  if (!transport.desktopSyncRequired) return { ...transport, ready: true, desktopRunning: false, privateAppServerActive: false, restartRequired: false };
+  if (desktopSyncCache.value && Date.now() - desktopSyncCache.checkedAt < 1500) return { ...transport, ...desktopSyncCache.value };
+  let commands = "";
+  let launchSetting = "";
+  try {
+    const [{ stdout: psOutput }, { stdout: launchOutput }] = await Promise.all([
+      execFileAsync("/bin/ps", ["-ax", "-o", "command="], { timeout: 2500 }),
+      execFileAsync("/bin/launchctl", ["getenv", "CODEX_APP_SERVER_USE_LOCAL_DAEMON"], { timeout: 2500 }).catch(() => ({ stdout: "" })),
+    ]);
+    commands = psOutput;
+    launchSetting = String(launchOutput || "").trim();
+  } catch {}
+  const lines = commands.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const desktopRunning = lines.some((line) => line === "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" || line.includes("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT "));
+  const privateAppServerActive = lines.some((line) => line.includes("/Applications/ChatGPT.app/Contents/Resources/codex") && line.includes(" app-server") && line.includes("--analytics-default-enabled") && !line.includes("--listen"));
+  const value = {
+    ready: desktopRunning && !privateAppServerActive && transport.connected,
+    desktopRunning,
+    privateAppServerActive,
+    launchSettingEnabled: launchSetting === "1",
+    restartRequired: desktopRunning && privateAppServerActive,
+  };
+  desktopSyncCache = { checkedAt: Date.now(), value };
+  return { ...transport, ...value };
+}
+async function assertAgentSyncReady() {
+  const sync = await desktopSyncStatus();
+  if (!sync.ready && sync.desktopSyncRequired && process.env.WPS_CONNECTOR_AGENT_ALLOW_UNSYNCED !== "1") {
+    throw {
+      code: "AGENT_DESKTOP_SYNC_REQUIRED",
+      message: sync.restartRequired ? "Codex Desktop 仍在使用旧的独立会话通道。请重启 Codex Desktop 后再发送。" : "Codex Desktop 尚未连接共享会话通道。请先启动或重启 Codex Desktop。",
+      details: sync,
+    };
+  }
+  return sync;
+}
 async function loadCatalog() { try { const raw = await readFile(catalogPath, "utf8"); const json = JSON.parse(raw); return { projects: Array.isArray(json.projects) ? json.projects : [], threads: Array.isArray(json.threads) ? json.threads : [], updatedAt: json.updatedAt || "", source: json.source || "" }; } catch { return { projects: [], threads: [], updatedAt: "", source: "" }; } }
 async function refreshCatalog() {
   const script = join(process.cwd(), "scripts/sync-codex-catalog.js");
@@ -520,7 +661,12 @@ async function handle(req, res) {
   const pathname = url.pathname;
   if (req.method === "OPTIONS") return sendJson(res, 200, { ok: true });
   try {
-    if (req.method === "GET" && pathname === "/api/health") return sendJson(res, 200, { ok: true, name: "wps-connector", time: nowIso() });
+    if (req.method === "GET" && pathname === "/api/health") return sendJson(res, 200, { ok: true, name: "wps-connector", time: nowIso(), connectorPlatform: connectorPlatformStatus() });
+
+    if (req.method === "POST" && pathname === "/api/panes/closed") { const body = await readJson(req); return sendJson(res, 200, { ok: true, pane: recordPaneSignal(body, "closed") }); }
+    if (req.method === "POST" && pathname === "/api/panes/collapse") { const body = Object.fromEntries(url.searchParams.entries()); return sendJson(res, 200, { ok: true, pane: recordPaneSignal(body, "collapse") }); }
+    if (req.method === "POST" && pathname === "/api/panes/alive") { const body = await readJson(req); return sendJson(res, 200, { ok: true, pane: recordPaneSignal(body, "alive") }); }
+    if (req.method === "GET" && pathname === "/api/panes/state") { return sendJson(res, 200, { ok: true, pane: paneSignalState(Object.fromEntries(url.searchParams.entries())) }); }
     if (req.method === "GET" && pathname === "/api/update/check") { const result = await checkForUpdates(Object.fromEntries(url.searchParams.entries())); return sendJson(res, 200, { ok: true, ...result }); }
     if (req.method === "POST" && pathname === "/api/update/apply") { return sendJson(res, 202, { ok: true, ...applyUpdate() }); }
     if (req.method === "GET" && pathname === "/api/tools/schema") return sendJson(res, 200, { ok: true, tools });
@@ -528,6 +674,38 @@ async function handle(req, res) {
     if (req.method === "GET" && pathname === "/api/catalog") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
+    const agentHistory = /^\/api\/agent\/([^/]+)\/history$/.exec(pathname);
+    if (req.method === "GET" && agentHistory) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentHistory[1]);
+      const result = await codexAgent.readThread(binding.threadId, Number(url.searchParams.get("limit") || 200));
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, documentName: session.documentName, binding, thread: { id: result.thread?.id || binding.threadId, name: result.thread?.name || binding.threadTitle || "" }, messages: result.messages, run: result.run, sync: await desktopSyncStatus() });
+    }
+    const agentMessage = /^\/api\/agent\/([^/]+)\/message$/.exec(pathname);
+    if (req.method === "POST" && agentMessage) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentMessage[1]);
+      const body = await readJson(req);
+      const text = String(body.text || "").trim();
+      if (!text) return sendError(res, 400, "AGENT_MESSAGE_REQUIRED", "请输入要发送给 Agent 的内容。");
+      const sync = await assertAgentSyncReady();
+      const prompt = buildAgentPrompt(session, binding, text);
+      const run = await codexAgent.startTurn(binding.threadId, prompt, { cwd: binding.threadCwd || binding.projectPath || binding.projectId || "" });
+      return sendJson(res, 202, { ok: true, sessionId: session.sessionId, documentName: session.documentName, threadId: binding.threadId, run, sync });
+    }
+    const agentStatus = /^\/api\/agent\/([^/]+)\/status$/.exec(pathname);
+    if (req.method === "GET" && agentStatus) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentStatus[1]);
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run: codexAgent.getRun(binding.threadId), sync: await desktopSyncStatus() });
+    }
+    const agentInterrupt = /^\/api\/agent\/([^/]+)\/interrupt$/.exec(pathname);
+    if (req.method === "POST" && agentInterrupt) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentInterrupt[1]);
+      const run = await codexAgent.interrupt(binding.threadId);
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run });
+    }
     if (req.method === "GET" && pathname === "/api/sessions") {
       const input = Object.fromEntries(url.searchParams.entries());
       const sessionsList = listSessions(input);
@@ -551,6 +729,9 @@ async function handle(req, res) {
     const sessionBinding = /^\/api\/sessions\/([^/]+)\/binding$/.exec(pathname);
     if (sessionBinding && req.method === "GET") { const session = sessions.get(sessionBinding[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionBinding[1]}`); session.binding = findBindingForSession(session) || null; session.lastSeenAt = nowIso(); return sendJson(res, 200, { ok: true, session: publicSession(session), binding: session.binding }); }
     if (sessionBinding && req.method === "POST") { const session = sessions.get(sessionBinding[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionBinding[1]}`); const body = await readJson(req); if (body.documentIdentity || body.documentName || body.documentPath || body.host) { session.documentIdentity = body.documentIdentity || session.documentIdentity; session.documentName = body.documentName || session.documentName; session.host = normalizeHost(body.host || session.host); session.documentKey = documentKeyFor(session); } const binding = upsertBinding(session, body.binding || body); await saveBindings(); return sendJson(res, 200, { ok: true, session: publicSession(session), binding }); }
+    const sessionPaneView = /^\/api\/sessions\/([^/]+)\/pane-view$/.exec(pathname);
+    if (sessionPaneView && req.method === "GET") return sendJson(res, 200, { ok: true, sessionId: sessionPaneView[1], ...getPaneView(sessionPaneView[1]) });
+    if (sessionPaneView && req.method === "POST") { const body = await readJson(req); return sendJson(res, 200, { ok: true, sessionId: sessionPaneView[1], ...setPaneView(sessionPaneView[1], body.view) }); }
     const sessionScope = /^\/api\/sessions\/([^/]+)\/operation-scope$/.exec(pathname);
     if (sessionScope && req.method === "POST") { const session = sessions.get(sessionScope[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionScope[1]}`); const body = await readJson(req); const mode = body.mode === "selection" ? "selection" : "document"; session.operationScope = mode === "selection" ? { mode, confirmedAt: nowIso(), context: body.context || session.activeContext || {} } : { mode: "document", confirmedAt: nowIso() }; session.lastSeenAt = nowIso(); return sendJson(res, 200, { ok: true, session: publicSession(session), operationScope: session.operationScope }); }
     const heartbeat = /^\/api\/sessions\/([^/]+)\/heartbeat$/.exec(pathname);
@@ -562,7 +743,10 @@ async function handle(req, res) {
     const toolCall = /^\/api\/tools\/([^/]+)\/([^/]+)$/.exec(pathname);
     if (req.method === "POST" && toolCall) { const toolName = `${toolCall[1]}.${toolCall[2]}`; if (!tools.some((tool) => tool.name === toolName)) return sendError(res, 404, "TOOL_NOT_FOUND", `Unknown tool: ${toolName}`); const input = await readJson(req); try { const result = await runTool(toolName, input); return sendJson(res, 200, { ok: true, ...result }); } catch (error) { return sendError(res, statusForError(error), error.code || "TOOL_FAILED", error.message || String(error), error.details || {}); } }
     return sendError(res, 404, "NOT_FOUND", `Route not found: ${req.method} ${pathname}`);
-  } catch (error) { return sendError(res, 500, "INTERNAL_ERROR", error.message || String(error)); }
+  } catch (error) { return sendError(res, statusForError(error), error.code || "INTERNAL_ERROR", error.message || String(error), error.details || {}); }
 }
 await loadBindings();
+process.on("exit", () => codexAgent.close());
+codexAgent.ensureStarted().catch((error) => console.error(`[codex-agent] Shared transport preflight failed: ${error.message}`));
+startConnectorPlatformHeartbeat({ version: "1.1.3" });
 createServer(handle).listen(port, host, () => { console.error(`wps-connector bridge listening on http://${host}:${port}`); });

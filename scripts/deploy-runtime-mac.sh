@@ -3,7 +3,7 @@ set -euo pipefail
 
 SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_ROOT="${WPS_CONNECTOR_RUNTIME_ROOT:-$HOME/.local/share/wps-connector/runtime}"
-PLUGIN_DIR="${WPS_CONNECTOR_PLUGIN_DIR:-$HOME/.codex/plugins/cache/personal/wps-connector/1.0.72}"
+PLUGIN_DIR="${WPS_CONNECTOR_PLUGIN_DIR:-$HOME/.codex/plugins/cache/personal/wps-connector/1.0.88}"
 
 mkdir -p "$RUNTIME_ROOT" "$PLUGIN_DIR"
 
@@ -15,6 +15,20 @@ rsync -a --delete \
   --exclude 'project-bindings.local.json' \
   --exclude 'codex-catalog.snapshot.json' \
   "$SOURCE_DIR/" "$RUNTIME_ROOT/"
+
+# Fail closed if a deployment ever swaps the HTTP bridge and MCP stdio entrypoints.
+# LaunchAgent starts apps/bridge/server.js directly, so a valid bridge must expose
+# the HTTP server and must not be the stdin-framed MCP process.
+if ! grep -q 'createServer(handle).listen' "$RUNTIME_ROOT/apps/bridge/server.js" \
+  || grep -q 'Content-Length' "$RUNTIME_ROOT/apps/bridge/server.js"; then
+  echo "Invalid runtime deployment: apps/bridge/server.js is not the HTTP bridge." >&2
+  exit 1
+fi
+if ! grep -q 'Content-Length' "$RUNTIME_ROOT/apps/mcp/server.js" \
+  || grep -q 'createServer(handle).listen' "$RUNTIME_ROOT/apps/mcp/server.js"; then
+  echo "Invalid runtime deployment: apps/mcp/server.js is not the MCP stdio server." >&2
+  exit 1
+fi
 
 mkdir -p "$PLUGIN_DIR/skills/wps-connector" "$PLUGIN_DIR/assets"
 if [ -f "$RUNTIME_ROOT/apps/wps-addin/icon.png" ]; then

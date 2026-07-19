@@ -35,7 +35,8 @@ async function handle(req, res) {
   const pathname = url.pathname;
   try {
     const safeMethod = req.method === "GET" || req.method === "HEAD";
-    if (safeMethod && (pathname === "/" || pathname === "/index.html" || pathname === "/pane.html")) return sendAsset(res, "pane.html");
+    if (safeMethod && (pathname === "/" || pathname === "/index.html" || pathname === "/runtime.html")) return sendAsset(res, "runtime.html");
+    if (safeMethod && pathname === "/pane.html") return sendAsset(res, "pane.html");
     if (safeMethod && pathname === "/main.js") return sendAsset(res, "main.js");
     if (safeMethod && pathname === "/ribbon.xml") return sendAsset(res, "ribbon.xml");
     if (safeMethod && pathname === "/icon.png") return sendAsset(res, "icon.png");

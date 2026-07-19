@@ -1,6 +1,7 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
-const WPS_CONNECTOR_CLIENT_VERSION = "1.0.72";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.18-multi-document-stable.1";
+const WPS_CONNECTOR_CLIENT_VERSION = "1.0.88";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.18-pane-visibility.2";
+const WPS_CONNECTOR_TASKPANE_DEFAULT_WIDTH = 320;
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 const WPS_CONNECTOR_POLL_INTERVAL_MS = 750;
 const WPS_CONNECTOR_HEARTBEAT_INTERVAL_MS = 2000;
@@ -15,6 +16,12 @@ const wpsConnectorCommentIdMap = {};
 const wpsConnectorRangeIdMap = {};
 const wpsConnectorFallbackDocumentKeys = {};
 const wpsConnectorDocumentObjectKeys = new WeakMap();
+const wpsConnectorTaskPaneIds = new Map();
+const wpsConnectorTaskPaneUrls = new Map();
+const wpsConnectorTaskPaneSessionIds = new Map();
+const wpsConnectorTaskPaneOpenedAt = new Map();
+let wpsConnectorTaskPaneMonitorTimer = null;
+let wpsConnectorTaskPaneMonitorInFlight = false;
 
 function wpsConnectorUuid() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
@@ -277,6 +284,112 @@ function wpsConnectorRuntimeDocumentKey(host, documentObject) {
     return wpsConnectorDocumentObjectKeys.get(documentObject);
   }
   return "";
+}
+function wpsConnectorWindowKey(app, host) {
+  let activeWindow = null;
+  try { activeWindow = app.ActiveWindow || null; } catch {}
+  for (const [target, prefix] of [[activeWindow, "window"], [app, "application"]]) {
+    if (!target) continue;
+    for (const name of ["Hwnd", "HWND", "Handle"]) {
+      let value = "";
+      try { value = wpsConnectorCall(target[name]); } catch {}
+      if (value !== "" && value !== null && value !== undefined && String(value) !== "0") return `${host}::${prefix}-${String(value)}`;
+    }
+  }
+  return `${host}::window-default`;
+}
+function wpsConnectorTaskPaneStorageKeys(windowKey) {
+  const suffix = wpsConnectorHash(windowKey);
+  return {
+    id: `wps_connector_window_taskpane_id_${suffix}`,
+    url: `wps_connector_window_taskpane_url_${suffix}`,
+  };
+}
+function wpsConnectorReadSharedTaskPane(app, windowKey) {
+  if (!windowKey) return { taskpaneId: "", url: "" };
+  const keys = wpsConnectorTaskPaneStorageKeys(windowKey);
+  try {
+    return {
+      taskpaneId: String(app.PluginStorage?.getItem(keys.id) || ""),
+      url: String(app.PluginStorage?.getItem(keys.url) || ""),
+    };
+  } catch {
+    return { taskpaneId: "", url: "" };
+  }
+}
+function wpsConnectorWriteSharedTaskPane(app, windowKey, taskpaneId, url) {
+  if (!windowKey) return;
+  const keys = wpsConnectorTaskPaneStorageKeys(windowKey);
+  try {
+    app.PluginStorage?.setItem(keys.id, String(taskpaneId || ""));
+    app.PluginStorage?.setItem(keys.url, String(url || ""));
+  } catch {}
+}
+function wpsConnectorClearSharedTaskPane(app, windowKey, expectedTaskpaneId = "") {
+  if (!windowKey) return;
+  const keys = wpsConnectorTaskPaneStorageKeys(windowKey);
+  try {
+    const storedTaskpaneId = String(app.PluginStorage?.getItem(keys.id) || "");
+    if (expectedTaskpaneId && storedTaskpaneId && storedTaskpaneId !== String(expectedTaskpaneId)) return;
+    app.PluginStorage?.removeItem(keys.id);
+    app.PluginStorage?.removeItem(keys.url);
+  } catch {}
+}
+function wpsConnectorHideTaskPane(taskpane) {
+  try {
+    taskpane.Visible = false;
+    return wpsConnectorCall(taskpane.Visible) === false;
+  } catch {
+    return false;
+  }
+}
+function wpsConnectorRestoreTaskPaneWidth(taskpane) {
+  try {
+    taskpane.Width = WPS_CONNECTOR_TASKPANE_DEFAULT_WIDTH;
+  } catch {}
+}
+function wpsConnectorCollapseTaskPane(app, windowKey, taskpaneId) {
+  if (!taskpaneId) return false;
+  let collapsed = false;
+  try {
+    const taskpane = app.GetTaskPane(taskpaneId);
+    collapsed = wpsConnectorHideTaskPane(taskpane);
+  } catch {}
+  wpsConnectorTaskPaneIds.delete(windowKey);
+  wpsConnectorTaskPaneUrls.delete(windowKey);
+  wpsConnectorTaskPaneOpenedAt.delete(windowKey);
+  if (!collapsed) wpsConnectorClearSharedTaskPane(app, windowKey, taskpaneId);
+  return collapsed;
+}
+function wpsConnectorFoldTaskPane(app, taskpaneId) {
+  if (!taskpaneId) return false;
+  try {
+    return wpsConnectorHideTaskPane(app.GetTaskPane(taskpaneId));
+  } catch {
+    return false;
+  }
+}
+async function wpsConnectorCheckClosedTaskPane() {
+  if (wpsConnectorTaskPaneMonitorInFlight) return;
+  wpsConnectorTaskPaneMonitorInFlight = true;
+  let app;
+  try {
+    try { app = wpsConnectorApp(); } catch { return; }
+    for (const [windowKey, taskpaneId] of [...wpsConnectorTaskPaneIds.entries()]) {
+      try {
+        const sessionId = wpsConnectorTaskPaneSessionIds.get(windowKey) || "";
+        const foldSignal = await wpsConnectorRequest(`/api/panes/collapse?windowKey=${encodeURIComponent(windowKey)}&sessionId=${encodeURIComponent(sessionId)}&consume=true`);
+        if (foldSignal.collapse === true) {
+          wpsConnectorFoldTaskPane(app, taskpaneId);
+        }
+      } catch {
+        // WPS owns native TaskPane close/repaint lifecycle. Do not mutate it
+        // from a background poll when a lifecycle request is unavailable.
+      }
+    }
+  } finally {
+    wpsConnectorTaskPaneMonitorInFlight = false;
+  }
 }
 function wpsConnectorDocumentKey(host, identity) {
   const savedPath = identity?.fullPath || identity?.url || "";
@@ -2894,21 +3007,53 @@ function OnAddinLoad(ribbonUI) {
 }
 function wpsConnectorOpenPane() {
   const app = wpsConnectorApp();
-  const docKey = encodeURIComponent(`${wpsConnectorCurrentDocumentKey || wpsConnectorScope().documentKey}`);
-  const key = `wps_connector_taskpane_id_${docKey}`;
-  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?doc=${docKey}&t=${Date.now()}`;
-  let taskpaneId = null;
-  try { taskpaneId = app.PluginStorage && app.PluginStorage.getItem(key); } catch {}
+  const scope = wpsConnectorScope();
+  const windowKey = wpsConnectorWindowKey(app, scope.host);
+  const params = new URLSearchParams({
+    doc: scope.documentKey,
+    session: scope.sessionId,
+    host: scope.host,
+    window: windowKey,
+    v: WPS_CONNECTOR_CLIENT_BUILD,
+  });
+  const key = windowKey;
+  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/pane.html?${params.toString()}`;
+  const sharedPane = wpsConnectorReadSharedTaskPane(app, key);
+  let taskpaneId = sharedPane.taskpaneId || (key ? wpsConnectorTaskPaneIds.get(key) : null);
+  if (taskpaneId) {
+    try {
+      const taskpane = app.GetTaskPane(taskpaneId);
+      const previousUrl = sharedPane.url || wpsConnectorTaskPaneUrls.get(key) || "";
+      if (previousUrl !== taskpaneUrl) {
+        if (typeof taskpane.Navigate === "function") taskpane.Navigate(taskpaneUrl);
+        else throw new Error("WPS TaskPane.Navigate is unavailable.");
+      }
+      wpsConnectorRestoreTaskPaneWidth(taskpane);
+      if (key) wpsConnectorTaskPaneIds.set(key, taskpane.ID);
+      if (key) wpsConnectorTaskPaneUrls.set(key, taskpaneUrl);
+      if (key) wpsConnectorTaskPaneSessionIds.set(key, scope.sessionId);
+      if (key) wpsConnectorTaskPaneOpenedAt.set(key, Date.now());
+      wpsConnectorWriteSharedTaskPane(app, key, taskpane.ID, taskpaneUrl);
+      taskpane.Visible = true;
+      return { opened: true, taskpaneId: taskpane.ID, previousUrl, url: taskpaneUrl, windowKey, reused: true, shared: true };
+    } catch {
+      wpsConnectorClearSharedTaskPane(app, key, taskpaneId);
+      wpsConnectorTaskPaneIds.delete(key);
+      wpsConnectorTaskPaneUrls.delete(key);
+      taskpaneId = null;
+    }
+  }
   if (!taskpaneId) {
     const taskpane = app.CreateTaskPane(taskpaneUrl);
-    if (app.PluginStorage) app.PluginStorage.setItem(key, taskpane.ID);
+    if (key) wpsConnectorTaskPaneIds.set(key, taskpane.ID);
+    if (key) wpsConnectorTaskPaneUrls.set(key, taskpaneUrl);
+    if (key) wpsConnectorTaskPaneSessionIds.set(key, scope.sessionId);
+    if (key) wpsConnectorTaskPaneOpenedAt.set(key, Date.now());
+    wpsConnectorWriteSharedTaskPane(app, key, taskpane.ID, taskpaneUrl);
+    wpsConnectorRestoreTaskPaneWidth(taskpane);
     taskpane.Visible = true;
-    return { opened: true, taskpaneId: taskpane.ID, url: taskpaneUrl };
+    return { opened: true, taskpaneId: taskpane.ID, previousUrl: "", url: taskpaneUrl, windowKey, reused: false, shared: true };
   }
-  const taskpane = app.GetTaskPane(taskpaneId);
-  try { taskpane.Url = taskpaneUrl; } catch {}
-  taskpane.Visible = true;
-  return { opened: true, taskpaneId, url: taskpaneUrl };
 }
 function OnAction(control) {
   const id = control && (control.Id || control.id);
@@ -3110,6 +3255,7 @@ async function wpsConnectorStart() {
   wpsConnectorStarted = true;
   if (!wpsConnectorPollTimer) wpsConnectorPollTimer = setInterval(() => wpsConnectorPollOnce().catch(console.error), WPS_CONNECTOR_POLL_INTERVAL_MS);
   if (!wpsConnectorHeartbeatTimer) wpsConnectorHeartbeatTimer = setInterval(() => wpsConnectorHeartbeat().catch(console.error), WPS_CONNECTOR_HEARTBEAT_INTERVAL_MS);
+  if (!wpsConnectorTaskPaneMonitorTimer) wpsConnectorTaskPaneMonitorTimer = setInterval(() => wpsConnectorCheckClosedTaskPane().catch(() => {}), 500);
 }
 if (typeof window !== "undefined") {
   window.wpsConnectorStart = wpsConnectorStart;

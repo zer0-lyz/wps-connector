@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { runInNewContext } from "node:vm";
 
 const port = 40216;
 const updatePort = 40218;
@@ -121,14 +122,109 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function verifySharedWindowTaskPane(addinSource) {
+  const storage = new Map();
+  const panes = new Map();
+  let createCount = 0;
+  const pluginStorage = {
+    getItem(key) { return storage.get(key) || ""; },
+    setItem(key, value) { storage.set(key, String(value)); },
+    removeItem(key) { storage.delete(key); },
+  };
+  const createApplication = (documentName) => ({
+    ActiveWindow: { Hwnd: 4242 },
+    ActiveDocument: { Name: documentName, FullName: `/tmp/${documentName}` },
+    PluginStorage: pluginStorage,
+    CreateTaskPane(url) {
+      createCount += 1;
+      const taskpane = { ID: `pane-${createCount}`, Url: url, Visible: false, Delete() { panes.delete(taskpane.ID); } };
+      panes.set(taskpane.ID, taskpane);
+      return taskpane;
+    },
+    GetTaskPane(id) {
+      const taskpane = panes.get(String(id));
+      if (!taskpane) throw new Error("stale taskpane");
+      return taskpane;
+    },
+  });
+  const sourceWithoutAutostart = addinSource.replace(/\nwpsConnectorStart\(\)\.catch\(console\.error\);\s*$/, "\n");
+  const openFromRuntime = (documentName) => runInNewContext(`${sourceWithoutAutostart}\nwpsConnectorOpenPane();`, {
+    Application: createApplication(documentName),
+    URLSearchParams,
+    document: { location: { toString: () => "http://127.0.0.1:3891/runtime.html" } },
+    window: {},
+    console,
+    setTimeout,
+    setInterval,
+    clearInterval,
+    fetch,
+  });
+  const first = openFromRuntime("document-a.docx");
+  const second = openFromRuntime("document-b.docx");
+  assert(first.reused === false && second.reused === true, "Independent document runtimes did not reuse the shared window taskpane.");
+  assert(first.taskpaneId === second.taskpaneId && createCount === 1, "Independent document runtimes created duplicate native taskpanes for one WPS window.");
+  assert(panes.get(first.taskpaneId)?.Url.includes(encodeURIComponent("/tmp/document-b.docx")), "The shared taskpane was not re-anchored to the second document.");
+  const closedPane = panes.get(first.taskpaneId);
+  closedPane.Visible = false;
+  const cleanupContext = {
+    Application: createApplication("document-b.docx"),
+    URLSearchParams,
+    document: { location: { toString: () => "http://127.0.0.1:3891/runtime.html" } },
+    window: {},
+    console,
+    setTimeout,
+    setInterval,
+    clearInterval,
+    fetch: async () => ({ json: async () => ({ ok: true, closed: false }) }),
+  };
+  const cleanupSource = `${sourceWithoutAutostart}\nwpsConnectorTaskPaneIds.set("wpp::window-window-4242", "${first.taskpaneId}");\nwpsConnectorCheckClosedTaskPane();`;
+  await runInNewContext(cleanupSource, cleanupContext);
+  assert(panes.has(first.taskpaneId) && panes.get(first.taskpaneId).Width === 0 && panes.get(first.taskpaneId).Visible === false, "Closed native taskpane was not collapsed to zero width.");
+  const reopened = openFromRuntime("document-a.docx");
+  assert(reopened.reused === true && reopened.taskpaneId === first.taskpaneId && panes.get(first.taskpaneId).Width === 320 && panes.get(first.taskpaneId).Visible === true, "Collapsed taskpane was not restored at the default width.");
+}
+
 async function main() {
   const pluginSkill = readFileSync("plugins/wps-connector/skills/wps-connector/SKILL.md", "utf8");
   assert(pluginSkill.includes("Two-Path Routing") && pluginSkill.includes("unsupported call") && pluginSkill.includes("restart WPS"), "Plugin skill missed mandatory automatic MCP fallback guidance.");
+  const addinSource = readFileSync("apps/wps-addin/main.js", "utf8");
+  const paneSource = readFileSync("apps/wps-addin/pane.html", "utf8");
+  const runtimePage = readFileSync("apps/wps-addin/runtime.html", "utf8");
+  const addinServerSource = readFileSync("apps/wps-addin/server.js", "utf8");
+  const bridgeServerSource = readFileSync("apps/bridge/server.js", "utf8");
+  assert(runtimePage.includes('<script src="./main.js?v=20260719-pane-width-collapse-1.0.87') && !paneSource.includes('<script src="./main.js'), "WPS runtime page is not cache-busted or lightweight task pane pages are not separated.");
+  assert(addinServerSource.includes('return sendAsset(res, "runtime.html")') && addinServerSource.includes('return sendAsset(res, "pane.html")'), "Add-in server does not route runtime and pane pages separately.");
+  assert(addinSource.includes("session: scope.sessionId") && addinSource.includes("window: windowKey"), "Task pane URL is not locked to the current document session and WPS window.");
+  assert(addinSource.includes('for (const name of ["Hwnd", "HWND", "Handle"])') && addinSource.includes('return `${host}::window-default`'), "Task pane routing does not derive a stable current WPS window identity or deterministic fallback.");
+  assert(addinSource.includes("const wpsConnectorTaskPaneIds = new Map()") && addinSource.includes("const key = windowKey;"), "Task pane cache is not scoped to one pane per WPS window.");
+  assert(addinSource.includes("wpsConnectorReadSharedTaskPane") && addinSource.includes("wpsConnectorWriteSharedTaskPane") && addinSource.includes("app.PluginStorage?.setItem(keys.id"), "Task pane identity is not shared across WPS document runtimes.");
+  assert(addinSource.includes("function wpsConnectorCheckClosedTaskPane") && addinSource.includes("function wpsConnectorCollapseTaskPane") && addinSource.includes("taskpane.Width = width") && addinSource.includes("/api/panes/closed?windowKey="), "Closed taskpanes are not collapsed to zero width in the WPS host.");
+  assert(paneSource.includes("navigator.sendBeacon") && paneSource.includes('sendPaneSignal("closed")') && paneSource.includes('sendPaneSignal("alive")'), "Task pane close lifecycle does not notify the runtime.");
+  assert(bridgeServerSource.includes('pathname === "/api/panes/closed"') && bridgeServerSource.includes('pathname === "/api/panes/alive"') && bridgeServerSource.includes('pathname === "/api/panes/state"'), "Bridge has no task pane lifecycle signal endpoints.");
+  assert(addinSource.includes("const sharedPane = wpsConnectorReadSharedTaskPane(app, key)") && addinSource.includes("sharedPane.taskpaneId ||"), "A document runtime can still create a duplicate pane before consulting the shared window registry.");
+  assert(addinSource.includes("wpsConnectorClearSharedTaskPane(app, key, taskpaneId)"), "Stale shared taskpane ids are not cleared before recovery.");
+  assert(addinSource.includes("const wpsConnectorTaskPaneUrls = new Map()") && addinSource.includes("if (previousUrl !== taskpaneUrl)"), "A window-local pane cannot be re-anchored when the active document changes.");
+  assert(addinSource.includes("taskpane.Url = taskpaneUrl") && addinSource.includes("wpsConnectorTaskPaneUrls.set(key, taskpaneUrl)"), "Existing window-local pane does not update its anchored document URL.");
+  assert(addinSource.includes("wpsConnectorTaskPaneIds.delete(key)"), "Task pane cannot recover a stale window-local pane id.");
+  assert(!addinSource.includes("wpsConnectorHidePreviousPaneOwner") && !addinSource.includes("wpsConnectorRefreshHostLayout") && !addinSource.includes("wpsConnectorReconcileTaskPaneVisibility"), "Obsolete cross-window hiding or forced redraw workarounds are still active.");
+  assert(addinSource.includes("/pane.html?${params.toString()}"), "Task pane still opens the WPS runtime page instead of the lightweight pane page.");
+  assert(addinSource.includes('return "images/connector.svg"') && !addinSource.includes("wpsConnectorGetUrlPath()}/images/connector.svg"), "WPS ribbon image callback must use the host-supported relative add-in resource path.");
+  assert(addinSource.includes("reused: false") && addinSource.includes("windowKey, reused: true"), "Task pane results do not expose window-local reuse behavior.");
+  assert(paneSource.includes('const paneAnchor=Object.freeze({sessionId:paneParams.get("session")||"",documentKey:paneParams.get("doc")||"",host:paneParams.get("host")||""})'), "Task pane missed its immutable session/document anchor.");
+  assert(paneSource.includes("if(paneAnchor.sessionId)return state.sessions.find(s=>s.sessionId===paneAnchor.sessionId)"), "Task pane does not prioritize its anchored sessionId.");
+  assert(paneSource.includes('if(paneSessionId())params.set("sessionId",paneSessionId())'), "Task pane session refresh does not query its anchored sessionId.");
+  assert(!paneSource.includes("const key=cur.documentKey||paneDocumentKey()"), "Task pane still allows the global active document to override its document anchor.");
+  assert(!paneSource.includes('<script src="./main.js'), "Task pane should not start a duplicate WPS command poller and heartbeat loop.");
+  assert(paneSource.includes("setInterval(()=>{if(!document.hidden&&!state.menuOpen)fetchSessions().catch(()=>{});},5000)"), "Task pane missed its lightweight visible-only session refresh.");
+  assert(!paneSource.includes('if(id==="threadPickerMenu")fetchCatalog(true)'), "Opening the thread picker should not force a full Codex catalog refresh.");
+  await verifySharedWindowTaskPane(addinSource);
   for (const deployScript of ["scripts/deploy-runtime-mac.sh", "plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh"]) {
     const source = readFileSync(deployScript, "utf8");
     assert(source.includes("--exclude 'project-bindings.local.json'"), `${deployScript} may delete saved bindings during deployment.`);
     assert(source.includes("--exclude 'codex-catalog.snapshot.json'"), `${deployScript} may delete the local catalog snapshot during deployment.`);
   }
+  const bootstrapSource = readFileSync("scripts/bootstrap-mac.sh", "utf8");
+  assert(bootstrapSource.includes('if ! codex plugin add "$PLUGIN_NAME@personal"'), "Bootstrap should continue runtime installation when Codex marketplace refresh is unavailable.");
   const updateServer = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
     res.end('const WPS_CONNECTOR_CLIENT_VERSION = "9.9.9";\nconst WPS_CONNECTOR_CLIENT_BUILD = "2099.01.01-test-update.1";\n');
@@ -143,7 +239,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.72", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.87", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true && remoteUpdateCheck.versionState === "update_available", "Update check did not discover a newer remote version.");
 
