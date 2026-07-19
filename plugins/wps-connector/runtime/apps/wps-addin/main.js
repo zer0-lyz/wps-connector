@@ -2892,6 +2892,11 @@ function OnAddinLoad(ribbonUI) {
   }
   return true;
 }
+function wpsConnectorNotifyPaneView(view) {
+  if (typeof window === "undefined") return;
+  window.wpsConnectorPaneView = view;
+  window.dispatchEvent?.(new CustomEvent("wpsConnectorViewChanged", { detail: { view } }));
+}
 function wpsConnectorOpenPane(view = "connector") {
   const app = wpsConnectorApp();
   const scope = wpsConnectorScope();
@@ -2904,11 +2909,13 @@ function wpsConnectorOpenPane(view = "connector") {
     const taskpane = app.CreateTaskPane(taskpaneUrl);
     if (app.PluginStorage) app.PluginStorage.setItem(key, taskpane.ID);
     taskpane.Visible = true;
+    wpsConnectorNotifyPaneView(view);
     return { opened: true, taskpaneId: taskpane.ID, url: taskpaneUrl };
   }
   const taskpane = app.GetTaskPane(taskpaneId);
   try { taskpane.Url = taskpaneUrl; } catch {}
   taskpane.Visible = true;
+  wpsConnectorNotifyPaneView(view);
   return { opened: true, taskpaneId, url: taskpaneUrl };
 }
 function OnAction(control) {
