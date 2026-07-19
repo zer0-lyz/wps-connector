@@ -143,7 +143,7 @@ async function main() {
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.89", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.1.1", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true && remoteUpdateCheck.versionState === "update_available", "Update check did not discover a newer remote version.");
 
@@ -209,7 +209,7 @@ async function main() {
   const largeSession = sessions.find((session) => session.sessionId === "test-et-large-selection");
   assert(largeSession?.activeContext?.previewSkipped === true && largeSession.activeContext.cellCount === 1048576, "Large ET selection heartbeat did not skip preview.");
 
-  const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, WPS_CONNECTOR_MCP_EXPOSE_DOTTED: "true" });
+  const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, WPS_CONNECTOR_MCP_EXPOSE_DOTTED: "true", CODEX_THREAD_ID: "", CODEX_THREAD: "" });
   const mcpClient = createMcpClient(mcp);
   const init = await mcpClient.request("initialize", {});
   assert(init.serverInfo?.name === "wps-connector", "MCP initialize returned unexpected server name.");
@@ -241,7 +241,7 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wps_connection_status"), "MCP tools/list missed underscore alias wps_connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_list_sessions"), "MCP tools/list missed underscore alias wps_list_sessions.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp_add_comment"), "MCP tools/list missed underscore alias wpp_add_comment.");
-  const compactMcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
+  const compactMcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, CODEX_THREAD_ID: "", CODEX_THREAD: "" });
   const compactMcpClient = createMcpClient(compactMcp);
   const compactListedTools = await compactMcpClient.request("tools/list", {});
   assert(compactListedTools.tools.length < listedTools.tools.length && compactListedTools.tools.every((tool) => tool.name.includes("_")), "Default MCP tools/list was not compacted to underscore aliases.");
@@ -288,8 +288,16 @@ async function main() {
   assert(agentStatus.ok === true && agentStatus.counts?.online >= 2, "Agent gateway did not return live connection status.");
   const agentSheets = await runNode(["scripts/agent-tool-call.js", "et.list_worksheets", JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" })], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
   assert(agentSheets.ok === true && agentSheets.worksheets?.some((sheet) => sheet.name === "Sheet1"), "Agent gateway did not route bound ET worksheet listing.");
-  const mcpSheetsGenerated = await mcpClient.request("tools/call", { name: "et_list_worksheets_fca6f791e28c", arguments: { sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" } });
+  const trustedProjectAMeta = { threadId: "thread-a", codex_cwd: "/tmp/project-a" };
+  const mcpSheetsGenerated = await mcpClient.request("tools/call", { name: "et_list_worksheets_fca6f791e28c", arguments: { sessionId: "test-et-session" }, _meta: trustedProjectAMeta });
   assert(mcpSheetsGenerated.content?.[0]?.text?.includes("Sheet1"), "MCP generated ET tool name did not route to bound et.list_worksheets.");
+  const mcpMissingTrustedContext = await mcpClient.request("tools/call", { name: "et_list_worksheets_fca6f791e28c", arguments: { sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" } });
+  assert(mcpMissingTrustedContext.isError === true && mcpMissingTrustedContext.content?.[0]?.text?.includes("MCP_TRUSTED_CONTEXT_REQUIRED"), "MCP document tool accepted caller-supplied binding without trusted task metadata.");
+  const mcpSpoofedBinding = await mcpClient.request("tools/call", { name: "wpp_insert_text", arguments: { sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", text: "must-not-write" }, _meta: trustedProjectAMeta });
+  assert(mcpSpoofedBinding.isError === true && mcpSpoofedBinding.content?.[0]?.text?.includes("CALLER_BINDING_OVERRIDE_REFUSED"), "MCP accepted a caller-supplied binding from another Codex task.");
+  const mcpBoundStatus = await mcpClient.request("tools/call", { name: "wps_connection_status", arguments: { onlyOnline: true, host: "et" }, _meta: trustedProjectAMeta });
+  const mcpBoundStatusPayload = JSON.parse(mcpBoundStatus.content?.[0]?.text || "{}");
+  assert(mcpBoundStatusPayload.recommendedSession?.binding?.threadId === "thread-a", "MCP connection_status did not filter its recommended session to the trusted current task.");
 
   const bridgeConnectionStatus = await rawRequest("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
   assert(bridgeConnectionStatus.ok === false && bridgeConnectionStatus.issues?.some((issue) => issue.code === "AMBIGUOUS_SESSION"), `Bridge connection_status did not expose ambiguous multiple-ET routing: ${JSON.stringify(bridgeConnectionStatus)}`);
@@ -474,7 +482,7 @@ async function main() {
   });
   assert(wppWrongHost.ok === false && wppWrongHost.error?.code === "SESSION_HOST_MISMATCH", "WPP tool with ET session did not return SESSION_HOST_MISMATCH.");
   assert(wppWrongHost.httpStatus === 409, "SESSION_HOST_MISMATCH did not return HTTP 409.");
-  const mcpWrongHost = await mcpClient.request("tools/call", { name: "wpp.read_document_identity", arguments: { sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" } });
+  const mcpWrongHost = await mcpClient.request("tools/call", { name: "wpp.read_document_identity", arguments: { sessionId: "test-et-session" }, _meta: trustedProjectAMeta });
   const mcpWrongHostPayload = JSON.parse(mcpWrongHost.content?.[0]?.text || "{}");
   assert(mcpWrongHostPayload.ok === false && mcpWrongHostPayload.error?.code === "SESSION_HOST_MISMATCH", "MCP did not preserve SESSION_HOST_MISMATCH in JSON result.");
 

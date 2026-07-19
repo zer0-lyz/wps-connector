@@ -1,6 +1,6 @@
 {
   "name": "wps-connector",
-  "version": "1.0.89",
+  "version": "1.1.1",
   "private": true,
   "description": "Local WPS bridge for Codex-style MCP tools.",
   "type": "module",

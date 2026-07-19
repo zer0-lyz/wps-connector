@@ -133,8 +133,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.0.89`
-- clientBuild: `2026.07.18-multi-document-stable.1`
+- UI/clientVersion: `v1.1.1`
+- clientBuild: `2026.07.19-trusted-task-binding.1`
 
 ## Current Tool Surface
 
