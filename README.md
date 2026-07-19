@@ -133,7 +133,7 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v1.1.2`
+- UI/clientVersion: `v1.1.3`
 - clientBuild: `2026.07.19-agent-chat-prototype.2`
 
 ## Current Tool Surface
