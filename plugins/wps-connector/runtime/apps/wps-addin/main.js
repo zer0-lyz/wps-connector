@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
 const WPS_CONNECTOR_CLIENT_VERSION = "1.1.1";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.19-trusted-task-binding.1";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.19-agent-chat-prototype.2";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 const WPS_CONNECTOR_POLL_INTERVAL_MS = 750;
 const WPS_CONNECTOR_HEARTBEAT_INTERVAL_MS = 2000;
@@ -2892,28 +2892,44 @@ function OnAddinLoad(ribbonUI) {
   }
   return true;
 }
-function wpsConnectorOpenPane() {
+function wpsConnectorNotifyPaneView(view) {
+  if (typeof window === "undefined") return;
+  window.wpsConnectorPaneView = view;
+  window.dispatchEvent?.(new CustomEvent("wpsConnectorViewChanged", { detail: { view } }));
+}
+function wpsConnectorPublishPaneView(sessionId, view) {
+  if (!sessionId) return;
+  wpsConnectorRequest(`/api/sessions/${encodeURIComponent(sessionId)}/pane-view`, {
+    method: "POST",
+    body: JSON.stringify({ view }),
+  }).catch(console.error);
+}
+function wpsConnectorOpenPane(view = "connector") {
   const app = wpsConnectorApp();
   const scope = wpsConnectorScope();
   const docKey = encodeURIComponent(`${wpsConnectorCurrentDocumentKey || scope.documentKey}`);
   const key = `wps_connector_taskpane_id_${docKey}`;
-  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?doc=${docKey}&session=${encodeURIComponent(scope.sessionId)}&host=${encodeURIComponent(scope.host)}&t=${Date.now()}`;
+  const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?doc=${docKey}&session=${encodeURIComponent(scope.sessionId)}&host=${encodeURIComponent(scope.host)}&view=${encodeURIComponent(view)}&t=${Date.now()}`;
+  wpsConnectorPublishPaneView(scope.sessionId, view);
   let taskpaneId = null;
   try { taskpaneId = app.PluginStorage && app.PluginStorage.getItem(key); } catch {}
   if (!taskpaneId) {
     const taskpane = app.CreateTaskPane(taskpaneUrl);
     if (app.PluginStorage) app.PluginStorage.setItem(key, taskpane.ID);
     taskpane.Visible = true;
+    wpsConnectorNotifyPaneView(view);
     return { opened: true, taskpaneId: taskpane.ID, url: taskpaneUrl };
   }
   const taskpane = app.GetTaskPane(taskpaneId);
   try { taskpane.Url = taskpaneUrl; } catch {}
   taskpane.Visible = true;
+  wpsConnectorNotifyPaneView(view);
   return { opened: true, taskpaneId, url: taskpaneUrl };
 }
 function OnAction(control) {
   const id = control && (control.Id || control.id);
-  if (id === "btnShowConnectorPane" || id === "wpsConnectorPaneButton") wpsConnectorOpenPane();
+  if (id === "btnShowConnectorPane" || id === "wpsConnectorPaneButton") wpsConnectorOpenPane("connector");
+  if (id === "btnShowAgentChat") wpsConnectorOpenPane("agent");
   wpsConnectorStart().catch(console.error);
   return true;
 }
@@ -2921,6 +2937,7 @@ function OnGetEnabled() { return true; }
 function OnGetVisible() { return true; }
 function GetImage(control) {
   const id = control && (control.Id || control.id);
+  if (id === "btnShowAgentChat") return "images/agent.svg";
   if (id === "btnShowConnectorPane" || id === "wpsConnectorPaneButton") return "images/connector.svg";
   return "images/connector.svg";
 }
@@ -3122,4 +3139,4 @@ if (typeof window !== "undefined") {
   window.GetImage = GetImage;
   window.OnGetImage = GetImage;
 }
-wpsConnectorStart().catch(console.error);
+if (typeof Application !== "undefined" || (typeof window !== "undefined" && window.Application)) wpsConnectorStart().catch(console.error);

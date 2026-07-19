@@ -16,6 +16,8 @@ rsync -a --delete \
   --exclude 'codex-catalog.snapshot.json' \
   "$SOURCE_DIR/" "$RUNTIME_ROOT/"
 
+npm install --omit=dev --ignore-scripts --no-audit --no-fund --prefix "$RUNTIME_ROOT"
+
 if [ -f "$PLUGIN_DIR/.codex-plugin/plugin.json" ]; then
   mkdir -p "$PLUGIN_DIR/skills/wps-connector" "$PLUGIN_DIR/assets"
   if [ -f "$RUNTIME_ROOT/apps/wps-addin/icon.png" ]; then

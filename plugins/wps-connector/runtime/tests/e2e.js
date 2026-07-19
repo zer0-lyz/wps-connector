@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { CodexAgentClient } from "../apps/bridge/codexAgent.js";
 
 const port = 40216;
 const updatePort = 40218;
@@ -122,6 +123,11 @@ function assert(condition, message) {
 }
 
 async function main() {
+  const externalTurnProbe = new CodexAgentClient({ sharedTransport: false });
+  externalTurnProbe.onNotification("turn/started", { threadId: "external-thread", turn: { id: "external-turn" } });
+  externalTurnProbe.onNotification("item/agentMessage/delta", { threadId: "external-thread", turnId: "external-turn", delta: "外部回复" });
+  externalTurnProbe.onNotification("turn/completed", { threadId: "external-thread", turn: { id: "external-turn", status: "completed" } });
+  assert(externalTurnProbe.getRun("external-thread")?.delta === "外部回复" && externalTurnProbe.getRun("external-thread")?.status === "completed", "Agent client did not surface a turn started by Codex Desktop.");
   const pluginSkill = readFileSync("plugins/wps-connector/skills/wps-connector/SKILL.md", "utf8");
   assert(pluginSkill.includes("Two-Path Routing") && pluginSkill.includes("unsupported call") && pluginSkill.includes("restart WPS"), "Plugin skill missed mandatory automatic MCP fallback guidance.");
   for (const deployScript of ["scripts/deploy-runtime-mac.sh", "plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh"]) {
@@ -137,7 +143,7 @@ async function main() {
   servers.push(updateServer);
   await once(updateServer, "listening");
 
-  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "" });
+  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: JSON.stringify(["tests/fixtures/fake-codex-app-server.js"]) });
   bridge.on("exit", (code) => {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
@@ -208,6 +214,12 @@ async function main() {
   assert(sessions.some((session) => session.host === "wpp"), "WPP session was not registered.");
   const largeSession = sessions.find((session) => session.sessionId === "test-et-large-selection");
   assert(largeSession?.activeContext?.previewSkipped === true && largeSession.activeContext.cellCount === 1048576, "Large ET selection heartbeat did not skip preview.");
+  const agentPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "agent" }) });
+  assert(agentPaneView.view === "agent", "Pane view endpoint did not save the Agent view.");
+  const savedPaneView = await request("/api/sessions/test-wpp-session/pane-view");
+  assert(savedPaneView.view === "agent" && savedPaneView.updatedAt, "Pane view endpoint did not return the cross-context view state.");
+  const connectorPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "connector" }) });
+  assert(connectorPaneView.view === "connector", "Pane view endpoint did not switch back to the connector view.");
 
   const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, WPS_CONNECTOR_MCP_EXPOSE_DOTTED: "true", CODEX_THREAD_ID: "", CODEX_THREAD: "" });
   const mcpClient = createMcpClient(mcp);
@@ -276,9 +288,28 @@ async function main() {
     body: JSON.stringify({ binding: { projectId: "project-b", projectName: "Project B", projectPath: "/tmp/project-b", threadId: "thread-b" } }),
   });
   assert(bindWpp.binding?.threadId === "thread-b", "WPP binding was not saved.");
+  const agentHistory = await request("/api/agent/test-wpp-session/history");
+  assert(agentHistory.thread?.id === "thread-b" && agentHistory.messages?.length === 2, "Agent history did not read the bound Codex conversation.");
+  assert(agentHistory.messages[0]?.role === "user" && agentHistory.messages[1]?.text === "历史回答", "Agent history did not normalize Codex messages.");
+  const refusedAgentOrigin = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/history", { headers: { origin: "https://example.invalid" } });
+  assert(refusedAgentOrigin.ok === false && refusedAgentOrigin.httpStatus === 403 && refusedAgentOrigin.error?.code === "AGENT_ORIGIN_REFUSED", "Agent API accepted a foreign browser origin.");
+  const agentMessage = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/message", {
+    method: "POST",
+    body: JSON.stringify({ text: "新问题", threadId: "spoofed-thread" }),
+  });
+  assert(agentMessage.ok === true && agentMessage.threadId === "thread-b", "Agent message did not stay anchored to the saved WPS binding.");
+  let liveAgentStatus = null;
+  for (let i = 0; i < 20; i += 1) {
+    liveAgentStatus = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/status");
+    if (liveAgentStatus.run?.status === "completed") break;
+    await sleep(20);
+  }
+  assert(liveAgentStatus?.run?.status === "completed" && liveAgentStatus.run.finalText === "模拟回复" && liveAgentStatus.run.delta === "模拟回复", "Agent message did not stream and complete through the Codex App Server bridge.");
 
   const unboundExecution = await rawRequest("/api/tools/et/list_worksheets", { method: "POST", body: JSON.stringify({ sessionId: "test-et-large-selection" }) });
   assert(unboundExecution.ok === false && unboundExecution.error?.code === "PROJECT_BINDING_REQUIRED", "Unbound execution was not rejected.");
+  const unboundAgent = await rawRequest("/api/agent/test-et-large-selection/history");
+  assert(unboundAgent.ok === false && unboundAgent.error?.code === "AGENT_THREAD_BINDING_REQUIRED", "Agent history accepted an unbound WPS document.");
   const bindLargeEt = await request("/api/sessions/test-et-large-selection/binding", {
     method: "POST",
     body: JSON.stringify({ binding: { projectId: "project-a", projectName: "Project A", projectPath: "/tmp/project-a", threadId: "thread-a" } }),
@@ -1095,6 +1126,7 @@ async function main() {
     ok: true,
     sessions: sessions.map((session) => ({ sessionId: session.sessionId, host: session.host })),
     connectionStatus: { matched: bridgeConnectionStatus.counts?.matched, recommended: bridgeConnectionStatus.recommendedSession?.sessionId || null },
+    agentChat: { historyMessages: agentHistory.messages.length, status: liveAgentStatus.run.status, finalText: liveAgentStatus.run.finalText },
     bindingRouting: { etSessionId: boundEtSelection.sessionId, mismatchCode: wrongExplicitBinding.error?.code, missingCode: missingBoundEt.error?.code },
     operationScope: { etScopedAddress: etScopedRead.address, wppInsertScope: wppInsert.operationScope?.mode },
     etSelection: { address: etSelection.address, firstCell: etSelection.values[0][0] },

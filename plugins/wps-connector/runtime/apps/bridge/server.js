@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { tools } from "../shared/toolSchemas.js";
+import { CodexAgentClient } from "./codexAgent.js";
 
 const host = process.env.WPS_CONNECTOR_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_PORT || 40215);
@@ -22,9 +23,16 @@ const updateCheckFallbackUrl = process.env.WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_U
 const sourceRoot = process.env.WPS_CONNECTOR_SOURCE_ROOT || join(homedir(), ".local/share/wps-connector/source");
 const sessions = new Map();
 const commands = new Map();
+const paneViews = new Map();
 const execFileAsync = promisify(execFile);
 let bindingsStore = { bindings: [] };
 let updateCheckCache = null;
+const codexAgent = new CodexAgentClient();
+let desktopSyncCache = { checkedAt: 0, value: null };
+codexAgent.on("log", (message) => {
+  const text = String(message || "").trim();
+  if (text) console.error(`[codex-agent] ${text}`);
+});
 
 function nowIso() { return new Date().toISOString(); }
 function sendJson(res, status, payload) {
@@ -34,9 +42,10 @@ function sendJson(res, status, payload) {
 function sendError(res, status, code, message, details = {}) { sendJson(res, status, { ok: false, error: { code, message, details } }); }
 function statusForError(error) {
   const code = String(error?.code || "");
-  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code === "AMBIGUOUS_SESSION" || code.endsWith("_REFUSED")) return 409;
+  if (code === "AGENT_ORIGIN_REFUSED") return 403;
+  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code === "AMBIGUOUS_SESSION" || code === "AGENT_THREAD_BINDING_REQUIRED" || code === "AGENT_TURN_ACTIVE" || code === "AGENT_DESKTOP_SYNC_REQUIRED" || code.endsWith("_REFUSED")) return 409;
   if (code === "INVALID_ARGUMENT" || code === "INVALID_ADDRESS") return 400;
-  if (code.endsWith("_NOT_FOUND")) return 404;
+  if (code.endsWith("_NOT_FOUND") || code === "AGENT_TURN_NOT_FOUND") return 404;
   if (code === "HOST_UNSUPPORTED") return 501;
   if (code === "COMMAND_TIMEOUT") return 504;
   return 500;
@@ -111,6 +120,68 @@ function upsertBinding(session, inputBinding) {
   return next;
 }
 function clearBinding(session) { const key = canonicalDocumentKey(documentKeyFor(session)); const before = bindingsStore.bindings.length; bindingsStore.bindings = bindingsStore.bindings.filter((binding) => canonicalDocumentKey(binding.documentKey) !== key && binding.bindingId !== session.binding?.bindingId); session.binding = null; return before !== bindingsStore.bindings.length; }
+function agentBindingForSession(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
+  session.binding = findBindingForSession(session) || session.binding || null;
+  if (!session.binding?.threadId) throw { code: "AGENT_THREAD_BINDING_REQUIRED", message: "当前 WPS 文档尚未绑定 Codex 对话。", details: { sessionId, documentName: session.documentName } };
+  return { session, binding: session.binding };
+}
+function setPaneView(sessionId, view) {
+  const session = sessions.get(sessionId);
+  if (!session) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
+  const state = { view: view === "agent" ? "agent" : "connector", updatedAt: nowIso() };
+  paneViews.set(sessionId, state);
+  return state;
+}
+function getPaneView(sessionId) {
+  if (!sessions.has(sessionId)) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
+  return paneViews.get(sessionId) || { view: "connector", updatedAt: "" };
+}
+function assertAgentOrigin(req) {
+  const origin = String(req.headers.origin || "");
+  if (!origin) return;
+  const expected = new URL(addinUrl).origin;
+  if (origin !== expected) throw { code: "AGENT_ORIGIN_REFUSED", message: "Agent 对话接口只允许 WPS Connector 面板访问。", details: { origin, expected } };
+}
+async function desktopSyncStatus() {
+  const transport = codexAgent.getTransportStatus();
+  if (!transport.desktopSyncRequired) return { ...transport, ready: true, desktopRunning: false, privateAppServerActive: false, restartRequired: false };
+  if (desktopSyncCache.value && Date.now() - desktopSyncCache.checkedAt < 1500) return { ...transport, ...desktopSyncCache.value };
+  let commands = "";
+  let launchSetting = "";
+  try {
+    const [{ stdout: psOutput }, { stdout: launchOutput }] = await Promise.all([
+      execFileAsync("/bin/ps", ["-ax", "-o", "command="], { timeout: 2500 }),
+      execFileAsync("/bin/launchctl", ["getenv", "CODEX_APP_SERVER_USE_LOCAL_DAEMON"], { timeout: 2500 }).catch(() => ({ stdout: "" })),
+    ]);
+    commands = psOutput;
+    launchSetting = String(launchOutput || "").trim();
+  } catch {}
+  const lines = commands.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const desktopRunning = lines.some((line) => line === "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" || line.includes("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT "));
+  const privateAppServerActive = lines.some((line) => line.includes("/Applications/ChatGPT.app/Contents/Resources/codex") && line.includes(" app-server") && line.includes("--analytics-default-enabled") && !line.includes("--listen"));
+  const value = {
+    ready: desktopRunning && !privateAppServerActive && transport.connected,
+    desktopRunning,
+    privateAppServerActive,
+    launchSettingEnabled: launchSetting === "1",
+    restartRequired: desktopRunning && privateAppServerActive,
+  };
+  desktopSyncCache = { checkedAt: Date.now(), value };
+  return { ...transport, ...value };
+}
+async function assertAgentSyncReady() {
+  const sync = await desktopSyncStatus();
+  if (!sync.ready && sync.desktopSyncRequired && process.env.WPS_CONNECTOR_AGENT_ALLOW_UNSYNCED !== "1") {
+    throw {
+      code: "AGENT_DESKTOP_SYNC_REQUIRED",
+      message: sync.restartRequired ? "Codex Desktop 仍在使用旧的独立会话通道。请重启 Codex Desktop 后再发送。" : "Codex Desktop 尚未连接共享会话通道。请先启动或重启 Codex Desktop。",
+      details: sync,
+    };
+  }
+  return sync;
+}
 async function loadCatalog() { try { const raw = await readFile(catalogPath, "utf8"); const json = JSON.parse(raw); return { projects: Array.isArray(json.projects) ? json.projects : [], threads: Array.isArray(json.threads) ? json.threads : [], updatedAt: json.updatedAt || "", source: json.source || "" }; } catch { return { projects: [], threads: [], updatedAt: "", source: "" }; } }
 async function refreshCatalog() {
   const script = join(process.cwd(), "scripts/sync-codex-catalog.js");
@@ -528,6 +599,37 @@ async function handle(req, res) {
     if (req.method === "GET" && pathname === "/api/catalog") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
+    const agentHistory = /^\/api\/agent\/([^/]+)\/history$/.exec(pathname);
+    if (req.method === "GET" && agentHistory) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentHistory[1]);
+      const result = await codexAgent.readThread(binding.threadId, Number(url.searchParams.get("limit") || 200));
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, documentName: session.documentName, binding, thread: { id: result.thread?.id || binding.threadId, name: result.thread?.name || binding.threadTitle || "" }, messages: result.messages, run: result.run, sync: await desktopSyncStatus() });
+    }
+    const agentMessage = /^\/api\/agent\/([^/]+)\/message$/.exec(pathname);
+    if (req.method === "POST" && agentMessage) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentMessage[1]);
+      const body = await readJson(req);
+      const text = String(body.text || "").trim();
+      if (!text) return sendError(res, 400, "AGENT_MESSAGE_REQUIRED", "请输入要发送给 Agent 的内容。");
+      const sync = await assertAgentSyncReady();
+      const run = await codexAgent.startTurn(binding.threadId, text, { cwd: binding.threadCwd || binding.projectPath || binding.projectId || "" });
+      return sendJson(res, 202, { ok: true, sessionId: session.sessionId, documentName: session.documentName, threadId: binding.threadId, run, sync });
+    }
+    const agentStatus = /^\/api\/agent\/([^/]+)\/status$/.exec(pathname);
+    if (req.method === "GET" && agentStatus) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentStatus[1]);
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run: codexAgent.getRun(binding.threadId), sync: await desktopSyncStatus() });
+    }
+    const agentInterrupt = /^\/api\/agent\/([^/]+)\/interrupt$/.exec(pathname);
+    if (req.method === "POST" && agentInterrupt) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentInterrupt[1]);
+      const run = await codexAgent.interrupt(binding.threadId);
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run });
+    }
     if (req.method === "GET" && pathname === "/api/sessions") {
       const input = Object.fromEntries(url.searchParams.entries());
       const sessionsList = listSessions(input);
@@ -551,6 +653,9 @@ async function handle(req, res) {
     const sessionBinding = /^\/api\/sessions\/([^/]+)\/binding$/.exec(pathname);
     if (sessionBinding && req.method === "GET") { const session = sessions.get(sessionBinding[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionBinding[1]}`); session.binding = findBindingForSession(session) || null; session.lastSeenAt = nowIso(); return sendJson(res, 200, { ok: true, session: publicSession(session), binding: session.binding }); }
     if (sessionBinding && req.method === "POST") { const session = sessions.get(sessionBinding[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionBinding[1]}`); const body = await readJson(req); if (body.documentIdentity || body.documentName || body.documentPath || body.host) { session.documentIdentity = body.documentIdentity || session.documentIdentity; session.documentName = body.documentName || session.documentName; session.host = normalizeHost(body.host || session.host); session.documentKey = documentKeyFor(session); } const binding = upsertBinding(session, body.binding || body); await saveBindings(); return sendJson(res, 200, { ok: true, session: publicSession(session), binding }); }
+    const sessionPaneView = /^\/api\/sessions\/([^/]+)\/pane-view$/.exec(pathname);
+    if (sessionPaneView && req.method === "GET") return sendJson(res, 200, { ok: true, sessionId: sessionPaneView[1], ...getPaneView(sessionPaneView[1]) });
+    if (sessionPaneView && req.method === "POST") { const body = await readJson(req); return sendJson(res, 200, { ok: true, sessionId: sessionPaneView[1], ...setPaneView(sessionPaneView[1], body.view) }); }
     const sessionScope = /^\/api\/sessions\/([^/]+)\/operation-scope$/.exec(pathname);
     if (sessionScope && req.method === "POST") { const session = sessions.get(sessionScope[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionScope[1]}`); const body = await readJson(req); const mode = body.mode === "selection" ? "selection" : "document"; session.operationScope = mode === "selection" ? { mode, confirmedAt: nowIso(), context: body.context || session.activeContext || {} } : { mode: "document", confirmedAt: nowIso() }; session.lastSeenAt = nowIso(); return sendJson(res, 200, { ok: true, session: publicSession(session), operationScope: session.operationScope }); }
     const heartbeat = /^\/api\/sessions\/([^/]+)\/heartbeat$/.exec(pathname);
@@ -562,7 +667,9 @@ async function handle(req, res) {
     const toolCall = /^\/api\/tools\/([^/]+)\/([^/]+)$/.exec(pathname);
     if (req.method === "POST" && toolCall) { const toolName = `${toolCall[1]}.${toolCall[2]}`; if (!tools.some((tool) => tool.name === toolName)) return sendError(res, 404, "TOOL_NOT_FOUND", `Unknown tool: ${toolName}`); const input = await readJson(req); try { const result = await runTool(toolName, input); return sendJson(res, 200, { ok: true, ...result }); } catch (error) { return sendError(res, statusForError(error), error.code || "TOOL_FAILED", error.message || String(error), error.details || {}); } }
     return sendError(res, 404, "NOT_FOUND", `Route not found: ${req.method} ${pathname}`);
-  } catch (error) { return sendError(res, 500, "INTERNAL_ERROR", error.message || String(error)); }
+  } catch (error) { return sendError(res, statusForError(error), error.code || "INTERNAL_ERROR", error.message || String(error), error.details || {}); }
 }
 await loadBindings();
+process.on("exit", () => codexAgent.close());
+codexAgent.ensureStarted().catch((error) => console.error(`[codex-agent] Shared transport preflight failed: ${error.message}`));
 createServer(handle).listen(port, host, () => { console.error(`wps-connector bridge listening on http://${host}:${port}`); });
