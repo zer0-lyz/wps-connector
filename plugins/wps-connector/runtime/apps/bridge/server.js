@@ -23,10 +23,15 @@ const updateCheckFallbackUrl = process.env.WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_U
 const sourceRoot = process.env.WPS_CONNECTOR_SOURCE_ROOT || join(homedir(), ".local/share/wps-connector/source");
 const sessions = new Map();
 const commands = new Map();
+const paneViews = new Map();
 const execFileAsync = promisify(execFile);
 let bindingsStore = { bindings: [] };
 let updateCheckCache = null;
 const codexAgent = new CodexAgentClient();
+codexAgent.on("log", (message) => {
+  const text = String(message || "").trim();
+  if (text) console.error(`[codex-agent] ${text}`);
+});
 
 function nowIso() { return new Date().toISOString(); }
 function sendJson(res, status, payload) {
@@ -120,6 +125,17 @@ function agentBindingForSession(sessionId) {
   session.binding = findBindingForSession(session) || session.binding || null;
   if (!session.binding?.threadId) throw { code: "AGENT_THREAD_BINDING_REQUIRED", message: "当前 WPS 文档尚未绑定 Codex 对话。", details: { sessionId, documentName: session.documentName } };
   return { session, binding: session.binding };
+}
+function setPaneView(sessionId, view) {
+  const session = sessions.get(sessionId);
+  if (!session) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
+  const state = { view: view === "agent" ? "agent" : "connector", updatedAt: nowIso() };
+  paneViews.set(sessionId, state);
+  return state;
+}
+function getPaneView(sessionId) {
+  if (!sessions.has(sessionId)) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
+  return paneViews.get(sessionId) || { view: "connector", updatedAt: "" };
 }
 function assertAgentOrigin(req) {
   const origin = String(req.headers.origin || "");
@@ -597,6 +613,9 @@ async function handle(req, res) {
     const sessionBinding = /^\/api\/sessions\/([^/]+)\/binding$/.exec(pathname);
     if (sessionBinding && req.method === "GET") { const session = sessions.get(sessionBinding[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionBinding[1]}`); session.binding = findBindingForSession(session) || null; session.lastSeenAt = nowIso(); return sendJson(res, 200, { ok: true, session: publicSession(session), binding: session.binding }); }
     if (sessionBinding && req.method === "POST") { const session = sessions.get(sessionBinding[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionBinding[1]}`); const body = await readJson(req); if (body.documentIdentity || body.documentName || body.documentPath || body.host) { session.documentIdentity = body.documentIdentity || session.documentIdentity; session.documentName = body.documentName || session.documentName; session.host = normalizeHost(body.host || session.host); session.documentKey = documentKeyFor(session); } const binding = upsertBinding(session, body.binding || body); await saveBindings(); return sendJson(res, 200, { ok: true, session: publicSession(session), binding }); }
+    const sessionPaneView = /^\/api\/sessions\/([^/]+)\/pane-view$/.exec(pathname);
+    if (sessionPaneView && req.method === "GET") return sendJson(res, 200, { ok: true, sessionId: sessionPaneView[1], ...getPaneView(sessionPaneView[1]) });
+    if (sessionPaneView && req.method === "POST") { const body = await readJson(req); return sendJson(res, 200, { ok: true, sessionId: sessionPaneView[1], ...setPaneView(sessionPaneView[1], body.view) }); }
     const sessionScope = /^\/api\/sessions\/([^/]+)\/operation-scope$/.exec(pathname);
     if (sessionScope && req.method === "POST") { const session = sessions.get(sessionScope[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionScope[1]}`); const body = await readJson(req); const mode = body.mode === "selection" ? "selection" : "document"; session.operationScope = mode === "selection" ? { mode, confirmedAt: nowIso(), context: body.context || session.activeContext || {} } : { mode: "document", confirmedAt: nowIso() }; session.lastSeenAt = nowIso(); return sendJson(res, 200, { ok: true, session: publicSession(session), operationScope: session.operationScope }); }
     const heartbeat = /^\/api\/sessions\/([^/]+)\/heartbeat$/.exec(pathname);

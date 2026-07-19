@@ -2897,12 +2897,20 @@ function wpsConnectorNotifyPaneView(view) {
   window.wpsConnectorPaneView = view;
   window.dispatchEvent?.(new CustomEvent("wpsConnectorViewChanged", { detail: { view } }));
 }
+function wpsConnectorPublishPaneView(sessionId, view) {
+  if (!sessionId) return;
+  wpsConnectorRequest(`/api/sessions/${encodeURIComponent(sessionId)}/pane-view`, {
+    method: "POST",
+    body: JSON.stringify({ view }),
+  }).catch(console.error);
+}
 function wpsConnectorOpenPane(view = "connector") {
   const app = wpsConnectorApp();
   const scope = wpsConnectorScope();
   const docKey = encodeURIComponent(`${wpsConnectorCurrentDocumentKey || scope.documentKey}`);
   const key = `wps_connector_taskpane_id_${docKey}`;
   const taskpaneUrl = `${wpsConnectorGetUrlPath()}/index.html?doc=${docKey}&session=${encodeURIComponent(scope.sessionId)}&host=${encodeURIComponent(scope.host)}&view=${encodeURIComponent(view)}&t=${Date.now()}`;
+  wpsConnectorPublishPaneView(scope.sessionId, view);
   let taskpaneId = null;
   try { taskpaneId = app.PluginStorage && app.PluginStorage.getItem(key); } catch {}
   if (!taskpaneId) {

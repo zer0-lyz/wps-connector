@@ -5,6 +5,14 @@ import { existsSync } from "node:fs";
 
 const bundledCodex = "/Applications/ChatGPT.app/Contents/Resources/codex";
 
+function agentPath() {
+  const parts = String(process.env.PATH || "").split(":").filter(Boolean);
+  for (const path of ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"]) {
+    if (!parts.includes(path)) parts.push(path);
+  }
+  return parts.join(":");
+}
+
 function textFromUserItem(item) {
   return (item?.content || [])
     .filter((part) => part?.type === "text")
@@ -67,7 +75,7 @@ export class CodexAgentClient extends EventEmitter {
 
   async start() {
     const child = spawn(this.command, this.args, {
-      env: { ...process.env },
+      env: { ...process.env, PATH: agentPath() },
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;

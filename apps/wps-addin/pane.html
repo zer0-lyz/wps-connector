@@ -36,7 +36,7 @@
     <div class="update-head"><div><span class="label">更新设置</span><strong id="updateStatus">未检查更新</strong><p id="updateMeta">可检查 GitHub main 上的新版本。安装后需要重启 WPS 才能加载新版插件。</p></div><div class="update-actions"><button id="checkUpdate" type="button" class="secondary">检查更新</button><button id="applyUpdate" type="button" hidden>下载并安装</button><button id="skipUpdate" type="button" class="secondary" hidden>跳过该版本</button></div></div>
   </section>
   <section class="agent-view" id="agentView" hidden>
-    <div class="agent-head"><span class="label">绑定的 Codex 对话</span><strong id="agentThreadTitle">尚未绑定对话</strong><p id="agentStatus">等待连接。</p></div>
+    <div class="agent-head"><span class="label">绑定的 Codex 对话</span><strong id="agentThreadTitle">尚未绑定对话</strong><p id="agentStatus">等待连接。</p><p>Agent 的实时执行过程显示在本面板；Codex Desktop 可能需要刷新后才能显示外部启动的回复。</p></div>
     <div class="agent-messages" id="agentMessages"><div class="agent-empty">正在加载对话记录...</div></div>
     <div class="agent-composer"><textarea id="agentInput" placeholder="向绑定的 Codex 对话发送消息"></textarea><div class="agent-actions"><button id="agentStop" type="button" class="secondary" hidden>停止</button><button id="agentSend" type="button">发送</button></div></div>
   </section>
@@ -63,6 +63,7 @@ function currentBinding(){return activeSession()?.binding||state.binding||null;}
 function activeSessionKey(){const s=activeSession()||{};return paneSessionId()||paneDocumentKey()||s.sessionId||s.documentKey||"global";}
 function renderPaneView(){const agent=paneView==="agent";$("pageTitle").textContent=agent?"Agent 对话":"WPS Connector";document.querySelectorAll(".connector-view").forEach(el=>el.hidden=agent);$("agentView").hidden=!agent;$("refreshAll").textContent=agent?"刷新对话":"刷新";}
 function agentSessionId(){return activeSession()?.sessionId||paneSessionId()||"";}
+async function fetchPaneView(){const sessionId=agentSessionId();if(!sessionId)return;try{const json=await fetch(`http://127.0.0.1:40215/api/sessions/${encodeURIComponent(sessionId)}/pane-view?ts=${Date.now()}`).then(r=>r.json());if(!json.ok||json.view===paneView)return;paneView=json.view==="agent"?"agent":"connector";window.wpsConnectorPaneView=paneView;renderPaneView();renderHeader();renderAgent();if(paneView==="agent")await fetchAgentHistory();}catch{}}
 function agentThreadLabel(){const b=currentBinding()||{};return b.threadTitle||selectedThread()?.title||b.threadId||"尚未绑定对话";}
 function agentRunActive(){return ["starting","running"].includes(state.agent.run?.status);}
 function renderAgentMessages(){const rows=[...state.agent.messages];if(agentRunActive()&&state.agent.run?.delta)rows.push({id:"streaming",role:"assistant",phase:"实时回复",text:state.agent.run.delta,streaming:true});$("agentMessages").innerHTML=rows.length?rows.map(m=>`<div class="agent-message ${m.role==="user"?"user":"assistant"} ${m.streaming?"streaming":""}">${m.role==="assistant"&&m.phase?`<span class="agent-phase">${esc(m.phase==="final_answer"?"最终答复":m.phase==="commentary"?"执行动态":m.phase)}</span>`:""}${esc(m.text)}</div>`).join(""):`<div class="agent-empty">${currentBinding()?.threadId?"暂无对话内容":"请先在连接面板绑定一个 Codex 对话"}</div>`;const box=$("agentMessages");box.scrollTop=box.scrollHeight;}
@@ -103,6 +104,7 @@ $("checkUpdate").onclick=()=>checkUpdate($("checkUpdate"));$("applyUpdate").oncl
 renderPaneView();
 Promise.resolve().then(async()=>{try{await Promise.all([loadUpdateStatus(false),fetchCatalog(),fetchSessions()]);if(paneView==="agent")await fetchAgentHistory();setFeedback("已就绪。");}catch(e){setFeedback(e.message||String(e));setStatus("加载失败");state.agent.lastError=e.message||String(e);}finally{renderHeader();renderPickers();renderUpdatePanel();renderAgent();}});
 setInterval(()=>{if(paneView==="agent"&&!document.hidden)fetchAgentHistory();},2000);
+setInterval(()=>{if(!document.hidden)fetchPaneView();},500);
 </script>
 </body>
 </html>
