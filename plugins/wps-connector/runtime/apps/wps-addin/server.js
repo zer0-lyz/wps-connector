@@ -40,6 +40,7 @@ async function handle(req, res) {
     if (safeMethod && pathname === "/ribbon.xml") return sendAsset(res, "ribbon.xml");
     if (safeMethod && pathname === "/icon.png") return sendAsset(res, "icon.png");
     if (safeMethod && pathname === "/images/connector.svg") return sendAsset(res, "images/connector.svg");
+    if (safeMethod && pathname === "/images/agent.svg") return sendAsset(res, "images/agent.svg");
     if (safeMethod && pathname === "/images/js-debug.svg") return sendAsset(res, "images/js-debug.svg");
     if (req.method === "GET" && pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*" });

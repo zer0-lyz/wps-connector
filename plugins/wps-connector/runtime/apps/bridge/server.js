@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { tools } from "../shared/toolSchemas.js";
+import { CodexAgentClient } from "./codexAgent.js";
 
 const host = process.env.WPS_CONNECTOR_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_PORT || 40215);
@@ -25,6 +26,7 @@ const commands = new Map();
 const execFileAsync = promisify(execFile);
 let bindingsStore = { bindings: [] };
 let updateCheckCache = null;
+const codexAgent = new CodexAgentClient();
 
 function nowIso() { return new Date().toISOString(); }
 function sendJson(res, status, payload) {
@@ -34,9 +36,10 @@ function sendJson(res, status, payload) {
 function sendError(res, status, code, message, details = {}) { sendJson(res, status, { ok: false, error: { code, message, details } }); }
 function statusForError(error) {
   const code = String(error?.code || "");
-  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code === "AMBIGUOUS_SESSION" || code.endsWith("_REFUSED")) return 409;
+  if (code === "AGENT_ORIGIN_REFUSED") return 403;
+  if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code === "AMBIGUOUS_SESSION" || code === "AGENT_THREAD_BINDING_REQUIRED" || code === "AGENT_TURN_ACTIVE" || code.endsWith("_REFUSED")) return 409;
   if (code === "INVALID_ARGUMENT" || code === "INVALID_ADDRESS") return 400;
-  if (code.endsWith("_NOT_FOUND")) return 404;
+  if (code.endsWith("_NOT_FOUND") || code === "AGENT_TURN_NOT_FOUND") return 404;
   if (code === "HOST_UNSUPPORTED") return 501;
   if (code === "COMMAND_TIMEOUT") return 504;
   return 500;
@@ -111,6 +114,19 @@ function upsertBinding(session, inputBinding) {
   return next;
 }
 function clearBinding(session) { const key = canonicalDocumentKey(documentKeyFor(session)); const before = bindingsStore.bindings.length; bindingsStore.bindings = bindingsStore.bindings.filter((binding) => canonicalDocumentKey(binding.documentKey) !== key && binding.bindingId !== session.binding?.bindingId); session.binding = null; return before !== bindingsStore.bindings.length; }
+function agentBindingForSession(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
+  session.binding = findBindingForSession(session) || session.binding || null;
+  if (!session.binding?.threadId) throw { code: "AGENT_THREAD_BINDING_REQUIRED", message: "当前 WPS 文档尚未绑定 Codex 对话。", details: { sessionId, documentName: session.documentName } };
+  return { session, binding: session.binding };
+}
+function assertAgentOrigin(req) {
+  const origin = String(req.headers.origin || "");
+  if (!origin) return;
+  const expected = new URL(addinUrl).origin;
+  if (origin !== expected) throw { code: "AGENT_ORIGIN_REFUSED", message: "Agent 对话接口只允许 WPS Connector 面板访问。", details: { origin, expected } };
+}
 async function loadCatalog() { try { const raw = await readFile(catalogPath, "utf8"); const json = JSON.parse(raw); return { projects: Array.isArray(json.projects) ? json.projects : [], threads: Array.isArray(json.threads) ? json.threads : [], updatedAt: json.updatedAt || "", source: json.source || "" }; } catch { return { projects: [], threads: [], updatedAt: "", source: "" }; } }
 async function refreshCatalog() {
   const script = join(process.cwd(), "scripts/sync-codex-catalog.js");
@@ -528,6 +544,36 @@ async function handle(req, res) {
     if (req.method === "GET" && pathname === "/api/catalog") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
+    const agentHistory = /^\/api\/agent\/([^/]+)\/history$/.exec(pathname);
+    if (req.method === "GET" && agentHistory) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentHistory[1]);
+      const result = await codexAgent.readThread(binding.threadId, Number(url.searchParams.get("limit") || 200));
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, documentName: session.documentName, binding, thread: { id: result.thread?.id || binding.threadId, name: result.thread?.name || binding.threadTitle || "" }, messages: result.messages, run: result.run });
+    }
+    const agentMessage = /^\/api\/agent\/([^/]+)\/message$/.exec(pathname);
+    if (req.method === "POST" && agentMessage) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentMessage[1]);
+      const body = await readJson(req);
+      const text = String(body.text || "").trim();
+      if (!text) return sendError(res, 400, "AGENT_MESSAGE_REQUIRED", "请输入要发送给 Agent 的内容。");
+      const run = await codexAgent.startTurn(binding.threadId, text, { cwd: binding.threadCwd || binding.projectPath || binding.projectId || "" });
+      return sendJson(res, 202, { ok: true, sessionId: session.sessionId, documentName: session.documentName, threadId: binding.threadId, run });
+    }
+    const agentStatus = /^\/api\/agent\/([^/]+)\/status$/.exec(pathname);
+    if (req.method === "GET" && agentStatus) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentStatus[1]);
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run: codexAgent.getRun(binding.threadId) });
+    }
+    const agentInterrupt = /^\/api\/agent\/([^/]+)\/interrupt$/.exec(pathname);
+    if (req.method === "POST" && agentInterrupt) {
+      assertAgentOrigin(req);
+      const { session, binding } = agentBindingForSession(agentInterrupt[1]);
+      const run = await codexAgent.interrupt(binding.threadId);
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run });
+    }
     if (req.method === "GET" && pathname === "/api/sessions") {
       const input = Object.fromEntries(url.searchParams.entries());
       const sessionsList = listSessions(input);
@@ -562,7 +608,8 @@ async function handle(req, res) {
     const toolCall = /^\/api\/tools\/([^/]+)\/([^/]+)$/.exec(pathname);
     if (req.method === "POST" && toolCall) { const toolName = `${toolCall[1]}.${toolCall[2]}`; if (!tools.some((tool) => tool.name === toolName)) return sendError(res, 404, "TOOL_NOT_FOUND", `Unknown tool: ${toolName}`); const input = await readJson(req); try { const result = await runTool(toolName, input); return sendJson(res, 200, { ok: true, ...result }); } catch (error) { return sendError(res, statusForError(error), error.code || "TOOL_FAILED", error.message || String(error), error.details || {}); } }
     return sendError(res, 404, "NOT_FOUND", `Route not found: ${req.method} ${pathname}`);
-  } catch (error) { return sendError(res, 500, "INTERNAL_ERROR", error.message || String(error)); }
+  } catch (error) { return sendError(res, statusForError(error), error.code || "INTERNAL_ERROR", error.message || String(error), error.details || {}); }
 }
 await loadBindings();
+process.on("exit", () => codexAgent.close());
 createServer(handle).listen(port, host, () => { console.error(`wps-connector bridge listening on http://${host}:${port}`); });
