@@ -108,7 +108,7 @@ export class CodexAgentClient extends EventEmitter {
     child.on("error", (error) => this.emit("log", `Codex App Server process error: ${error.message}`));
     child.on("exit", (code, signal) => this.onExit(code, signal));
     await this.request("initialize", {
-      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.3" },
+      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.4" },
       capabilities: { experimentalApi: true },
     }, true);
     this.notify("initialized", {});
@@ -166,7 +166,7 @@ export class CodexAgentClient extends EventEmitter {
     socket.on("error", (error) => this.emit("log", `Codex shared App Server socket error: ${error.message}`));
     socket.on("close", (code, reason) => this.onExit(code, String(reason || "")));
     await this.request("initialize", {
-      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.3" },
+      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.4" },
       capabilities: { experimentalApi: true },
     }, true);
     this.notify("initialized", {});
