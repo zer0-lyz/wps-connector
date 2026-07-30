@@ -1,3 +1,9 @@
+import {
+  ADAPTER_PROTOCOL_VERSION,
+  PRODUCT_VERSION,
+  SHARED_VERSION,
+} from "../../vendor/connector-shared/featureRegistry.js";
+
 const platformUrl = (process.env.CONNECTOR_PLATFORM_URL || "http://127.0.0.1:40315").replace(/\/$/, "");
 const platformState = { ok: false, mode: "fallback", url: platformUrl, protocolVersion: "", version: "", lastCheckedAt: "", lastError: "" };
 let heartbeatTimer = null;
@@ -23,11 +29,17 @@ export async function registerConnectorPlatform(adapter = {}) {
         id: adapter.id || `wps-connector:${process.pid}`,
         connector: "WPS",
         name: "wps-connector",
-        version: adapter.version || "1.1.3",
-        protocolVersion: "connector-source-v1",
+        version: adapter.version || "0.2.0",
+        protocolVersion: ADAPTER_PROTOCOL_VERSION,
+        productVersion: PRODUCT_VERSION,
+        sharedVersion: SHARED_VERSION,
         pid: process.pid,
         capabilities: ["sourceMetadata", "displayTextCleanup", "sourceLabel", "wpsAdapter", "agentChat"],
-        endpoints: { bridge: `http://127.0.0.1:${process.env.WPS_CONNECTOR_PORT || 40215}` },
+        endpoints: {
+          bridge: `http://127.0.0.1:${process.env.WPS_CONNECTOR_PORT || 40215}`,
+          toolSchema: `http://127.0.0.1:${process.env.WPS_CONNECTOR_PORT || 40215}/api/tools/schema`,
+          toolBase: `http://127.0.0.1:${process.env.WPS_CONNECTOR_PORT || 40215}/api/tools`,
+        },
         ...adapter,
       }),
     });

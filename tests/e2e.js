@@ -4,12 +4,13 @@ import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
-import { runInNewContext } from "node:vm";
+import { CodexAgentClient } from "../apps/bridge/codexAgent.js";
 
 const port = 40216;
 const updatePort = 40218;
 const bridgeUrl = `http://127.0.0.1:${port}`;
 const updateUrl = `http://127.0.0.1:${updatePort}/main.js`;
+const agentCapturePath = `/tmp/wps-connector-agent-prompt-${process.pid}.txt`;
 const children = [];
 const servers = [];
 
@@ -122,109 +123,56 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function verifySharedWindowTaskPane(addinSource) {
-  const storage = new Map();
-  const panes = new Map();
-  let createCount = 0;
-  const pluginStorage = {
-    getItem(key) { return storage.get(key) || ""; },
-    setItem(key, value) { storage.set(key, String(value)); },
-    removeItem(key) { storage.delete(key); },
-  };
-  const createApplication = (documentName) => ({
-    ActiveWindow: { Hwnd: 4242 },
-    ActiveDocument: { Name: documentName, FullName: `/tmp/${documentName}` },
-    PluginStorage: pluginStorage,
-    CreateTaskPane(url) {
-      createCount += 1;
-      const taskpane = { ID: `pane-${createCount}`, Url: url, Visible: false, Navigate(nextUrl) { taskpane.Url = nextUrl; }, Delete() { panes.delete(taskpane.ID); } };
-      panes.set(taskpane.ID, taskpane);
-      return taskpane;
-    },
-    GetTaskPane(id) {
-      const taskpane = panes.get(String(id));
-      if (!taskpane) throw new Error("stale taskpane");
-      return taskpane;
-    },
-  });
-  const sourceWithoutAutostart = addinSource.replace(/\nwpsConnectorStart\(\)\.catch\(console\.error\);\s*$/, "\n");
-  const openFromRuntime = (documentName) => runInNewContext(`${sourceWithoutAutostart}\nwpsConnectorOpenPane();`, {
-    Application: createApplication(documentName),
-    URLSearchParams,
-    document: { location: { toString: () => "http://127.0.0.1:3891/runtime.html" } },
-    window: {},
-    console,
-    setTimeout,
-    setInterval,
-    clearInterval,
-    fetch,
-  });
-  const first = openFromRuntime("document-a.docx");
-  const second = openFromRuntime("document-b.docx");
-  assert(first.reused === false && second.reused === true, "Independent document runtimes did not reuse the shared window taskpane.");
-  assert(first.taskpaneId === second.taskpaneId && createCount === 1, "Independent document runtimes created duplicate native taskpanes for one WPS window.");
-  assert(panes.get(first.taskpaneId)?.Url.includes(encodeURIComponent("/tmp/document-b.docx")), "The shared taskpane was not re-anchored to the second document.");
-  const closedPane = panes.get(first.taskpaneId);
-  closedPane.Visible = false;
-  const cleanupContext = {
-    Application: createApplication("document-b.docx"),
-    URLSearchParams,
-    document: { location: { toString: () => "http://127.0.0.1:3891/runtime.html" } },
-    window: {},
-    console,
-    setTimeout,
-    setInterval,
-    clearInterval,
-    fetch: async () => ({ json: async () => ({ ok: true, closed: false }) }),
-  };
-  const cleanupSource = `${sourceWithoutAutostart}\nwpsConnectorTaskPaneIds.set("wpp::window-window-4242", "${first.taskpaneId}");\nwpsConnectorCheckClosedTaskPane();`;
-  await runInNewContext(cleanupSource, cleanupContext);
-  assert(panes.has(first.taskpaneId) && panes.get(first.taskpaneId).Visible === false, "Closed native taskpane was not hidden through the supported Visible property.");
-  const reopened = openFromRuntime("document-a.docx");
-  assert(reopened.reused === true && reopened.taskpaneId === first.taskpaneId && panes.get(first.taskpaneId).Visible === true, "Hidden taskpane was not restored.");
-}
-
 async function main() {
+  const externalTurnProbe = new CodexAgentClient({ sharedTransport: false });
+  externalTurnProbe.onNotification("turn/started", { threadId: "external-thread", turn: { id: "external-turn" } });
+  externalTurnProbe.onNotification("item/agentMessage/delta", { threadId: "external-thread", turnId: "external-turn", delta: "外部回复" });
+  externalTurnProbe.onNotification("turn/completed", { threadId: "external-thread", turn: { id: "external-turn", status: "completed" } });
+  assert(externalTurnProbe.getRun("external-thread")?.delta === "外部回复" && externalTurnProbe.getRun("external-thread")?.status === "completed", "Agent client did not surface a turn started by Codex Desktop.");
   const pluginSkill = readFileSync("plugins/wps-connector/skills/wps-connector/SKILL.md", "utf8");
   assert(pluginSkill.includes("Two-Path Routing") && pluginSkill.includes("unsupported call") && pluginSkill.includes("restart WPS"), "Plugin skill missed mandatory automatic MCP fallback guidance.");
-  const addinSource = readFileSync("apps/wps-addin/main.js", "utf8");
-  const paneSource = readFileSync("apps/wps-addin/pane.html", "utf8");
-  const runtimePage = readFileSync("apps/wps-addin/runtime.html", "utf8");
-  const addinServerSource = readFileSync("apps/wps-addin/server.js", "utf8");
-  const bridgeServerSource = readFileSync("apps/bridge/server.js", "utf8");
-  assert(runtimePage.includes('<script src="./main.js?v=20260718-pane-visibility-1.0.88.2') && !paneSource.includes('<script src="./main.js'), "WPS runtime page is not cache-busted or lightweight task pane pages are not separated.");
-  assert(addinServerSource.includes('return sendAsset(res, "runtime.html")') && addinServerSource.includes('return sendAsset(res, "pane.html")'), "Add-in server does not route runtime and pane pages separately.");
-  assert(addinSource.includes("session: scope.sessionId") && addinSource.includes("window: windowKey"), "Task pane URL is not locked to the current document session and WPS window.");
-  assert(addinSource.includes('for (const name of ["Hwnd", "HWND", "Handle"])') && addinSource.includes('return `${host}::window-default`'), "Task pane routing does not derive a stable current WPS window identity or deterministic fallback.");
-  assert(addinSource.includes("const wpsConnectorTaskPaneIds = new Map()") && addinSource.includes("const key = windowKey;"), "Task pane cache is not scoped to one pane per WPS window.");
-  assert(addinSource.includes("wpsConnectorReadSharedTaskPane") && addinSource.includes("wpsConnectorWriteSharedTaskPane") && addinSource.includes("app.PluginStorage?.setItem(keys.id"), "Task pane identity is not shared across WPS document runtimes.");
-  assert(addinSource.includes("function wpsConnectorCheckClosedTaskPane") && addinSource.includes("function wpsConnectorFoldTaskPane") && addinSource.includes("function wpsConnectorHideTaskPane") && addinSource.includes("taskpane.Visible = false") && addinSource.includes("/api/panes/collapse?windowKey=") && !addinSource.includes("/api/panes/state?windowKey="), "Taskpane lifecycle still performs background native-close reconciliation.");
-  assert(paneSource.includes("navigator.sendBeacon") && paneSource.includes('sendPaneSignal("closed")') && paneSource.includes('sendPaneSignal("alive")'), "Task pane close lifecycle does not notify the runtime.");
-  assert(bridgeServerSource.includes('pathname === "/api/panes/closed"') && bridgeServerSource.includes('pathname === "/api/panes/collapse"') && bridgeServerSource.includes('pathname === "/api/panes/alive"') && bridgeServerSource.includes('pathname === "/api/panes/state"'), "Bridge has no task pane lifecycle signal endpoints.");
-  assert(addinSource.includes("const sharedPane = wpsConnectorReadSharedTaskPane(app, key)") && addinSource.includes("sharedPane.taskpaneId ||"), "A document runtime can still create a duplicate pane before consulting the shared window registry.");
-  assert(addinSource.includes("wpsConnectorClearSharedTaskPane(app, key, taskpaneId)"), "Stale shared taskpane ids are not cleared before recovery.");
-  assert(addinSource.includes("const wpsConnectorTaskPaneUrls = new Map()") && addinSource.includes("if (previousUrl !== taskpaneUrl)"), "A window-local pane cannot be re-anchored when the active document changes.");
-  assert(addinSource.includes("taskpane.Navigate(taskpaneUrl)") && addinSource.includes("wpsConnectorTaskPaneUrls.set(key, taskpaneUrl)"), "Existing window-local pane does not use the supported Navigate API to update its anchored document URL.");
-  assert(addinSource.includes("wpsConnectorTaskPaneIds.delete(key)"), "Task pane cannot recover a stale window-local pane id.");
-  assert(!addinSource.includes("wpsConnectorHidePreviousPaneOwner") && !addinSource.includes("wpsConnectorRefreshHostLayout") && !addinSource.includes("wpsConnectorReconcileTaskPaneVisibility"), "Obsolete cross-window hiding or forced redraw workarounds are still active.");
-  assert(addinSource.includes("/pane.html?${params.toString()}"), "Task pane still opens the WPS runtime page instead of the lightweight pane page.");
-  assert(addinSource.includes('return "images/connector.svg"') && !addinSource.includes("wpsConnectorGetUrlPath()}/images/connector.svg"), "WPS ribbon image callback must use the host-supported relative add-in resource path.");
-  assert(addinSource.includes("reused: false") && addinSource.includes("windowKey, reused: true"), "Task pane results do not expose window-local reuse behavior.");
-  assert(paneSource.includes('const paneAnchor=Object.freeze({sessionId:paneParams.get("session")||"",documentKey:paneParams.get("doc")||"",host:paneParams.get("host")||""})'), "Task pane missed its immutable session/document anchor.");
-  assert(paneSource.includes("if(paneAnchor.sessionId)return state.sessions.find(s=>s.sessionId===paneAnchor.sessionId)"), "Task pane does not prioritize its anchored sessionId.");
-  assert(paneSource.includes('if(paneSessionId())params.set("sessionId",paneSessionId())'), "Task pane session refresh does not query its anchored sessionId.");
-  assert(!paneSource.includes("const key=cur.documentKey||paneDocumentKey()"), "Task pane still allows the global active document to override its document anchor.");
-  assert(!paneSource.includes('<script src="./main.js'), "Task pane should not start a duplicate WPS command poller and heartbeat loop.");
-  assert(paneSource.includes("setInterval(()=>{if(!document.hidden&&!state.menuOpen)fetchSessions().catch(()=>{});},5000)"), "Task pane missed its lightweight visible-only session refresh.");
-  assert(!paneSource.includes('if(id==="threadPickerMenu")fetchCatalog(true)'), "Opening the thread picker should not force a full Codex catalog refresh.");
-  await verifySharedWindowTaskPane(addinSource);
+  const catalogSyncScript = readFileSync("scripts/sync-codex-catalog.js", "utf8");
+  assert(catalogSyncScript.includes("pinned-project-ids") && catalogSyncScript.includes("project-order") && catalogSyncScript.includes("sidebar-project-thread-orders"), "Catalog sync must preserve Codex project and conversation sidebar order.");
+  assert(catalogSyncScript.includes("from threads where cwd<>'' and archived=0") && !catalogSyncScript.includes("for (const project of existing.projects"), "Catalog sync must exclude archived threads and stale projects from previous snapshots.");
   for (const deployScript of ["scripts/deploy-runtime-mac.sh", "plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh"]) {
     const source = readFileSync(deployScript, "utf8");
     assert(source.includes("--exclude 'project-bindings.local.json'"), `${deployScript} may delete saved bindings during deployment.`);
     assert(source.includes("--exclude 'codex-catalog.snapshot.json'"), `${deployScript} may delete the local catalog snapshot during deployment.`);
+    assert(source.includes("--exclude 'et-wpp-table-syncs.local.json'"), `${deployScript} may delete saved WPS table sync mappings during deployment.`);
   }
-  const bootstrapSource = readFileSync("scripts/bootstrap-mac.sh", "utf8");
-  assert(bootstrapSource.includes('if ! codex plugin add "$PLUGIN_NAME@personal"'), "Bootstrap should continue runtime installation when Codex marketplace refresh is unavailable.");
+  const paneHtml = readFileSync("apps/wps-addin/pane.html", "utf8");
+  assert(paneHtml.includes('id="connectorStatus"') && paneHtml.includes('id="agentView"') && paneHtml.includes('id="syncView"'), "pane.html must keep connector-view / agent-view / sync-view surfaces.");
+  assert(paneHtml.includes("agent-view") && paneHtml.includes("sync-view") && paneHtml.includes("loadSyncView"), "pane.html missed Agent or table sync UI wiring.");
+  assert(paneHtml.includes("user-select:text") && paneHtml.includes("copyTextToClipboard") && paneHtml.includes("navigator.clipboard") && paneHtml.includes('execCommand("copy")'), "pane.html must support selectable Agent messages and a WPS CEF clipboard fallback.");
+  assert(paneHtml.includes('id="agentPaste"') && paneHtml.includes("pasteAgentClipboard") && paneHtml.includes("/api/clipboard"), "pane.html must provide a bridge-backed paste action when WPS intercepts Cmd+V.");
+  assert(paneHtml.includes("currentSyncHost") && paneHtml.includes('setSyncPanelVisible("etSourceManager",mode!=="wpp")') && paneHtml.includes('setSyncPanelVisible("wppSyncManager",mode==="wpp")'), "pane.html must split WPS ET source UI from WPP sync UI.");
+  assert(paneHtml.includes("allowInsert:false") && paneHtml.includes("refreshActiveEtSelection") && paneHtml.includes("jump-source") && paneHtml.includes("表 ${next}-${sheet}：${addr}"), "pane.html missed ET-only source list behavior, Office-style naming, source jump, or on-demand selection refresh.");
+  assert(paneHtml.includes("wakeCommandPumpFor") && paneHtml.includes("wpsConnectorWakeCommandPump"), "pane.html must wake the WPS command pump only around explicit user actions.");
+  assert(paneHtml.includes("readContextForScope") && paneHtml.includes("force:true") && paneHtml.includes("读取并确认"), "Agent scope confirmation must read the current WPS selection on demand.");
+  assert(paneHtml.includes("loadSyncBindingsOnly") && paneHtml.includes("绑定状态已更新"), "Insert-and-bind must refresh local binding/source status without requiring a full WPP table scan.");
+  assert(paneHtml.includes("fetchPaneView()") && paneHtml.includes("wpsConnectorViewChanged"), "Open panes must switch between connector, Agent, and table sync views without recreating the pane.");
+  assert(paneHtml.includes('onlyOnline:"true"') && paneHtml.includes("state.sessions.length===1"), "Pane session loading must recover when its original session anchor disappears after a bridge restart.");
+  assert(paneHtml.includes('id="agentScopeValue"') && paneHtml.includes('id="agentClearScope"') && paneHtml.includes("operationScopeView"), "Agent pane must display the effective operation scope and provide an independent cancel action.");
+  assert(paneHtml.includes('WPS_CONNECTOR_PANE_VERSION="0.2.0"') && paneHtml.includes("20260729-operation-scope-0.2.0.5"), "pane.html must not keep stale pane version or stale main.js cache keys.");
+  assert(!paneHtml.includes('refreshActiveEtSelection({render:true}).catch'), "pane.html must not continuously poll ET selection because it can stall WPS Writer input.");
+  assert(!paneHtml.includes("仍在旧通道中，重启后可实时同步"), "Agent pane must not instruct endless Codex restarts when the shared transport is connected.");
+  assert(paneHtml.includes("configurationRequired") && paneHtml.includes("共享通道已配置，请重启 Codex Desktop 一次后测试"), "Agent pane must distinguish missing daemon configuration from one required Desktop restart.");
+  const wpsMain = readFileSync("apps/wps-addin/main.js", "utf8");
+  assert(wpsMain.includes("function wpsConnectorNormalizePaneView") && wpsMain.includes('input?.view'), "wps.open_pane must accept both ribbon string views and command object views.");
+  assert(wpsMain.includes("async function wpsConnectorOpenPane") && wpsMain.includes("await wpsConnectorRegister()") && wpsMain.includes("`${scope.documentKey}`") && !wpsMain.includes("wpsConnectorCurrentDocumentKey || scope.documentKey"), "Ribbon pane opening must refresh and anchor to the active document, not a stale cached document key.");
+  assert(wpsMain.includes("WPS_CONNECTOR_WPP_IDLE_POLL_INTERVAL_MS = 15000") && wpsMain.includes("WPS_CONNECTOR_WPP_HEARTBEAT_INTERVAL_MS = 30000"), "WPP command listener must be very low-frequency when idle.");
+  assert(wpsMain.includes("transport-only") && wpsMain.includes("do not re-read"), "WPP heartbeat must not touch Writer document objects while idle.");
+  assert(wpsMain.includes('host === "et"') && wpsMain.includes("Writer is sensitive after table insertion"), "WPP polling must not enumerate all Writer sessions or touch document identity on every poll.");
+  assert(wpsMain.includes("targetHasStableIdentity") && wpsMain.includes("await wpsConnectorRegister();"), "WPP must recover once from an empty document identity after bridge or add-in restart.");
+  const wpsServer = readFileSync("apps/bridge/server.js", "utf8");
+  assert(wpsServer.includes("buildSourcePrompt") && wpsServer.includes("buildAgentPrompt") && wpsServer.includes('connector: "WPS"'), "WPS Agent messages must use the shared connector source metadata contract.");
+  assert(wpsServer.includes("deriveDesktopSyncStatus") && wpsServer.includes("sync.configurationRequired"), "WPS Agent readiness must use the shared agent-chat module and require Desktop to join the shared daemon.");
+  assert(wpsServer.includes('pathname === "/api/clipboard"') && wpsServer.includes("/usr/bin/pbpaste") && wpsServer.includes("/usr/bin/pbcopy"), "WPS bridge must provide a local macOS clipboard fallback.");
+  assert(wpsServer.includes('`${connectorPlatformUrl}/api/product`') && wpsServer.includes('"npm run update:mac"'), "WPS update UI must use Connector Suite product status and the one-update command.");
+  const wpsAgent = readFileSync("apps/bridge/codexAgent.js", "utf8");
+  assert(wpsAgent.includes("displayTextFromPrompt") && wpsAgent.includes("sourceLabelFromPrompt") && wpsAgent.includes("sourceMeta"), "WPS Agent history must use the shared metadata parser while preserving sourceMeta.");
+  const ribbonXml = readFileSync("apps/wps-addin/ribbon.xml", "utf8");
+  for (const id of ["btnShowConnectorPane", "btnShowAgentChat", "btnShowTableSync"]) assert(ribbonXml.includes(id), `Ribbon missed ${id}.`);
   const updateServer = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
     res.end('const WPS_CONNECTOR_CLIENT_VERSION = "9.9.9";\nconst WPS_CONNECTOR_CLIENT_BUILD = "2099.01.01-test-update.1";\n');
@@ -233,13 +181,15 @@ async function main() {
   servers.push(updateServer);
   await once(updateServer, "listening");
 
-  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "" });
+  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-table-syncs-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: JSON.stringify(["tests/fixtures/fake-codex-app-server.js"]), WPS_CONNECTOR_E2E_AGENT_CAPTURE: agentCapturePath, CONNECTOR_PLATFORM_URL: "http://127.0.0.1:43998" });
   bridge.on("exit", (code) => {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
   await waitForHealth();
+  const commandDebugInitial = await requestAt(bridgeUrl, "/api/debug/commands");
+  assert(commandDebugInitial.ok === true && Array.isArray(commandDebugInitial.active) && Array.isArray(commandDebugInitial.recent), "Command debug endpoint did not return a safe command summary.");
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.0.88", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "0.2.0", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true && remoteUpdateCheck.versionState === "update_available", "Update check did not discover a newer remote version.");
 
@@ -248,6 +198,7 @@ async function main() {
   startNode(["apps/bridge/server.js"], {
     WPS_CONNECTOR_PORT: String(stalePort),
     WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-stale-bindings-${process.pid}.json`,
+    WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-stale-table-syncs-${process.pid}.json`,
     WPS_CONNECTOR_SESSION_OFFLINE_MS: "100",
     WPS_CONNECTOR_SESSION_RETAIN_OFFLINE_MS: "250",
     WPS_CONNECTOR_MAX_OFFLINE_SESSIONS: "5",
@@ -304,13 +255,23 @@ async function main() {
   assert(sessions.some((session) => session.host === "wpp"), "WPP session was not registered.");
   const largeSession = sessions.find((session) => session.sessionId === "test-et-large-selection");
   assert(largeSession?.activeContext?.previewSkipped === true && largeSession.activeContext.cellCount === 1048576, "Large ET selection heartbeat did not skip preview.");
+  const agentPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "agent" }) });
+  assert(agentPaneView.view === "agent", "Pane view endpoint did not save the Agent view.");
+  const savedPaneView = await request("/api/sessions/test-wpp-session/pane-view");
+  assert(savedPaneView.view === "agent" && savedPaneView.updatedAt, "Pane view endpoint did not return the cross-context view state.");
+  const connectorPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "connector" }) });
+  assert(connectorPaneView.view === "connector", "Pane view endpoint did not switch back to the connector view.");
+  const syncPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "sync" }) });
+  assert(syncPaneView.view === "sync", "Pane view endpoint did not save the table sync view.");
 
-  const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, WPS_CONNECTOR_MCP_EXPOSE_DOTTED: "true" });
+  const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, WPS_CONNECTOR_MCP_EXPOSE_DOTTED: "true", CODEX_THREAD_ID: "", CODEX_THREAD: "" });
   const mcpClient = createMcpClient(mcp);
   const init = await mcpClient.request("initialize", {});
   assert(init.serverInfo?.name === "wps-connector", "MCP initialize returned unexpected server name.");
   const listedTools = await mcpClient.request("tools/list", {});
   assert(listedTools.tools.some((tool) => tool.name === "et.read_selection"), "MCP tools/list missed et.read_selection.");
+  assert(listedTools.tools.some((tool) => tool.name === "et.select_range"), "MCP tools/list missed et.select_range.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.select_table"), "MCP tools/list missed wpp.select_table.");
   assert(listedTools.tools.some((tool) => tool.name === "et.read_range"), "MCP tools/list missed et.read_range.");
   assert(listedTools.tools.some((tool) => tool.name === "et.save_workbook"), "MCP tools/list missed et.save_workbook.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
@@ -333,11 +294,12 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.duplicate_table_appearance"), "MCP tools/list missed wpp.duplicate_table_appearance.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_with_layout"), "MCP tools/list missed wpp.insert_table_with_layout.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.reset_table_layout"), "MCP tools/list missed wpp.reset_table_layout.");
+  for (const name of ["wps.create_et_wpp_data_source", "wps.list_et_wpp_data_sources", "wps.delete_et_wpp_data_source", "wps.unbind_et_wpp_data_source", "wps.create_et_wpp_table_sync", "wps.insert_et_wpp_data_source", "wps.list_et_wpp_table_syncs", "wps.sync_et_wpp_table", "et.select_range", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wps.connection_status"), "MCP tools/list missed wps.connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_connection_status"), "MCP tools/list missed underscore alias wps_connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_list_sessions"), "MCP tools/list missed underscore alias wps_list_sessions.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp_add_comment"), "MCP tools/list missed underscore alias wpp_add_comment.");
-  const compactMcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
+  const compactMcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, CODEX_THREAD_ID: "", CODEX_THREAD: "" });
   const compactMcpClient = createMcpClient(compactMcp);
   const compactListedTools = await compactMcpClient.request("tools/list", {});
   assert(compactListedTools.tools.length < listedTools.tools.length && compactListedTools.tools.every((tool) => tool.name.includes("_")), "Default MCP tools/list was not compacted to underscore aliases.");
@@ -372,9 +334,52 @@ async function main() {
     body: JSON.stringify({ binding: { projectId: "project-b", projectName: "Project B", projectPath: "/tmp/project-b", threadId: "thread-b" } }),
   });
   assert(bindWpp.binding?.threadId === "thread-b", "WPP binding was not saved.");
+  const agentSelectionScope = await request("/api/sessions/test-wpp-session/operation-scope", {
+    method: "POST",
+    body: JSON.stringify({ mode: "selection", context: { start: 0, end: 3, length: 3, textPreview: "原选区" } }),
+  });
+  assert(agentSelectionScope.operationScope?.mode === "selection", "Agent setup did not confirm the WPP selection scope.");
+  const agentHistory = await request("/api/agent/test-wpp-session/history");
+  assert(agentHistory.thread?.id === "thread-b" && agentHistory.messages?.length === 2, "Agent history did not read the bound Codex conversation.");
+  assert(agentHistory.messages[0]?.role === "user" && agentHistory.messages[1]?.text === "历史回答", "Agent history did not normalize Codex messages.");
+  const refusedAgentOrigin = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/history", { headers: { origin: "https://example.invalid" } });
+  assert(refusedAgentOrigin.ok === false && refusedAgentOrigin.httpStatus === 403 && refusedAgentOrigin.error?.code === "AGENT_ORIGIN_REFUSED", "Agent API accepted a foreign browser origin.");
+  const agentMessage = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/message", {
+    method: "POST",
+    body: JSON.stringify({ text: "新问题", threadId: "spoofed-thread" }),
+  });
+  assert(agentMessage.ok === true && agentMessage.threadId === "thread-b", "Agent message did not stay anchored to the saved WPS binding.");
+  let liveAgentStatus = null;
+  for (let i = 0; i < 20; i += 1) {
+    liveAgentStatus = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/status");
+    if (liveAgentStatus.run?.status === "completed") break;
+    await sleep(20);
+  }
+  assert(liveAgentStatus?.run?.status === "completed" && liveAgentStatus.run.finalText === "模拟回复" && liveAgentStatus.run.delta === "模拟回复", "Agent message did not stream and complete through the Codex App Server bridge.");
+  const selectionPrompt = readFileSync(agentCapturePath, "utf8");
+  assert(selectionPrompt.includes("SessionId: test-wpp-session") && selectionPrompt.includes("Operation scope: 已确认选区："), "Agent selection-mode prompt missed the exact session or confirmed operation scope.");
+
+  await request("/api/sessions/test-wpp-session/operation-scope", {
+    method: "POST",
+    body: JSON.stringify({ mode: "document" }),
+  });
+  const documentAgentMessage = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/message", {
+    method: "POST",
+    body: JSON.stringify({ text: "全局问题" }),
+  });
+  assert(documentAgentMessage.ok === true, "Agent message failed after cancelling the operation scope.");
+  for (let i = 0; i < 20; i += 1) {
+    liveAgentStatus = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/status");
+    if (liveAgentStatus.run?.status === "completed") break;
+    await sleep(20);
+  }
+  const documentPrompt = readFileSync(agentCapturePath, "utf8");
+  assert(documentPrompt.includes("Operation scope: 未确认选区：默认按用户指令全局操作"), "Agent document-mode prompt did not report the cancelled operation scope.");
 
   const unboundExecution = await rawRequest("/api/tools/et/list_worksheets", { method: "POST", body: JSON.stringify({ sessionId: "test-et-large-selection" }) });
   assert(unboundExecution.ok === false && unboundExecution.error?.code === "PROJECT_BINDING_REQUIRED", "Unbound execution was not rejected.");
+  const unboundAgent = await rawRequest("/api/agent/test-et-large-selection/history");
+  assert(unboundAgent.ok === false && unboundAgent.error?.code === "AGENT_THREAD_BINDING_REQUIRED", "Agent history accepted an unbound WPS document.");
   const bindLargeEt = await request("/api/sessions/test-et-large-selection/binding", {
     method: "POST",
     body: JSON.stringify({ binding: { projectId: "project-a", projectName: "Project A", projectPath: "/tmp/project-a", threadId: "thread-a" } }),
@@ -384,8 +389,16 @@ async function main() {
   assert(agentStatus.ok === true && agentStatus.counts?.online >= 2, "Agent gateway did not return live connection status.");
   const agentSheets = await runNode(["scripts/agent-tool-call.js", "et.list_worksheets", JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" })], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
   assert(agentSheets.ok === true && agentSheets.worksheets?.some((sheet) => sheet.name === "Sheet1"), "Agent gateway did not route bound ET worksheet listing.");
-  const mcpSheetsGenerated = await mcpClient.request("tools/call", { name: "et_list_worksheets_fca6f791e28c", arguments: { sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" } });
+  const trustedProjectAMeta = { threadId: "thread-a", codex_cwd: "/tmp/project-a" };
+  const mcpSheetsGenerated = await mcpClient.request("tools/call", { name: "et_list_worksheets_fca6f791e28c", arguments: { sessionId: "test-et-session" }, _meta: trustedProjectAMeta });
   assert(mcpSheetsGenerated.content?.[0]?.text?.includes("Sheet1"), "MCP generated ET tool name did not route to bound et.list_worksheets.");
+  const mcpMissingTrustedContext = await mcpClient.request("tools/call", { name: "et_list_worksheets_fca6f791e28c", arguments: { sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" } });
+  assert(mcpMissingTrustedContext.isError === true && mcpMissingTrustedContext.content?.[0]?.text?.includes("MCP_TRUSTED_CONTEXT_REQUIRED"), "MCP document tool accepted caller-supplied binding without trusted task metadata.");
+  const mcpSpoofedBinding = await mcpClient.request("tools/call", { name: "wpp_insert_text", arguments: { sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", text: "must-not-write" }, _meta: trustedProjectAMeta });
+  assert(mcpSpoofedBinding.isError === true && mcpSpoofedBinding.content?.[0]?.text?.includes("CALLER_BINDING_OVERRIDE_REFUSED"), "MCP accepted a caller-supplied binding from another Codex task.");
+  const mcpBoundStatus = await mcpClient.request("tools/call", { name: "wps_connection_status", arguments: { onlyOnline: true, host: "et" }, _meta: trustedProjectAMeta });
+  const mcpBoundStatusPayload = JSON.parse(mcpBoundStatus.content?.[0]?.text || "{}");
+  assert(mcpBoundStatusPayload.recommendedSession?.binding?.threadId === "thread-a", "MCP connection_status did not filter its recommended session to the trusted current task.");
 
   const bridgeConnectionStatus = await rawRequest("/api/tools/wps/connection_status", { method: "POST", body: JSON.stringify({ onlyOnline: true, host: "et" }) });
   assert(bridgeConnectionStatus.ok === false && bridgeConnectionStatus.issues?.some((issue) => issue.code === "AMBIGUOUS_SESSION"), `Bridge connection_status did not expose ambiguous multiple-ET routing: ${JSON.stringify(bridgeConnectionStatus)}`);
@@ -570,7 +583,7 @@ async function main() {
   });
   assert(wppWrongHost.ok === false && wppWrongHost.error?.code === "SESSION_HOST_MISMATCH", "WPP tool with ET session did not return SESSION_HOST_MISMATCH.");
   assert(wppWrongHost.httpStatus === 409, "SESSION_HOST_MISMATCH did not return HTTP 409.");
-  const mcpWrongHost = await mcpClient.request("tools/call", { name: "wpp.read_document_identity", arguments: { sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a" } });
+  const mcpWrongHost = await mcpClient.request("tools/call", { name: "wpp.read_document_identity", arguments: { sessionId: "test-et-session" }, _meta: trustedProjectAMeta });
   const mcpWrongHostPayload = JSON.parse(mcpWrongHost.content?.[0]?.text || "{}");
   assert(mcpWrongHostPayload.ok === false && mcpWrongHostPayload.error?.code === "SESSION_HOST_MISMATCH", "MCP did not preserve SESSION_HOST_MISMATCH in JSON result.");
 
@@ -984,6 +997,40 @@ async function main() {
   });
   assert(wppDeleteColumns.columnCount === 2, "WPP delete_table_columns did not update column count.");
 
+  await request("/api/tools/et/write_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", address: "A1:B3", values: [["Name", "Amount"], ["C", 300], ["E", 500]] }),
+  });
+  const tableSyncSource = await request("/api/tools/wps/create_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ etSessionId: "test-et-session", name: "测试同步源", sheetName: "Sheet1", address: "A1:B3" }),
+  });
+  assert(tableSyncSource.created === true && tableSyncSource.source?.status === "pending", "WPS ET-WPP data source was not created as pending.");
+  const tableSyncSources = await request("/api/tools/wps/list_et_wpp_data_sources", { method: "POST", body: JSON.stringify({}) });
+  assert(tableSyncSources.sources.some((source) => source.sourceId === tableSyncSource.source.sourceId), "WPS ET-WPP source list missed the created source.");
+  const tableSyncJump = await request("/api/tools/et/select_range", { method: "POST", body: JSON.stringify({ sessionId: "test-et-session", sheetName: "Sheet1", address: "A1:B3" }) });
+  assert(tableSyncJump.selected === true && tableSyncJump.address === "A1:B3", "WPS ET source jump did not select the saved source range.");
+  const tableSyncMapping = await request("/api/tools/wps/create_et_wpp_table_sync", {
+    method: "POST",
+    body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId, etSessionId: "test-et-session", wppSessionId: "test-wpp-session", wppTableIndex: 0, headerRowCount: 1, syncHeader: false, allowStructuralChanges: true }),
+  });
+  assert(tableSyncMapping.mapping?.syncId && tableSyncMapping.mapping.target?.fallbackTableIndex === 0, "WPS ET-WPP mapping was not created for the existing WPP table.");
+  const tableSyncList = await request("/api/tools/wps/list_et_wpp_table_syncs", { method: "POST", body: JSON.stringify({}) });
+  assert(tableSyncList.syncs.some((sync) => sync.syncId === tableSyncMapping.mapping.syncId), "WPS ET-WPP sync list missed the mapping.");
+  const tableSyncApplied = await request("/api/tools/wps/sync_et_wpp_table", { method: "POST", body: JSON.stringify({ syncId: tableSyncMapping.mapping.syncId }) });
+  assert(tableSyncApplied.synced === true && tableSyncApplied.rowMerge?.matchedCount >= 1 && tableSyncApplied.rowMerge?.appendedExcelRowCount >= 1, "WPS ET-WPP sync did not perform smart row matching and append new ET rows.");
+  const tableSyncWppJump = await request("/api/tools/wpp/select_table", { method: "POST", body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 0 }) });
+  assert(tableSyncWppJump.selected === true && tableSyncWppJump.tableIndex === 0, "WPS Writer table jump did not select the saved target table.");
+  const syncedWppTable = await request("/api/tools/wpp/read_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1 }),
+  });
+  assert(syncedWppTable.values.some((row) => row[0] === "E" && Number(row[1]) === 500), "WPS ET-WPP sync did not append the new ET key row into WPP table.");
+  const tableSyncUnbound = await request("/api/tools/wps/unbind_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId }) });
+  assert(tableSyncUnbound.unbound === true && tableSyncUnbound.removedCount === 1, "WPS ET-WPP unbind did not remove the saved mapping.");
+  const tableSyncDeleted = await request("/api/tools/wps/delete_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId }) });
+  assert(tableSyncDeleted.deleted === true, "WPS ET-WPP delete data source did not delete the unbound source.");
+
   const wppMergeCells = await request("/api/tools/wpp/merge_table_cells", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1, startRow: 1, startColumn: 1, endRow: 1, endColumn: 2 }),
@@ -1183,6 +1230,7 @@ async function main() {
     ok: true,
     sessions: sessions.map((session) => ({ sessionId: session.sessionId, host: session.host })),
     connectionStatus: { matched: bridgeConnectionStatus.counts?.matched, recommended: bridgeConnectionStatus.recommendedSession?.sessionId || null },
+    agentChat: { historyMessages: agentHistory.messages.length, status: liveAgentStatus.run.status, finalText: liveAgentStatus.run.finalText },
     bindingRouting: { etSessionId: boundEtSelection.sessionId, mismatchCode: wrongExplicitBinding.error?.code, missingCode: missingBoundEt.error?.code },
     operationScope: { etScopedAddress: etScopedRead.address, wppInsertScope: wppInsert.operationScope?.mode },
     etSelection: { address: etSelection.address, firstCell: etSelection.values[0][0] },
