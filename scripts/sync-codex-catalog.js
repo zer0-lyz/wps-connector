@@ -181,14 +181,65 @@ function projectFromCwd(cwd) {
   const label = basename(cwd) || cwd;
   return { projectId: cwd, projectKind: "local", label, path: cwd, hostId: "local" };
 }
+function orderedProjectState(globalState) {
+  const localProjects = globalState?.["local-projects"] || {};
+  const pinnedProjectIds = Array.isArray(globalState?.["pinned-project-ids"]) ? globalState["pinned-project-ids"] : [];
+  const projectOrder = Array.isArray(globalState?.["project-order"]) ? globalState["project-order"] : [];
+  const orderedIds = [...new Set([...pinnedProjectIds, ...projectOrder])].filter((id) => localProjects[id]);
+  const projects = orderedIds.flatMap((projectId, catalogOrder) => {
+    const project = localProjects[projectId] || {};
+    const rootPaths = Array.isArray(project.rootPaths) ? project.rootPaths.map(normPath).filter(Boolean) : [];
+    if (!rootPaths.length) return [];
+    return [{
+      projectId,
+      projectKind: "local",
+      label: String(project.name || basename(rootPaths[0]) || projectId),
+      path: rootPaths[0],
+      rootPaths,
+      hostId: "local",
+      pinned: pinnedProjectIds.includes(projectId),
+      catalogOrder,
+    }];
+  });
+  return {
+    projects,
+    projectIds: new Set(projects.map((project) => project.projectId)),
+    projectOrder: new Map(projects.map((project) => [project.projectId, project.catalogOrder])),
+    projectByPath: new Map(projects.flatMap((project) => project.rootPaths.map((path) => [normPath(path), project]))),
+    threadAssignments: globalState?.["thread-project-assignments"] || {},
+    threadOrders: globalState?.["sidebar-project-thread-orders"] || {},
+  };
+}
+function assignThreadProject(thread, projectState) {
+  const assignment = projectState.threadAssignments?.[thread.id] || {};
+  let projectId = String(assignment.projectId || "");
+  let project = projectId ? projectState.projects.find((item) => item.projectId === projectId) : null;
+  if (!project) {
+    const candidatePaths = [assignment.path, assignment.cwd, thread.cwd].map(normPath).filter(Boolean);
+    project = candidatePaths.map((path) => projectState.projectByPath.get(path)).find(Boolean) || null;
+    projectId = project?.projectId || "";
+  }
+  if (!project || !projectState.projectIds.has(projectId)) return null;
+  const orderedThreadIds = projectState.threadOrders?.[projectId]?.threadIds || [];
+  const sidebarOrder = orderedThreadIds.indexOf(thread.id);
+  return {
+    ...thread,
+    projectId,
+    projectPath: project.path,
+    cwd: project.path,
+    projectOrder: projectState.projectOrder.get(projectId) ?? 999999,
+    sidebarOrder: sidebarOrder >= 0 ? sidebarOrder : 999999,
+  };
+}
 async function main() {
   const codexHome = argValue("--codex-home", process.env.CODEX_HOME || join(homedir(), ".codex"));
   const output = argValue("--output", process.env.WPS_CONNECTOR_CATALOG_PATH || join(process.cwd(), "codex-catalog.snapshot.json"));
   const existing = await readExistingCatalog(output);
   const existingTitles = new Map((existing.threads || []).map((thread) => [thread.id, thread.title]).filter(([id]) => id));
   const globalState = await readGlobalState(codexHome);
-  const projectOrder = new Map((globalState?.["project-order"] || []).map((path, index) => [String(path).replace(/\/$/, ""), index]));
+  const projectState = orderedProjectState(globalState);
   const codexThreads = await readCodexThreadIndex(codexHome);
+  const activeThreadIds = new Set(codexThreads.rows.map((row) => String(row.id)));
   const appThreadTitles = new Map();
   for (const [id, meta] of await readCodexSessionIndex(codexHome)) appThreadTitles.set(id, meta);
   const files = await walk(join(codexHome, "sessions"));
@@ -196,6 +247,7 @@ async function main() {
   for (const file of files) await collectAppThreadTitles(file, appThreadTitles);
   for (const file of files) {
     const id = basename(file, ".jsonl").split("-").slice(-5).join("-");
+    if (activeThreadIds.size && !activeThreadIds.has(id)) continue;
     const thread = await parseThreadFile(file, existingTitles.get(id), globalState, codexThreads.byId.get(id), appThreadTitles);
     if (thread) parsed.push(thread);
   }
@@ -216,14 +268,23 @@ async function main() {
   }
   const threadMap = new Map();
   for (const thread of parsed) threadMap.set(thread.id, thread);
-  const threads = [...threadMap.values()].sort((a, b) => Number(a.catalogOrder ?? 999999) - Number(b.catalogOrder ?? 999999) || Date.parse(b.recencyAt || b.updatedAt) - Date.parse(a.recencyAt || a.updatedAt));
-  const projectMap = new Map();
-  for (const project of existing.projects || []) if (project?.path || project?.projectId) projectMap.set(project.path || project.projectId, project);
-  for (const thread of threads) if (thread.cwd) projectMap.set(thread.cwd, projectMap.get(thread.cwd) || projectFromCwd(thread.cwd));
-  const projects = [...projectMap.values()]
-    .map((project) => ({ ...project, catalogOrder: projectOrder.has(normPath(project.path || project.projectId)) ? projectOrder.get(normPath(project.path || project.projectId)) : 999999 }))
-    .sort((a, b) => Number(a.catalogOrder ?? 999999) - Number(b.catalogOrder ?? 999999) || String(a.label || a.projectId || "").localeCompare(String(b.label || b.projectId || ""), "zh-Hans-CN"));
-  const catalog = { updatedAt: isoLocal(), source: "local Codex state_5.sqlite + ~/.codex session scan", projects, threads };
+  const assignedThreads = [...threadMap.values()].map((thread) => assignThreadProject(thread, projectState)).filter(Boolean);
+  const threads = assignedThreads.sort((a, b) =>
+    Number(a.projectOrder ?? 999999) - Number(b.projectOrder ?? 999999)
+    || Number(a.sidebarOrder ?? 999999) - Number(b.sidebarOrder ?? 999999)
+    || Date.parse(b.recencyAt || b.updatedAt) - Date.parse(a.recencyAt || a.updatedAt)
+  );
+  const fallbackProjectMap = new Map();
+  for (const thread of threads) if (thread.cwd) fallbackProjectMap.set(thread.cwd, projectFromCwd(thread.cwd));
+  const projects = projectState.projects.length
+    ? projectState.projects
+    : [...fallbackProjectMap.values()].sort((a, b) => String(a.label || "").localeCompare(String(b.label || ""), "zh-Hans-CN"));
+  const catalog = {
+    updatedAt: isoLocal(),
+    source: "Codex project-order + pinned-project-ids + sidebar-project-thread-orders + active state_5.sqlite threads",
+    projects,
+    threads,
+  };
   await writeFile(output, `${JSON.stringify(catalog, null, 2)}\n`);
   console.log(JSON.stringify({ ok: true, output, projectCount: catalog.projects.length, threadCount: catalog.threads.length, updatedAt: catalog.updatedAt }, null, 2));
 }

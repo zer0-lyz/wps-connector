@@ -6,6 +6,7 @@ RUNTIME_ROOT="${WPS_CONNECTOR_RUNTIME_ROOT:-$HOME/.local/share/wps-connector/run
 PLUGIN_DIR="${WPS_CONNECTOR_PLUGIN_DIR:-$HOME/plugins/wps-connector}"
 
 mkdir -p "$RUNTIME_ROOT"
+bash "$SOURCE_DIR/scripts/sync-plugin-runtime-mac.sh"
 
 rsync -a --delete \
   --exclude '.git/' \
@@ -14,12 +15,14 @@ rsync -a --delete \
   --exclude 'test_logs/' \
   --exclude 'project-bindings.local.json' \
   --exclude 'codex-catalog.snapshot.json' \
+  --exclude 'et-wpp-table-syncs.local.json' \
   "$SOURCE_DIR/" "$RUNTIME_ROOT/"
 
 npm install --omit=dev --ignore-scripts --no-audit --no-fund --prefix "$RUNTIME_ROOT"
 
 if [ -f "$PLUGIN_DIR/.codex-plugin/plugin.json" ]; then
   mkdir -p "$PLUGIN_DIR/skills/wps-connector" "$PLUGIN_DIR/assets"
+  cp "$SOURCE_DIR/plugins/wps-connector/.codex-plugin/plugin.json" "$PLUGIN_DIR/.codex-plugin/plugin.json"
   if [ -f "$RUNTIME_ROOT/apps/wps-addin/icon.png" ]; then
     cp "$RUNTIME_ROOT/apps/wps-addin/icon.png" "$PLUGIN_DIR/assets/icon.png"
   fi

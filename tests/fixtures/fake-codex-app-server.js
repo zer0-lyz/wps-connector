@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { appendFileSync } from "node:fs";
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -32,6 +33,12 @@ lines.on("line", (line) => {
   }
   if (method === "thread/resume") return send({ jsonrpc: "2.0", id, result: { thread: { id: params.threadId, turns: [] } } });
   if (method === "turn/start") {
+    if (process.env.WPS_CONNECTOR_E2E_AGENT_CAPTURE) {
+      appendFileSync(
+        process.env.WPS_CONNECTOR_E2E_AGENT_CAPTURE,
+        `${String(params.input?.[0]?.text || "")}\n---PROMPT---\n`,
+      );
+    }
     send({ jsonrpc: "2.0", id, result: { turn: { id: "turn-live", status: "inProgress", items: [] } } });
     setTimeout(() => send({ jsonrpc: "2.0", method: "item/agentMessage/delta", params: { threadId: params.threadId, turnId: "turn-live", itemId: "agent-live", delta: "模拟" } }), 15);
     setTimeout(() => send({ jsonrpc: "2.0", method: "item/agentMessage/delta", params: { threadId: params.threadId, turnId: "turn-live", itemId: "agent-live", delta: "回复" } }), 30);

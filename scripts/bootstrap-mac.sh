@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN_NAME="wps-connector"
 PLUGIN_SOURCE="$ROOT_DIR/plugins/$PLUGIN_NAME"
-PLUGIN_TARGET="${WPS_CONNECTOR_PLUGIN_INSTALL_DIR:-$HOME/plugins/$PLUGIN_NAME}"
+PLUGIN_TARGET="${WPS_CONNECTOR_PLUGIN_INSTALL_DIR:-$HOME/.codex/plugins/cache/personal/$PLUGIN_NAME/0.2.0}"
 MARKETPLACE_PATH="${WPS_CONNECTOR_MARKETPLACE_PATH:-$HOME/.agents/plugins/marketplace.json}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -40,7 +40,7 @@ const path = require("node:path");
 const marketplacePath = process.env.MARKETPLACE_PATH;
 const pluginTarget = process.env.PLUGIN_TARGET;
 const pluginName = process.env.PLUGIN_NAME;
-const root = path.dirname(path.dirname(path.dirname(marketplacePath)));
+const root = path.dirname(path.dirname(marketplacePath));
 const relPath = `./${path.relative(root, pluginTarget).split(path.sep).join("/")}`;
 let data = { name: "personal", interface: { displayName: "Personal" }, plugins: [] };
 if (fs.existsSync(marketplacePath)) {
@@ -65,7 +65,10 @@ console.log(`Plugin source path: ${relPath}`);
 NODE
 
 if command -v codex >/dev/null 2>&1; then
-  codex plugin add "$PLUGIN_NAME@personal"
+  if ! codex plugin add "$PLUGIN_NAME@personal"; then
+    echo "Codex plugin registration could not be refreshed automatically; the plugin files were installed at $PLUGIN_TARGET." >&2
+    echo "Restart Codex after repairing any configured marketplace snapshot errors." >&2
+  fi
 else
   echo "Codex CLI was not found on PATH; skipped 'codex plugin add $PLUGIN_NAME@personal'." >&2
   echo "Install the plugin manually from: $MARKETPLACE_PATH" >&2

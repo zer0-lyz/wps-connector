@@ -6,11 +6,17 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { tools } from "../shared/toolSchemas.js";
+import { asMatrix, mapSyncRows, mergeRowsByKey, normalizeSyncConfig } from "../../vendor/connector-shared/tableSyncCore.js";
 import { CodexAgentClient } from "./codexAgent.js";
+import { connectorPlatformStatus, startConnectorPlatformHeartbeat } from "./connectorPlatform.js";
+import { pushAdapterState, reconcileAdapterState } from "../../vendor/connector-shared/connectorStateClient.js";
+import { deriveDesktopSyncStatus } from "../../vendor/connector-shared/modules/agent-chat/desktopSync.js";
+import { buildSourcePrompt } from "../../vendor/connector-shared/sourceMetadata.js";
 
 const host = process.env.WPS_CONNECTOR_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_PORT || 40215);
 const commandTimeoutMs = Number(process.env.WPS_CONNECTOR_COMMAND_TIMEOUT_MS || 60000);
+const activeContextRefreshMinIntervalMs = Number(process.env.WPS_CONNECTOR_ACTIVE_CONTEXT_REFRESH_MIN_INTERVAL_MS || 5000);
 const sessionOfflineMs = Number(process.env.WPS_CONNECTOR_SESSION_OFFLINE_MS || 30000);
 const sessionRetainOfflineMs = Number(process.env.WPS_CONNECTOR_SESSION_RETAIN_OFFLINE_MS || 300000);
 const maxOfflineSessions = Number(process.env.WPS_CONNECTOR_MAX_OFFLINE_SESSIONS || 200);
@@ -18,14 +24,19 @@ const addinUrl = (process.env.WPS_CONNECTOR_ADDIN_URL || "http://127.0.0.1:3891"
 const runtimeRoot = process.env.WPS_CONNECTOR_RUNTIME_ROOT || join(homedir(), ".local/share/wps-connector/runtime");
 const catalogPath = process.env.WPS_CONNECTOR_CATALOG_PATH || join(runtimeRoot, "codex-catalog.snapshot.json");
 const bindingsPath = process.env.WPS_CONNECTOR_BINDINGS_PATH || join(runtimeRoot, "project-bindings.local.json");
+const tableSyncsPath = process.env.WPS_CONNECTOR_TABLE_SYNCS_PATH || join(runtimeRoot, "et-wpp-table-syncs.local.json");
+const connectorPlatformUrl = (process.env.CONNECTOR_PLATFORM_URL || "http://127.0.0.1:40315").replace(/\/$/, "");
+const productUpdateCheckUrl = process.env.WPS_CONNECTOR_PRODUCT_UPDATE_URL || `${connectorPlatformUrl}/api/product`;
 const updateCheckUrl = process.env.WPS_CONNECTOR_UPDATE_CHECK_URL || "https://raw.githubusercontent.com/zer0-lyz/wps-connector/main/apps/wps-addin/main.js";
 const updateCheckFallbackUrl = process.env.WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL || "https://cdn.jsdelivr.net/gh/zer0-lyz/wps-connector@main/apps/wps-addin/main.js";
-const sourceRoot = process.env.WPS_CONNECTOR_SOURCE_ROOT || join(homedir(), ".local/share/wps-connector/source");
+const suiteSourceRoot = process.env.CONNECTOR_SUITE_SOURCE_ROOT || join(homedir(), "Code/connector-platform");
 const sessions = new Map();
 const commands = new Map();
 const paneViews = new Map();
 const execFileAsync = promisify(execFile);
 let bindingsStore = { bindings: [] };
+let tableSyncsStore = { sources: [], syncs: [] };
+let connectorStateStatus = { ok: false, mode: "local", revision: 0, error: "not reconciled" };
 let updateCheckCache = null;
 const codexAgent = new CodexAgentClient();
 let desktopSyncCache = { checkedAt: 0, value: null };
@@ -40,7 +51,24 @@ function sendJson(res, status, payload) {
   res.end(JSON.stringify(payload, null, 2));
 }
 function sendError(res, status, code, message, details = {}) { sendJson(res, status, { ok: false, error: { code, message, details } }); }
+async function readSystemClipboard() {
+  const env = { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
+  const { stdout } = await execFileAsync("/usr/bin/pbpaste", [], { timeout: 3000, maxBuffer: 1024 * 1024 * 8, encoding: "utf8", env });
+  return String(stdout || "");
+}
+async function writeSystemClipboard(text) {
+  await new Promise((resolve, reject) => {
+    const env = { ...process.env, LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
+    const child = spawn("/usr/bin/pbcopy", [], { stdio: ["pipe", "ignore", "pipe"], env });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => code === 0 ? resolve() : reject(new Error(stderr.trim() || `pbcopy exited with code ${code}`)));
+    child.stdin.end(String(text || ""));
+  });
+}
 function statusForError(error) {
+  if (Number.isFinite(Number(error?.status))) return Number(error.status);
   const code = String(error?.code || "");
   if (code === "AGENT_ORIGIN_REFUSED") return 403;
   if (code === "SESSION_HOST_MISMATCH" || code === "SESSION_BINDING_MISMATCH" || code === "BINDING_MISMATCH" || code === "SESSION_BINDING_REQUIRED" || code === "PROJECT_BINDING_REQUIRED" || code === "SESSION_OFFLINE" || code === "SESSION_WAITING_FOR_DOCUMENT" || code === "AMBIGUOUS_SESSION" || code === "AGENT_THREAD_BINDING_REQUIRED" || code === "AGENT_TURN_ACTIVE" || code === "AGENT_DESKTOP_SYNC_REQUIRED" || code.endsWith("_REFUSED")) return 409;
@@ -98,7 +126,31 @@ function bindingMatches(session, requested) {
   });
 }
 async function loadBindings() { try { const raw = await readFile(bindingsPath, "utf8"); const json = JSON.parse(raw); bindingsStore = { bindings: Array.isArray(json.bindings) ? json.bindings : [] }; } catch { bindingsStore = { bindings: [] }; } }
-async function saveBindings() { await mkdir(dirname(bindingsPath), { recursive: true }); await writeFile(bindingsPath, `${JSON.stringify(bindingsStore, null, 2)}\n`); }
+async function writeBindingsLocal() { await mkdir(dirname(bindingsPath), { recursive: true }); await writeFile(bindingsPath, `${JSON.stringify(bindingsStore, null, 2)}\n`); }
+async function loadTableSyncs() {
+  try {
+    const raw = await readFile(tableSyncsPath, "utf8");
+    const json = JSON.parse(raw);
+    tableSyncsStore = { sources: Array.isArray(json.sources) ? json.sources : [], syncs: Array.isArray(json.syncs) ? json.syncs : [] };
+  } catch {
+    tableSyncsStore = { sources: [], syncs: [] };
+  }
+}
+async function writeTableSyncsLocal() { await mkdir(dirname(tableSyncsPath), { recursive: true }); await writeFile(tableSyncsPath, `${JSON.stringify(tableSyncsStore, null, 2)}\n`); }
+function connectorStateSnapshot() { return { bindings: bindingsStore.bindings, tableSyncs: tableSyncsStore }; }
+async function pushConnectorState() { connectorStateStatus = await pushAdapterState("WPS", connectorStateSnapshot()); return connectorStateStatus; }
+async function saveBindings() { await writeBindingsLocal(); await pushConnectorState(); }
+async function saveTableSyncs() { await writeTableSyncsLocal(); await pushConnectorState(); }
+async function reconcileConnectorState() {
+  const result = await reconcileAdapterState("WPS", connectorStateSnapshot());
+  connectorStateStatus = result;
+  if (!result.ok) return result;
+  bindingsStore = { bindings: result.state.bindings };
+  tableSyncsStore = result.state.tableSyncs;
+  await writeBindingsLocal();
+  await writeTableSyncsLocal();
+  return result;
+}
 function findBindingForSession(session) {
   const key = canonicalDocumentKey(documentKeyFor(session));
   return bindingsStore.bindings.find((binding) => canonicalDocumentKey(binding.documentKey) === key) || null;
@@ -130,7 +182,8 @@ function agentBindingForSession(sessionId) {
 function setPaneView(sessionId, view) {
   const session = sessions.get(sessionId);
   if (!session) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
-  const state = { view: view === "agent" ? "agent" : "connector", updatedAt: nowIso() };
+  const normalizedView = view === "agent" ? "agent" : view === "sync" ? "sync" : "connector";
+  const state = { view: normalizedView, updatedAt: nowIso() };
   paneViews.set(sessionId, state);
   return state;
 }
@@ -161,22 +214,65 @@ async function desktopSyncStatus() {
   const lines = commands.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const desktopRunning = lines.some((line) => line === "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT" || line.includes("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT "));
   const privateAppServerActive = lines.some((line) => line.includes("/Applications/ChatGPT.app/Contents/Resources/codex") && line.includes(" app-server") && line.includes("--analytics-default-enabled") && !line.includes("--listen"));
-  const value = {
-    ready: desktopRunning && !privateAppServerActive && transport.connected,
+  const value = deriveDesktopSyncStatus({
+    transport,
     desktopRunning,
     privateAppServerActive,
     launchSettingEnabled: launchSetting === "1",
-    restartRequired: desktopRunning && privateAppServerActive,
-  };
+  });
   desktopSyncCache = { checkedAt: Date.now(), value };
-  return { ...transport, ...value };
+  return value;
 }
+
+function summarizeAgentContext(session, contextOverride = null) {
+  const context = contextOverride || session.activeContext || {};
+  if (session.host === "et") {
+    return [
+      context.sheetName ? `Sheet: ${context.sheetName}` : "",
+      context.address ? `Range: ${context.address}` : "",
+      Number(context.rowCount) && Number(context.columnCount)
+        ? `Size: ${context.rowCount} 行 x ${context.columnCount} 列`
+        : "",
+    ].filter(Boolean).join("; ") || "未读取到 WPS 表格选区";
+  }
+  if (session.host === "wpp") {
+    const preview = String(context.text || context.textPreview || context.previewText || "").slice(0, 160);
+    return Number(context.length) > 0
+      ? `Selection: ${context.length} 字; Position: ${context.start ?? "?"}-${context.end ?? "?"}; Preview: ${preview}`
+      : "WPS 文字当前无选中文本 / 插入点位置";
+  }
+  return JSON.stringify(context || {});
+}
+
+function buildAgentPrompt(session, binding, userText) {
+  const scope = session.operationScope || { mode: "document", context: null };
+  const scopeText = scope.mode === "selection"
+    ? `已确认选区：${summarizeAgentContext(session, scope.context || session.activeContext)}`
+    : "未确认选区：默认按用户指令全局操作；若用户说当前选区，则使用下面 Current context。";
+  return buildSourcePrompt({
+    connector: "WPS",
+    host: session.host === "wpp" ? "WPS Writer" : session.host === "et" ? "WPS Spreadsheet" : session.host,
+    document: session.documentName || "",
+    sessionId: session.sessionId,
+    documentKey: session.documentKey || documentKeyFor(session),
+    bindingId: binding.bindingId || "",
+    threadId: binding.threadId || "",
+    project: binding.projectName || binding.projectPath || binding.projectId || "",
+    currentContext: summarizeAgentContext(session),
+    operationScope: scopeText,
+  }, userText);
+}
+
 async function assertAgentSyncReady() {
   const sync = await desktopSyncStatus();
   if (!sync.ready && sync.desktopSyncRequired && process.env.WPS_CONNECTOR_AGENT_ALLOW_UNSYNCED !== "1") {
     throw {
       code: "AGENT_DESKTOP_SYNC_REQUIRED",
-      message: sync.restartRequired ? "Codex Desktop 仍在使用旧的独立会话通道。请重启 Codex Desktop 后再发送。" : "Codex Desktop 尚未连接共享会话通道。请先启动或重启 Codex Desktop。",
+      message: sync.configurationRequired
+        ? "Codex Desktop 尚未启用共享会话通道，请先运行 Connector Suite 桌面通道配置。"
+        : sync.restartRequired
+          ? "共享会话通道已配置，请重启 Codex Desktop 一次后再发送。"
+          : "Codex Desktop 共享会话通道尚未连接，请检查 Connector 服务状态。",
       details: sync,
     };
   }
@@ -184,6 +280,20 @@ async function assertAgentSyncReady() {
 }
 async function loadCatalog() { try { const raw = await readFile(catalogPath, "utf8"); const json = JSON.parse(raw); return { projects: Array.isArray(json.projects) ? json.projects : [], threads: Array.isArray(json.threads) ? json.threads : [], updatedAt: json.updatedAt || "", source: json.source || "" }; } catch { return { projects: [], threads: [], updatedAt: "", source: "" }; } }
 async function refreshCatalog() {
+  try {
+    const response = await fetch(`${connectorPlatformUrl}/api/catalog`);
+    const json = await response.json();
+    if (!response.ok || !json.ok) throw new Error(json.error?.message || `HTTP ${response.status}`);
+    const catalog = {
+      updatedAt: json.updatedAt || nowIso(),
+      source: json.source || "connector-platform",
+      projects: Array.isArray(json.projects) ? json.projects : [],
+      threads: Array.isArray(json.threads) ? json.threads : [],
+    };
+    await mkdir(dirname(catalogPath), { recursive: true });
+    await writeFile(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+    return catalog;
+  } catch {}
   const script = join(process.cwd(), "scripts/sync-codex-catalog.js");
   await execFileAsync(process.execPath, [script, "--output", catalogPath], { env: { ...process.env, WPS_CONNECTOR_CATALOG_PATH: catalogPath }, maxBuffer: 1024 * 1024 * 20 });
   return loadCatalog();
@@ -216,28 +326,49 @@ async function fetchUpdateSource(url, timeoutMs) {
     clearTimeout(timer);
   }
 }
+function parseProductVersion(source = "") {
+  const product = JSON.parse(source);
+  const version = String(product.productVersion || "");
+  if (!version) throw new Error("Connector Suite 产品信息缺少 productVersion");
+  return { version, build: String(product.build || "") };
+}
 async function checkForUpdates(input = {}) {
   const cacheMs = Number(process.env.WPS_CONNECTOR_UPDATE_CHECK_CACHE_MS || 300000);
   if (!queryBool(input.refresh, false) && updateCheckCache && Date.now() - updateCheckCache.checkedAtMs < cacheMs) return updateCheckCache.payload;
   const localPath = join(process.cwd(), "apps/wps-addin/main.js");
   const localSource = await readFile(localPath, "utf8");
   const current = parseConnectorVersion(localSource);
-  const payload = { current, latest: null, updateAvailable: false, versionState: "unknown", checkedAt: nowIso(), source: { localPath, updateCheckUrl, updateCheckFallbackUrl } };
+  const payload = {
+    current,
+    latest: null,
+    updateAvailable: false,
+    versionState: "unknown",
+    checkedAt: nowIso(),
+    source: { localPath, productUpdateCheckUrl, updateCheckUrl, updateCheckFallbackUrl },
+  };
   if (!queryBool(input.skipRemote, false)) {
     const timeoutMs = Number(process.env.WPS_CONNECTOR_UPDATE_CHECK_TIMEOUT_MS || 30000);
-    const urls = [updateCheckUrl, updateCheckFallbackUrl].filter(Boolean);
+    const sources = [
+      { kind: "product", url: productUpdateCheckUrl },
+      { kind: "legacy-wps", url: updateCheckUrl },
+      { kind: "legacy-wps", url: updateCheckFallbackUrl },
+    ].filter((item) => item.url);
     const failures = [];
-    for (const url of urls) {
+    for (const source of sources) {
       try {
-        payload.latest = parseConnectorVersion(await fetchUpdateSource(url, timeoutMs));
-        payload.source.remoteUrl = url;
+        const remoteSource = await fetchUpdateSource(source.url, timeoutMs);
+        payload.latest = source.kind === "product"
+          ? parseProductVersion(remoteSource)
+          : parseConnectorVersion(remoteSource);
+        payload.source.remoteUrl = source.url;
+        payload.source.remoteKind = source.kind;
         const comparison = payload.latest.version ? compareVersions(current.version, payload.latest.version) : 0;
         payload.versionState = comparison < 0 ? "update_available" : comparison > 0 ? "local_ahead" : "up_to_date";
         payload.updateAvailable = payload.versionState === "update_available";
         payload.warning = null;
         break;
       } catch (error) {
-        failures.push({ url, message: error.message || String(error) });
+        failures.push({ kind: source.kind, url: source.url, message: error.message || String(error) });
       }
     }
     if (!payload.latest?.version) {
@@ -251,15 +382,18 @@ async function checkForUpdates(input = {}) {
 function applyUpdate() {
   const logPath = join(runtimeRoot, "logs/update-apply.log");
   const command = [
-    `cd ${JSON.stringify(sourceRoot)}`,
-    "git fetch origin main",
-    "git pull --ff-only origin main",
-    "npm run deploy",
-    "npm run launchd:install"
+    `cd ${JSON.stringify(suiteSourceRoot)}`,
+    "npm run update:mac"
   ].join(" && ");
   const child = spawn("/bin/zsh", ["-lc", `mkdir -p ${JSON.stringify(join(runtimeRoot, "logs"))}; (${command}) >> ${JSON.stringify(logPath)} 2>&1`], { detached: true, stdio: "ignore" });
   child.unref();
-  return { started: true, sourceRoot, runtimeRoot, logPath, message: "更新安装已开始。文件和本地服务会更新，但当前 WPS 已加载的插件不会热替换；安装完成后请重启 WPS 使新版本生效。" };
+  return {
+    started: true,
+    suiteSourceRoot,
+    runtimeRoot,
+    logPath,
+    message: "Connector Suite 统一更新已开始。WPS、Office 和共享内核会一起更新；安装完成后请重启 WPS/Office 使新版插件生效。",
+  };
 }
 function sessionLastSeenMs(session) { const value = Date.parse(session.lastSeenAt || session.registeredAt || 0); return Number.isFinite(value) ? value : 0; }
 function pruneOfflineSessions() {
@@ -393,6 +527,34 @@ function commandInputWithScope(session, toolName, input = {}) {
 }
 function enqueueCommand(session, toolName, input) { const commandId = randomUUID(); const command = { commandId, sessionId: session.sessionId, toolName, input: commandInputWithScope(session, toolName, input), status: "queued", createdAt: nowIso() }; commands.set(commandId, command); session.queue.push(commandId); return command; }
 function waitForCommand(command) { return new Promise((resolve, reject) => { const timer = setTimeout(() => { command.status = "timed_out"; command.timedOutAt = nowIso(); command.error = { code: "COMMAND_TIMEOUT", message: `Command timed out after ${commandTimeoutMs}ms.` }; reject(command.error); }, commandTimeoutMs); command.resolve = (result) => { clearTimeout(timer); resolve(result); }; command.reject = (error) => { clearTimeout(timer); reject(error); }; }); }
+
+function publicCommand(command) {
+  return {
+    commandId: command.commandId,
+    sessionId: command.sessionId,
+    toolName: command.toolName,
+    status: command.status,
+    createdAt: command.createdAt,
+    deliveredAt: command.deliveredAt || null,
+    completedAt: command.completedAt || null,
+    timedOutAt: command.timedOutAt || null,
+    ageMs: Date.now() - Date.parse(command.createdAt || nowIso()),
+    error: command.error ? { code: command.error.code || "COMMAND_FAILED", message: command.error.message || String(command.error) } : null,
+  };
+}
+function commandDebugSummary() {
+  const all = [...commands.values()].sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0));
+  const active = all.filter((command) => ["queued", "delivered"].includes(command.status));
+  const byStatus = all.reduce((acc, command) => { acc[command.status] = (acc[command.status] || 0) + 1; return acc; }, {});
+  return {
+    total: all.length,
+    activeCount: active.length,
+    byStatus,
+    active: active.map(publicCommand),
+    recent: all.slice(0, 20).map(publicCommand),
+  };
+}
+
 function toolExists(toolName) {
   return tools.some((tool) => tool.name === toolName);
 }
@@ -568,10 +730,265 @@ async function connectionStatus(input = {}) {
     }
   };
 }
+
+function tableSyncError(code, message, details = {}, status = 400) { throw { code, message, details, status }; }
+function findOnlineHostSession(hostPrefix, sessionId = "") {
+  pruneOfflineSessions();
+  if (sessionId) {
+    const session = sessions.get(sessionId);
+    if (!session || session.status !== "online") return null;
+    return String(session.host || "").startsWith(hostPrefix) ? session : null;
+  }
+  return [...sessions.values()]
+    .filter((session) => session.status === "online" && String(session.host || "").startsWith(hostPrefix))
+    .sort((a, b) => sessionLastSeenMs(b) - sessionLastSeenMs(a))[0] || null;
+}
+function findOnlineDocumentSession(hostPrefix, documentKey = "") {
+  pruneOfflineSessions();
+  const key = canonicalDocumentKey(documentKey);
+  return [...sessions.values()]
+    .filter((session) => session.status === "online" && String(session.host || "").startsWith(hostPrefix))
+    .find((session) => canonicalDocumentKey(session.documentKey || documentKeyFor(session)) === key) || null;
+}
+async function runSessionCommand(session, toolName, input = {}) {
+  if (!session || session.status !== "online") tableSyncError("SESSION_OFFLINE", "目标 WPS 文档不在线，请打开对应面板后重试。", { toolName, sessionId: session?.sessionId }, 409);
+  const command = enqueueCommand(session, toolName, { ...input, sessionId: session.sessionId });
+  const result = await waitForCommand(command);
+  return { command, result };
+}
+function normalizeWpsMatrix(value) {
+  if (!Array.isArray(value)) return [[value ?? ""]];
+  if (!Array.isArray(value[0])) return [value.map((cell) => cell ?? "")];
+  return asMatrix(value);
+}
+function localEtAddress(sheetName, address) {
+  const raw = String(address || "").trim();
+  if (!raw) return "";
+  const bangIndex = raw.lastIndexOf("!");
+  if (bangIndex < 0) return raw;
+  const prefix = raw.slice(0, bangIndex).replace(/^'|'$/g, "");
+  const expectedSheet = String(sheetName || "").replace(/^'|'$/g, "").trim();
+  return !expectedSheet || prefix === expectedSheet || prefix.endsWith(`]${expectedSheet}`) ? raw.slice(bangIndex + 1) : raw;
+}
+function defaultEtWppDataSourceName(documentKey, sheetName, address) {
+  const sources = tableSyncsStore.sources.filter((item) => item.documentKey === documentKey);
+  const usedNumbers = sources.map((item) => String(item.name || "").match(/^表\s*(\d+)-/)).filter(Boolean).map((match) => Number(match[1])).filter((value) => Number.isInteger(value) && value > 0);
+  const nextNumber = usedNumbers.length ? Math.max(...usedNumbers) + 1 : 1;
+  const sheet = String(sheetName || "Sheet").trim() || "Sheet";
+  return `表 ${nextNumber}-${sheet}：${localEtAddress(sheet, address) || "当前选区"}`;
+}
+function publicEtWppDataSource(source) {
+  const boundSyncs = tableSyncsStore.syncs.filter((sync) => (sync.sourceId || "") === source.sourceId).map((sync) => ({
+    syncId: sync.syncId,
+    name: sync.name || "",
+    wppDocumentName: sync.target?.documentName || "",
+    wppTableIndex: sync.target?.fallbackTableIndex ?? null,
+    lastSyncedAt: sync.lastSyncedAt || null,
+  }));
+  return {
+    sourceId: source.sourceId,
+    name: source.name || "",
+    etDocumentKey: source.documentKey || "",
+    etDocumentName: source.documentName || "",
+    sheetName: source.sheetName || "",
+    address: localEtAddress(source.sheetName, source.address),
+    rowCount: Number(source.rowCount || 0),
+    columnCount: Number(source.columnCount || 0),
+    status: boundSyncs.length ? "bound" : "pending",
+    boundSyncs,
+    createdAt: source.createdAt,
+    updatedAt: source.updatedAt,
+  };
+}
+function publicEtWppTableSync(sync) {
+  return {
+    syncId: sync.syncId,
+    modelVersion: sync.modelVersion || 2,
+    name: sync.name || "",
+    sourceId: sync.sourceId || "",
+    source: sync.source || null,
+    target: sync.target || null,
+    valueSource: sync.valueSource || "values",
+    allowStructuralChanges: Boolean(sync.allowStructuralChanges),
+    config: sync.config || null,
+    createdAt: sync.createdAt,
+    updatedAt: sync.updatedAt,
+    lastSyncedAt: sync.lastSyncedAt || null,
+    lastSyncSummary: sync.lastSyncSummary || null,
+  };
+}
+async function createEtWppDataSource(input = {}) {
+  const etSession = findOnlineHostSession("et", input.etSessionId || input.sessionId);
+  if (!etSession) tableSyncError("NO_ACTIVE_ET_SESSION", "当前没有在线的 WPS 表格会话。", {}, 404);
+  let sheetName = input.sheetName || "";
+  let address = input.address || "";
+  let values = null;
+  let selection = null;
+  if (!address || input.refreshSelection === true) {
+    const selected = await runSessionCommand(etSession, "et.read_selection", { sessionId: etSession.sessionId });
+    selection = selected.result;
+    sheetName = input.sheetName || selection.sheetName || sheetName;
+    address = input.address || selection.address || address;
+    values = selection.values;
+  }
+  if (!address) tableSyncError("ET_SELECTION_REQUIRED", "请先在 WPS 表格中选择要同步的数据区域。", { sessionId: etSession.sessionId }, 400);
+  const read = values ? null : await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName, address });
+  const rows = normalizeWpsMatrix(values ?? read?.result?.values);
+  const sourceId = input.sourceId || randomUUID();
+  const existingIndex = tableSyncsStore.sources.findIndex((source) => source.sourceId === sourceId);
+  const previous = existingIndex >= 0 ? tableSyncsStore.sources[existingIndex] : null;
+  const now = nowIso();
+  const source = {
+    sourceId,
+    name: String(input.name || "").trim() || previous?.name || defaultEtWppDataSourceName(etSession.documentKey || documentKeyFor(etSession), sheetName, address),
+    documentKey: etSession.documentKey || documentKeyFor(etSession),
+    documentName: etSession.documentName,
+    sheetName: sheetName || read?.result?.sheetName || "",
+    address: localEtAddress(sheetName, address),
+    rowCount: rows.length,
+    columnCount: Math.max(0, ...rows.map((row) => row.length)),
+    createdAt: previous?.createdAt || now,
+    updatedAt: now,
+  };
+  if (existingIndex >= 0) tableSyncsStore.sources[existingIndex] = source; else tableSyncsStore.sources.push(source);
+  await saveTableSyncs();
+  return { created: existingIndex < 0, source: publicEtWppDataSource(source), selection, preview: { values: rows.slice(0, 5), rowCount: source.rowCount, columnCount: source.columnCount } };
+}
+async function unbindEtWppDataSource(input = {}) {
+  const sourceId = String(input.sourceId || "").trim();
+  if (!sourceId) tableSyncError("ET_WPP_DATA_SOURCE_ID_REQUIRED", "sourceId is required.");
+  const removedSyncs = tableSyncsStore.syncs.filter((sync) => (sync.sourceId || "") === sourceId && (!input.syncId || sync.syncId === input.syncId));
+  if (!removedSyncs.length) tableSyncError("ET_WPP_BINDING_NOT_FOUND", "未找到对应的 WPS 表格-文字绑定。", { sourceId, syncId: input.syncId || "" }, 404);
+  tableSyncsStore.syncs = tableSyncsStore.syncs.filter((sync) => !removedSyncs.includes(sync));
+  await saveTableSyncs();
+  const source = tableSyncsStore.sources.find((item) => item.sourceId === sourceId);
+  return { unbound: true, sourceId, removedSyncIds: removedSyncs.map((sync) => sync.syncId), removedCount: removedSyncs.length, source: source ? publicEtWppDataSource(source) : null };
+}
+async function deleteEtWppDataSource(input = {}) {
+  const sourceId = String(input.sourceId || "").trim();
+  if (!sourceId) tableSyncError("ET_WPP_DATA_SOURCE_ID_REQUIRED", "sourceId is required.");
+  const source = tableSyncsStore.sources.find((item) => item.sourceId === sourceId);
+  if (!source) tableSyncError("ET_WPP_DATA_SOURCE_NOT_FOUND", `WPS 表格数据源不存在：${sourceId}`, { sourceId }, 404);
+  const bound = tableSyncsStore.syncs.filter((sync) => (sync.sourceId || "") === sourceId);
+  if (bound.length) tableSyncError("ET_WPP_DATA_SOURCE_STILL_BOUND", "请先解除文字表格绑定，再删除该数据源。", { sourceId, boundSyncIds: bound.map((sync) => sync.syncId) }, 409);
+  tableSyncsStore.sources = tableSyncsStore.sources.filter((item) => item.sourceId !== sourceId);
+  await saveTableSyncs();
+  return { deleted: true, sourceId };
+}
+async function createEtWppTableSync(input = {}) {
+  const registeredSource = input.sourceId ? tableSyncsStore.sources.find((source) => source.sourceId === input.sourceId) : null;
+  if (input.sourceId && !registeredSource) tableSyncError("ET_WPP_DATA_SOURCE_NOT_FOUND", `WPS 表格数据源不存在：${input.sourceId}`, {}, 404);
+  const etSession = registeredSource ? findOnlineDocumentSession("et", registeredSource.documentKey) : findOnlineHostSession("et", input.etSessionId);
+  if (!etSession) tableSyncError("NO_ACTIVE_ET_SESSION", "源 WPS 表格文档不在线。", {}, 404);
+  const wppSession = findOnlineHostSession("wpp", input.wppSessionId || input.wordSessionId);
+  if (!wppSession) tableSyncError("NO_ACTIVE_WPP_SESSION", "目标 WPS 文字文档不在线。", {}, 404);
+  const tableIndex = Math.max(0, Math.floor(Number(input.wppTableIndex ?? input.wordTableIndex ?? input.tableIndex ?? 0)));
+  const sourceRead = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: registeredSource?.sheetName || input.sheetName, address: registeredSource?.address || input.address });
+  const sourceRows = normalizeWpsMatrix(sourceRead.result?.values);
+  const tableRead = await runSessionCommand(wppSession, "wpp.list_tables", { sessionId: wppSession.sessionId, includeValues: false, maxTables: 200 });
+  const targetTable = (tableRead.result?.tables || []).find((table) => Number(table.tableIndex ?? table.index) === tableIndex);
+  if (!targetTable) tableSyncError("WPP_TABLE_NOT_FOUND", "目标 WPS 文字表格不存在。", { tableIndex, tableCount: tableRead.result?.count || 0 }, 404);
+  const config = normalizeSyncConfig(input, Math.max(0, ...sourceRows.map((row) => row.length)), Number(targetTable.columnCount || 0));
+  const syncId = input.syncId || randomUUID();
+  const existingIndex = tableSyncsStore.syncs.findIndex((item) => item.syncId === syncId);
+  const previous = existingIndex >= 0 ? tableSyncsStore.syncs[existingIndex] : null;
+  const now = nowIso();
+  const sync = {
+    syncId,
+    modelVersion: 2,
+    name: String(input.name || "").trim() || registeredSource?.name || "WPS 表格同步",
+    sourceId: registeredSource?.sourceId || input.sourceId || "",
+    source: { documentKey: etSession.documentKey || documentKeyFor(etSession), documentName: etSession.documentName, sheetName: sourceRead.result?.sheetName || registeredSource?.sheetName || input.sheetName || "", address: localEtAddress(sourceRead.result?.sheetName || registeredSource?.sheetName || input.sheetName, registeredSource?.address || input.address) },
+    target: { documentKey: wppSession.documentKey || documentKeyFor(wppSession), documentName: wppSession.documentName, fallbackTableIndex: tableIndex, anchorTag: `wps-sync-${syncId}` },
+    valueSource: input.valueSource || "values",
+    allowStructuralChanges: input.allowStructuralChanges !== false,
+    config,
+    createdAt: previous?.createdAt || now,
+    updatedAt: now,
+    lastSyncedAt: previous?.lastSyncedAt || null,
+    lastSyncSummary: previous?.lastSyncSummary || null,
+  };
+  if (existingIndex >= 0) tableSyncsStore.syncs[existingIndex] = sync; else tableSyncsStore.syncs.push(sync);
+  await saveTableSyncs();
+  return { created: existingIndex < 0, mapping: publicEtWppTableSync(sync), sourceShape: { rowCount: sourceRows.length, columnCount: Math.max(0, ...sourceRows.map((row) => row.length)) }, targetTable };
+}
+async function insertEtWppDataSource(input = {}) {
+  const source = tableSyncsStore.sources.find((item) => item.sourceId === input.sourceId);
+  if (!source) tableSyncError("ET_WPP_DATA_SOURCE_NOT_FOUND", `WPS 表格数据源不存在：${input.sourceId}`, {}, 404);
+  const etSession = findOnlineDocumentSession("et", source.documentKey);
+  if (!etSession) tableSyncError("NO_ACTIVE_ET_SESSION", "源 WPS 表格文档不在线。", {}, 409);
+  const wppSession = findOnlineHostSession("wpp", input.wppSessionId || input.wordSessionId);
+  if (!wppSession) tableSyncError("NO_ACTIVE_WPP_SESSION", "目标 WPS 文字文档不在线。", {}, 409);
+  const read = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: source.sheetName, address: source.address });
+  const rows = normalizeWpsMatrix(read.result?.values);
+  if (!rows.length || !rows[0]?.length) tableSyncError("EMPTY_ET_RANGE", "源 WPS 表格区域为空，无法插入。", { sourceId: source.sourceId });
+  const inserted = await runSessionCommand(wppSession, "wpp.insert_table", { sessionId: wppSession.sessionId, rowCount: rows.length, columnCount: Math.max(1, ...rows.map((row) => row.length)), values: rows, border: input.border === true, headerRowBold: false, releaseSelection: true, ensureTrailingParagraph: true });
+  const oneBased = Number(inserted.result?.tableIndex || 1);
+  const binding = await createEtWppTableSync({ sourceId: source.sourceId, etSessionId: etSession.sessionId, wppSessionId: wppSession.sessionId, wppTableIndex: Math.max(0, oneBased - 1), name: source.name, allowStructuralChanges: true, headerRowCount: Number(input.headerRowCount ?? 1), syncHeader: input.syncHeader !== false });
+  return { inserted: true, insert: inserted.result, binding };
+}
+async function syncEtWppTable(input = {}) {
+  const sync = tableSyncsStore.syncs.find((item) => item.syncId === input.syncId);
+  if (!sync) tableSyncError("ET_WPP_SYNC_NOT_FOUND", `WPS 表格-文字同步关系不存在：${input.syncId}`, {}, 404);
+  const etSession = findOnlineDocumentSession("et", sync.source?.documentKey);
+  const wppSession = findOnlineDocumentSession("wpp", sync.target?.documentKey);
+  if (!etSession || !wppSession) tableSyncError("ET_WPP_SYNC_SESSION_OFFLINE", "请同时打开源 WPS 表格和目标 WPS 文字文档，再同步。", { etOnline: Boolean(etSession), wppOnline: Boolean(wppSession), source: sync.source, target: sync.target }, 409);
+  const read = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: sync.source?.sheetName, address: sync.source?.address });
+  const rawSourceRows = normalizeWpsMatrix(read.result?.values);
+  if (!rawSourceRows.length || !rawSourceRows[0]?.length) tableSyncError("EMPTY_ET_RANGE", "映射的 WPS 表格区域为空。", { syncId: sync.syncId });
+  const tableRead = await runSessionCommand(wppSession, "wpp.list_tables", { sessionId: wppSession.sessionId, includeValues: true, maxTables: 200, maxRows: 500, maxColumns: 200 });
+  const targetTable = (tableRead.result?.tables || []).find((table) => Number(table.tableIndex ?? table.index) === Number(sync.target?.fallbackTableIndex ?? 0));
+  if (!targetTable) tableSyncError("WPP_SYNC_TARGET_MISSING", "映射的 WPS 文字表格不存在。", { syncId: sync.syncId, tableCount: tableRead.result?.count || 0 }, 409);
+  const config = normalizeSyncConfig({ ...(sync.config || {}), ...(input.config || {}), ...input }, Math.max(0, ...rawSourceRows.map((row) => row.length)), Number(targetTable.columnCount || 0));
+  const mapped = mapSyncRows(rawSourceRows, config);
+  const targetColumnCount = Number(targetTable.columnCount || config.columnMapping.length || Math.max(0, ...rawSourceRows.map((row) => row.length)));
+  let finalRows = mapped.valuesForTarget;
+  let rowMerge = { enabled: false, reason: "header only or disabled" };
+  if (!config.syncHeader) {
+    rowMerge = mergeRowsByKey(mapped.mappedDataRows, targetTable.values || [], config, targetColumnCount);
+    finalRows = rowMerge.rows;
+  }
+  if (input.previewOnly) {
+    return { previewOnly: true, syncId: sync.syncId, sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: targetTable.rowCount, columnCount: targetTable.columnCount }, rowMerge, values: finalRows.slice(0, 20), valueCount: finalRows.length };
+  }
+  const replace = await runSessionCommand(wppSession, "wpp.replace_table_values", { sessionId: wppSession.sessionId, tableIndex: sync.target?.fallbackTableIndex || 0, values: finalRows, allowStructuralChanges: sync.allowStructuralChanges !== false, headerRowCount: config.headerRowCount, syncHeader: config.syncHeader });
+  const now = nowIso();
+  sync.config = config;
+  sync.lastSyncedAt = now;
+  sync.updatedAt = now;
+  sync.lastSyncSummary = { rowCount: finalRows.length, columnCount: targetColumnCount, rowMerge, replaced: replace.result };
+  await saveTableSyncs();
+  return { synced: true, syncId: sync.syncId, mapping: publicEtWppTableSync(sync), sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: replace.result?.rowCount, columnCount: replace.result?.columnCount }, rowMerge, replace: replace.result };
+}
+
 async function runTool(toolName, input) {
   if (toolName === "wps.list_sessions") return { sessions: listSessions(input) };
   if (toolName === "wps.connection_status") return connectionStatus(input);
   if (toolName === "wps.batch") return runBatch(input);
+  if (toolName === "wps.create_et_wpp_data_source") return createEtWppDataSource(input || {});
+  if (toolName === "wps.list_et_wpp_data_sources") {
+    const items = tableSyncsStore.sources.map(publicEtWppDataSource).filter((source) => !input?.status || source.status === input.status);
+    return { sources: items, count: items.length };
+  }
+  if (toolName === "wps.delete_et_wpp_data_source") return deleteEtWppDataSource(input || {});
+  if (toolName === "wps.unbind_et_wpp_data_source") return unbindEtWppDataSource(input || {});
+  if (toolName === "wps.create_et_wpp_table_sync") return createEtWppTableSync(input || {});
+  if (toolName === "wps.insert_et_wpp_data_source") return insertEtWppDataSource(input || {});
+  if (toolName === "wps.list_et_wpp_table_syncs") {
+    const syncs = tableSyncsStore.syncs.map(publicEtWppTableSync).filter((sync) => !input?.sourceId || sync.sourceId === input.sourceId);
+    return { syncs, count: syncs.length };
+  }
+  if (toolName === "wps.sync_et_wpp_table") return syncEtWppTable(input || {});
+  const localSyncPrimitiveTools = new Set(["et.select_range", "et.inspect_sheet_overlays", "et.delete_sheet_overlays", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values", "wpp.ensure_table_sync_anchor", "wpp.resolve_table_sync_anchor"]);
+  if (localSyncPrimitiveTools.has(toolName)) {
+    const expectedHost = expectedHostForTool(toolName);
+    const session = findOnlineHostSession(expectedHost, input?.sessionId);
+    if (!session) throw { code: "SESSION_NOT_FOUND", message: `No online WPS session found for ${toolName}.` };
+    assertSessionHost(session, expectedHost, toolName);
+    const command = enqueueCommand(session, toolName, input || {});
+    const result = await waitForCommand(command);
+    return { commandId: command.commandId, sessionId: session.sessionId, ...result };
+  }
   const expectedHost = expectedHostForTool(toolName);
   const session = selectSession(input, expectedHost, toolName);
   if (!session) throw { code: "SESSION_NOT_FOUND", message: `No online WPS session found for ${toolName}.` };
@@ -591,10 +1008,21 @@ async function handle(req, res) {
   const pathname = url.pathname;
   if (req.method === "OPTIONS") return sendJson(res, 200, { ok: true });
   try {
-    if (req.method === "GET" && pathname === "/api/health") return sendJson(res, 200, { ok: true, name: "wps-connector", time: nowIso() });
+    if (req.method === "GET" && pathname === "/api/health") return sendJson(res, 200, { ok: true, name: "wps-connector", time: nowIso(), connectorPlatform: connectorPlatformStatus(), connectorState: connectorStateStatus });
+    if (pathname === "/api/clipboard" && req.method === "GET") {
+      assertAgentOrigin(req);
+      return sendJson(res, 200, { ok: true, text: await readSystemClipboard() });
+    }
+    if (pathname === "/api/clipboard" && req.method === "POST") {
+      assertAgentOrigin(req);
+      const input = await readJson(req);
+      await writeSystemClipboard(input.text);
+      return sendJson(res, 200, { ok: true });
+    }
     if (req.method === "GET" && pathname === "/api/update/check") { const result = await checkForUpdates(Object.fromEntries(url.searchParams.entries())); return sendJson(res, 200, { ok: true, ...result }); }
     if (req.method === "POST" && pathname === "/api/update/apply") { return sendJson(res, 202, { ok: true, ...applyUpdate() }); }
     if (req.method === "GET" && pathname === "/api/tools/schema") return sendJson(res, 200, { ok: true, tools });
+    if (req.method === "GET" && pathname === "/api/debug/commands") return sendJson(res, 200, { ok: true, ...commandDebugSummary() });
     if (req.method === "POST" && pathname === "/api/catalog/refresh") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = await loadCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source }); }
@@ -614,7 +1042,8 @@ async function handle(req, res) {
       const text = String(body.text || "").trim();
       if (!text) return sendError(res, 400, "AGENT_MESSAGE_REQUIRED", "请输入要发送给 Agent 的内容。");
       const sync = await assertAgentSyncReady();
-      const run = await codexAgent.startTurn(binding.threadId, text, { cwd: binding.threadCwd || binding.projectPath || binding.projectId || "" });
+      const prompt = buildAgentPrompt(session, binding, text);
+      const run = await codexAgent.startTurn(binding.threadId, prompt, { cwd: binding.threadCwd || binding.projectPath || binding.projectId || "" });
       return sendJson(res, 202, { ok: true, sessionId: session.sessionId, documentName: session.documentName, threadId: binding.threadId, run, sync });
     }
     const agentStatus = /^\/api\/agent\/([^/]+)\/status$/.exec(pathname);
@@ -658,6 +1087,31 @@ async function handle(req, res) {
     if (sessionPaneView && req.method === "POST") { const body = await readJson(req); return sendJson(res, 200, { ok: true, sessionId: sessionPaneView[1], ...setPaneView(sessionPaneView[1], body.view) }); }
     const sessionScope = /^\/api\/sessions\/([^/]+)\/operation-scope$/.exec(pathname);
     if (sessionScope && req.method === "POST") { const session = sessions.get(sessionScope[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionScope[1]}`); const body = await readJson(req); const mode = body.mode === "selection" ? "selection" : "document"; session.operationScope = mode === "selection" ? { mode, confirmedAt: nowIso(), context: body.context || session.activeContext || {} } : { mode: "document", confirmedAt: nowIso() }; session.lastSeenAt = nowIso(); return sendJson(res, 200, { ok: true, session: publicSession(session), operationScope: session.operationScope }); }
+    const sessionRefreshContext = /^\/api\/sessions\/([^/]+)\/active-context\/refresh$/.exec(pathname);
+    if (sessionRefreshContext && req.method === "POST") {
+      const session = sessions.get(sessionRefreshContext[1]);
+      if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${sessionRefreshContext[1]}`);
+      if (session.status !== "online") return sendError(res, 409, "SESSION_OFFLINE", "Session is offline.", { sessionId: session.sessionId });
+      const tool = String(session.host || "").startsWith("et") ? "et.read_selection" : String(session.host || "").startsWith("wpp") ? "wpp.read_selection" : "";
+      if (!tool) return sendError(res, 400, "HOST_UNSUPPORTED", "Active context refresh is only supported for WPS ET/WPP sessions.", { host: session.host });
+      try {
+        const body = await readJson(req).catch(() => ({}));
+        const force = body.force === true;
+        const lastRefreshMs = Number(session.lastActiveContextRefreshMs || 0);
+        const elapsedMs = Date.now() - lastRefreshMs;
+        if (!force && session.activeContext && elapsedMs >= 0 && elapsedMs < activeContextRefreshMinIntervalMs) {
+          session.lastSeenAt = nowIso();
+          return sendJson(res, 200, { ok: true, session: publicSession(session), activeContext: session.activeContext, cached: true, nextRefreshAfterMs: activeContextRefreshMinIntervalMs - elapsedMs });
+        }
+        const commandResult = await runSessionCommand(session, tool, { sessionId: session.sessionId });
+        session.activeContext = commandResult.result || session.activeContext;
+        session.lastActiveContextRefreshMs = Date.now();
+        session.lastSeenAt = nowIso();
+        return sendJson(res, 200, { ok: true, session: publicSession(session), activeContext: session.activeContext, commandId: commandResult.command.commandId, cached: false });
+      } catch (error) {
+        return sendError(res, statusForError(error), error.code || "ACTIVE_CONTEXT_REFRESH_FAILED", error.message || String(error), error.details || {});
+      }
+    }
     const heartbeat = /^\/api\/sessions\/([^/]+)\/heartbeat$/.exec(pathname);
     if (req.method === "POST" && heartbeat) { const session = sessions.get(heartbeat[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${heartbeat[1]}`); const body = await readJson(req); session.status = "online"; session.lastSeenAt = nowIso(); session.activeContext = body.activeContext || session.activeContext; session.clientVersion = body.clientVersion || session.clientVersion || ""; session.clientBuild = body.clientBuild || session.clientBuild || ""; if (body.documentIdentity || body.documentName || body.documentPath || body.host) { session.documentIdentity = body.documentIdentity || session.documentIdentity; session.documentName = body.documentName || session.documentName; session.host = normalizeHost(body.host || session.host); session.documentKey = documentKeyFor(session); } session.binding = findBindingForSession(session) || session.binding || null; return sendJson(res, 200, { ok: true, session: publicSession(session) }); }
     const nextCommand = /^\/api\/sessions\/([^/]+)\/commands\/next$/.exec(pathname);
@@ -670,6 +1124,9 @@ async function handle(req, res) {
   } catch (error) { return sendError(res, statusForError(error), error.code || "INTERNAL_ERROR", error.message || String(error), error.details || {}); }
 }
 await loadBindings();
+await loadTableSyncs();
+await reconcileConnectorState();
 process.on("exit", () => codexAgent.close());
 codexAgent.ensureStarted().catch((error) => console.error(`[codex-agent] Shared transport preflight failed: ${error.message}`));
+startConnectorPlatformHeartbeat({ version: "0.2.0" });
 createServer(handle).listen(port, host, () => { console.error(`wps-connector bridge listening on http://${host}:${port}`); });

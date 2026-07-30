@@ -6,6 +6,7 @@
         <group id="wpsConnectorGroup" label="Connector">
           <button id="btnShowConnectorPane" label="连接面板" onAction="OnAction" getEnabled="OnGetEnabled" getImage="GetImage" visible="true" size="large"/>
           <button id="btnShowAgentChat" label="Agent 对话" onAction="OnAction" getEnabled="OnGetEnabled" getImage="GetImage" visible="true" size="large"/>
+          <button id="btnShowTableSync" label="表格同步" onAction="OnAction" getEnabled="OnGetEnabled" getImage="GetImage" visible="true" size="large"/>
         </group>
       </tab>
     </tabs>

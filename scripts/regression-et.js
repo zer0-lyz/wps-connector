@@ -1,6 +1,6 @@
 const bridgeUrl = process.env.WPS_CONNECTOR_BRIDGE_URL || 'http://127.0.0.1:40215';
 const requestedSessionId = process.env.WPS_SESSION_ID || '';
-const expectedClientVersion = process.env.WPS_EXPECTED_CLIENT_VERSION || '1.1.4';
+const expectedClientVersion = process.env.WPS_EXPECTED_CLIENT_VERSION || '0.2.0';
 const logSheetName = process.env.WPS_ET_LOG_SHEET || '__WPS_Test_Log__';
 let toolBinding = {};
 

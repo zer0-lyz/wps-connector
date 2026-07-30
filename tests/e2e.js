@@ -10,6 +10,7 @@ const port = 40216;
 const updatePort = 40218;
 const bridgeUrl = `http://127.0.0.1:${port}`;
 const updateUrl = `http://127.0.0.1:${updatePort}/main.js`;
+const agentCapturePath = `/tmp/wps-connector-agent-prompt-${process.pid}.txt`;
 const children = [];
 const servers = [];
 
@@ -130,11 +131,48 @@ async function main() {
   assert(externalTurnProbe.getRun("external-thread")?.delta === "外部回复" && externalTurnProbe.getRun("external-thread")?.status === "completed", "Agent client did not surface a turn started by Codex Desktop.");
   const pluginSkill = readFileSync("plugins/wps-connector/skills/wps-connector/SKILL.md", "utf8");
   assert(pluginSkill.includes("Two-Path Routing") && pluginSkill.includes("unsupported call") && pluginSkill.includes("restart WPS"), "Plugin skill missed mandatory automatic MCP fallback guidance.");
+  const catalogSyncScript = readFileSync("scripts/sync-codex-catalog.js", "utf8");
+  assert(catalogSyncScript.includes("pinned-project-ids") && catalogSyncScript.includes("project-order") && catalogSyncScript.includes("sidebar-project-thread-orders"), "Catalog sync must preserve Codex project and conversation sidebar order.");
+  assert(catalogSyncScript.includes("from threads where cwd<>'' and archived=0") && !catalogSyncScript.includes("for (const project of existing.projects"), "Catalog sync must exclude archived threads and stale projects from previous snapshots.");
   for (const deployScript of ["scripts/deploy-runtime-mac.sh", "plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh"]) {
     const source = readFileSync(deployScript, "utf8");
     assert(source.includes("--exclude 'project-bindings.local.json'"), `${deployScript} may delete saved bindings during deployment.`);
     assert(source.includes("--exclude 'codex-catalog.snapshot.json'"), `${deployScript} may delete the local catalog snapshot during deployment.`);
+    assert(source.includes("--exclude 'et-wpp-table-syncs.local.json'"), `${deployScript} may delete saved WPS table sync mappings during deployment.`);
   }
+  const paneHtml = readFileSync("apps/wps-addin/pane.html", "utf8");
+  assert(paneHtml.includes('id="connectorStatus"') && paneHtml.includes('id="agentView"') && paneHtml.includes('id="syncView"'), "pane.html must keep connector-view / agent-view / sync-view surfaces.");
+  assert(paneHtml.includes("agent-view") && paneHtml.includes("sync-view") && paneHtml.includes("loadSyncView"), "pane.html missed Agent or table sync UI wiring.");
+  assert(paneHtml.includes("user-select:text") && paneHtml.includes("copyTextToClipboard") && paneHtml.includes("navigator.clipboard") && paneHtml.includes('execCommand("copy")'), "pane.html must support selectable Agent messages and a WPS CEF clipboard fallback.");
+  assert(paneHtml.includes('id="agentPaste"') && paneHtml.includes("pasteAgentClipboard") && paneHtml.includes("/api/clipboard"), "pane.html must provide a bridge-backed paste action when WPS intercepts Cmd+V.");
+  assert(paneHtml.includes("currentSyncHost") && paneHtml.includes('setSyncPanelVisible("etSourceManager",mode!=="wpp")') && paneHtml.includes('setSyncPanelVisible("wppSyncManager",mode==="wpp")'), "pane.html must split WPS ET source UI from WPP sync UI.");
+  assert(paneHtml.includes("allowInsert:false") && paneHtml.includes("refreshActiveEtSelection") && paneHtml.includes("jump-source") && paneHtml.includes("表 ${next}-${sheet}：${addr}"), "pane.html missed ET-only source list behavior, Office-style naming, source jump, or on-demand selection refresh.");
+  assert(paneHtml.includes("wakeCommandPumpFor") && paneHtml.includes("wpsConnectorWakeCommandPump"), "pane.html must wake the WPS command pump only around explicit user actions.");
+  assert(paneHtml.includes("readContextForScope") && paneHtml.includes("force:true") && paneHtml.includes("读取并确认"), "Agent scope confirmation must read the current WPS selection on demand.");
+  assert(paneHtml.includes("loadSyncBindingsOnly") && paneHtml.includes("绑定状态已更新"), "Insert-and-bind must refresh local binding/source status without requiring a full WPP table scan.");
+  assert(paneHtml.includes("fetchPaneView()") && paneHtml.includes("wpsConnectorViewChanged"), "Open panes must switch between connector, Agent, and table sync views without recreating the pane.");
+  assert(paneHtml.includes('onlyOnline:"true"') && paneHtml.includes("state.sessions.length===1"), "Pane session loading must recover when its original session anchor disappears after a bridge restart.");
+  assert(paneHtml.includes('id="agentScopeValue"') && paneHtml.includes('id="agentClearScope"') && paneHtml.includes("operationScopeView"), "Agent pane must display the effective operation scope and provide an independent cancel action.");
+  assert(paneHtml.includes('WPS_CONNECTOR_PANE_VERSION="0.2.0"') && paneHtml.includes("20260729-operation-scope-0.2.0.5"), "pane.html must not keep stale pane version or stale main.js cache keys.");
+  assert(!paneHtml.includes('refreshActiveEtSelection({render:true}).catch'), "pane.html must not continuously poll ET selection because it can stall WPS Writer input.");
+  assert(!paneHtml.includes("仍在旧通道中，重启后可实时同步"), "Agent pane must not instruct endless Codex restarts when the shared transport is connected.");
+  assert(paneHtml.includes("configurationRequired") && paneHtml.includes("共享通道已配置，请重启 Codex Desktop 一次后测试"), "Agent pane must distinguish missing daemon configuration from one required Desktop restart.");
+  const wpsMain = readFileSync("apps/wps-addin/main.js", "utf8");
+  assert(wpsMain.includes("function wpsConnectorNormalizePaneView") && wpsMain.includes('input?.view'), "wps.open_pane must accept both ribbon string views and command object views.");
+  assert(wpsMain.includes("async function wpsConnectorOpenPane") && wpsMain.includes("await wpsConnectorRegister()") && wpsMain.includes("`${scope.documentKey}`") && !wpsMain.includes("wpsConnectorCurrentDocumentKey || scope.documentKey"), "Ribbon pane opening must refresh and anchor to the active document, not a stale cached document key.");
+  assert(wpsMain.includes("WPS_CONNECTOR_WPP_IDLE_POLL_INTERVAL_MS = 15000") && wpsMain.includes("WPS_CONNECTOR_WPP_HEARTBEAT_INTERVAL_MS = 30000"), "WPP command listener must be very low-frequency when idle.");
+  assert(wpsMain.includes("transport-only") && wpsMain.includes("do not re-read"), "WPP heartbeat must not touch Writer document objects while idle.");
+  assert(wpsMain.includes('host === "et"') && wpsMain.includes("Writer is sensitive after table insertion"), "WPP polling must not enumerate all Writer sessions or touch document identity on every poll.");
+  assert(wpsMain.includes("targetHasStableIdentity") && wpsMain.includes("await wpsConnectorRegister();"), "WPP must recover once from an empty document identity after bridge or add-in restart.");
+  const wpsServer = readFileSync("apps/bridge/server.js", "utf8");
+  assert(wpsServer.includes("buildSourcePrompt") && wpsServer.includes("buildAgentPrompt") && wpsServer.includes('connector: "WPS"'), "WPS Agent messages must use the shared connector source metadata contract.");
+  assert(wpsServer.includes("deriveDesktopSyncStatus") && wpsServer.includes("sync.configurationRequired"), "WPS Agent readiness must use the shared agent-chat module and require Desktop to join the shared daemon.");
+  assert(wpsServer.includes('pathname === "/api/clipboard"') && wpsServer.includes("/usr/bin/pbpaste") && wpsServer.includes("/usr/bin/pbcopy"), "WPS bridge must provide a local macOS clipboard fallback.");
+  assert(wpsServer.includes('`${connectorPlatformUrl}/api/product`') && wpsServer.includes('"npm run update:mac"'), "WPS update UI must use Connector Suite product status and the one-update command.");
+  const wpsAgent = readFileSync("apps/bridge/codexAgent.js", "utf8");
+  assert(wpsAgent.includes("displayTextFromPrompt") && wpsAgent.includes("sourceLabelFromPrompt") && wpsAgent.includes("sourceMeta"), "WPS Agent history must use the shared metadata parser while preserving sourceMeta.");
+  const ribbonXml = readFileSync("apps/wps-addin/ribbon.xml", "utf8");
+  for (const id of ["btnShowConnectorPane", "btnShowAgentChat", "btnShowTableSync"]) assert(ribbonXml.includes(id), `Ribbon missed ${id}.`);
   const updateServer = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
     res.end('const WPS_CONNECTOR_CLIENT_VERSION = "9.9.9";\nconst WPS_CONNECTOR_CLIENT_BUILD = "2099.01.01-test-update.1";\n');
@@ -143,13 +181,15 @@ async function main() {
   servers.push(updateServer);
   await once(updateServer, "listening");
 
-  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: JSON.stringify(["tests/fixtures/fake-codex-app-server.js"]) });
+  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-table-syncs-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: JSON.stringify(["tests/fixtures/fake-codex-app-server.js"]), WPS_CONNECTOR_E2E_AGENT_CAPTURE: agentCapturePath, CONNECTOR_PLATFORM_URL: "http://127.0.0.1:43998" });
   bridge.on("exit", (code) => {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
   await waitForHealth();
+  const commandDebugInitial = await requestAt(bridgeUrl, "/api/debug/commands");
+  assert(commandDebugInitial.ok === true && Array.isArray(commandDebugInitial.active) && Array.isArray(commandDebugInitial.recent), "Command debug endpoint did not return a safe command summary.");
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.1.4", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "0.2.0", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true && remoteUpdateCheck.versionState === "update_available", "Update check did not discover a newer remote version.");
 
@@ -158,6 +198,7 @@ async function main() {
   startNode(["apps/bridge/server.js"], {
     WPS_CONNECTOR_PORT: String(stalePort),
     WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-stale-bindings-${process.pid}.json`,
+    WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-stale-table-syncs-${process.pid}.json`,
     WPS_CONNECTOR_SESSION_OFFLINE_MS: "100",
     WPS_CONNECTOR_SESSION_RETAIN_OFFLINE_MS: "250",
     WPS_CONNECTOR_MAX_OFFLINE_SESSIONS: "5",
@@ -220,6 +261,8 @@ async function main() {
   assert(savedPaneView.view === "agent" && savedPaneView.updatedAt, "Pane view endpoint did not return the cross-context view state.");
   const connectorPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "connector" }) });
   assert(connectorPaneView.view === "connector", "Pane view endpoint did not switch back to the connector view.");
+  const syncPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "sync" }) });
+  assert(syncPaneView.view === "sync", "Pane view endpoint did not save the table sync view.");
 
   const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, WPS_CONNECTOR_MCP_EXPOSE_DOTTED: "true", CODEX_THREAD_ID: "", CODEX_THREAD: "" });
   const mcpClient = createMcpClient(mcp);
@@ -227,6 +270,8 @@ async function main() {
   assert(init.serverInfo?.name === "wps-connector", "MCP initialize returned unexpected server name.");
   const listedTools = await mcpClient.request("tools/list", {});
   assert(listedTools.tools.some((tool) => tool.name === "et.read_selection"), "MCP tools/list missed et.read_selection.");
+  assert(listedTools.tools.some((tool) => tool.name === "et.select_range"), "MCP tools/list missed et.select_range.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.select_table"), "MCP tools/list missed wpp.select_table.");
   assert(listedTools.tools.some((tool) => tool.name === "et.read_range"), "MCP tools/list missed et.read_range.");
   assert(listedTools.tools.some((tool) => tool.name === "et.save_workbook"), "MCP tools/list missed et.save_workbook.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
@@ -249,6 +294,7 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.duplicate_table_appearance"), "MCP tools/list missed wpp.duplicate_table_appearance.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_with_layout"), "MCP tools/list missed wpp.insert_table_with_layout.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.reset_table_layout"), "MCP tools/list missed wpp.reset_table_layout.");
+  for (const name of ["wps.create_et_wpp_data_source", "wps.list_et_wpp_data_sources", "wps.delete_et_wpp_data_source", "wps.unbind_et_wpp_data_source", "wps.create_et_wpp_table_sync", "wps.insert_et_wpp_data_source", "wps.list_et_wpp_table_syncs", "wps.sync_et_wpp_table", "et.select_range", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wps.connection_status"), "MCP tools/list missed wps.connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_connection_status"), "MCP tools/list missed underscore alias wps_connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_list_sessions"), "MCP tools/list missed underscore alias wps_list_sessions.");
@@ -288,6 +334,11 @@ async function main() {
     body: JSON.stringify({ binding: { projectId: "project-b", projectName: "Project B", projectPath: "/tmp/project-b", threadId: "thread-b" } }),
   });
   assert(bindWpp.binding?.threadId === "thread-b", "WPP binding was not saved.");
+  const agentSelectionScope = await request("/api/sessions/test-wpp-session/operation-scope", {
+    method: "POST",
+    body: JSON.stringify({ mode: "selection", context: { start: 0, end: 3, length: 3, textPreview: "原选区" } }),
+  });
+  assert(agentSelectionScope.operationScope?.mode === "selection", "Agent setup did not confirm the WPP selection scope.");
   const agentHistory = await request("/api/agent/test-wpp-session/history");
   assert(agentHistory.thread?.id === "thread-b" && agentHistory.messages?.length === 2, "Agent history did not read the bound Codex conversation.");
   assert(agentHistory.messages[0]?.role === "user" && agentHistory.messages[1]?.text === "历史回答", "Agent history did not normalize Codex messages.");
@@ -305,6 +356,25 @@ async function main() {
     await sleep(20);
   }
   assert(liveAgentStatus?.run?.status === "completed" && liveAgentStatus.run.finalText === "模拟回复" && liveAgentStatus.run.delta === "模拟回复", "Agent message did not stream and complete through the Codex App Server bridge.");
+  const selectionPrompt = readFileSync(agentCapturePath, "utf8");
+  assert(selectionPrompt.includes("SessionId: test-wpp-session") && selectionPrompt.includes("Operation scope: 已确认选区："), "Agent selection-mode prompt missed the exact session or confirmed operation scope.");
+
+  await request("/api/sessions/test-wpp-session/operation-scope", {
+    method: "POST",
+    body: JSON.stringify({ mode: "document" }),
+  });
+  const documentAgentMessage = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/message", {
+    method: "POST",
+    body: JSON.stringify({ text: "全局问题" }),
+  });
+  assert(documentAgentMessage.ok === true, "Agent message failed after cancelling the operation scope.");
+  for (let i = 0; i < 20; i += 1) {
+    liveAgentStatus = await requestAt(bridgeUrl, "/api/agent/test-wpp-session/status");
+    if (liveAgentStatus.run?.status === "completed") break;
+    await sleep(20);
+  }
+  const documentPrompt = readFileSync(agentCapturePath, "utf8");
+  assert(documentPrompt.includes("Operation scope: 未确认选区：默认按用户指令全局操作"), "Agent document-mode prompt did not report the cancelled operation scope.");
 
   const unboundExecution = await rawRequest("/api/tools/et/list_worksheets", { method: "POST", body: JSON.stringify({ sessionId: "test-et-large-selection" }) });
   assert(unboundExecution.ok === false && unboundExecution.error?.code === "PROJECT_BINDING_REQUIRED", "Unbound execution was not rejected.");
@@ -926,6 +996,40 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1, columnIndex: 2, count: 1 }),
   });
   assert(wppDeleteColumns.columnCount === 2, "WPP delete_table_columns did not update column count.");
+
+  await request("/api/tools/et/write_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", address: "A1:B3", values: [["Name", "Amount"], ["C", 300], ["E", 500]] }),
+  });
+  const tableSyncSource = await request("/api/tools/wps/create_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ etSessionId: "test-et-session", name: "测试同步源", sheetName: "Sheet1", address: "A1:B3" }),
+  });
+  assert(tableSyncSource.created === true && tableSyncSource.source?.status === "pending", "WPS ET-WPP data source was not created as pending.");
+  const tableSyncSources = await request("/api/tools/wps/list_et_wpp_data_sources", { method: "POST", body: JSON.stringify({}) });
+  assert(tableSyncSources.sources.some((source) => source.sourceId === tableSyncSource.source.sourceId), "WPS ET-WPP source list missed the created source.");
+  const tableSyncJump = await request("/api/tools/et/select_range", { method: "POST", body: JSON.stringify({ sessionId: "test-et-session", sheetName: "Sheet1", address: "A1:B3" }) });
+  assert(tableSyncJump.selected === true && tableSyncJump.address === "A1:B3", "WPS ET source jump did not select the saved source range.");
+  const tableSyncMapping = await request("/api/tools/wps/create_et_wpp_table_sync", {
+    method: "POST",
+    body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId, etSessionId: "test-et-session", wppSessionId: "test-wpp-session", wppTableIndex: 0, headerRowCount: 1, syncHeader: false, allowStructuralChanges: true }),
+  });
+  assert(tableSyncMapping.mapping?.syncId && tableSyncMapping.mapping.target?.fallbackTableIndex === 0, "WPS ET-WPP mapping was not created for the existing WPP table.");
+  const tableSyncList = await request("/api/tools/wps/list_et_wpp_table_syncs", { method: "POST", body: JSON.stringify({}) });
+  assert(tableSyncList.syncs.some((sync) => sync.syncId === tableSyncMapping.mapping.syncId), "WPS ET-WPP sync list missed the mapping.");
+  const tableSyncApplied = await request("/api/tools/wps/sync_et_wpp_table", { method: "POST", body: JSON.stringify({ syncId: tableSyncMapping.mapping.syncId }) });
+  assert(tableSyncApplied.synced === true && tableSyncApplied.rowMerge?.matchedCount >= 1 && tableSyncApplied.rowMerge?.appendedExcelRowCount >= 1, "WPS ET-WPP sync did not perform smart row matching and append new ET rows.");
+  const tableSyncWppJump = await request("/api/tools/wpp/select_table", { method: "POST", body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 0 }) });
+  assert(tableSyncWppJump.selected === true && tableSyncWppJump.tableIndex === 0, "WPS Writer table jump did not select the saved target table.");
+  const syncedWppTable = await request("/api/tools/wpp/read_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1 }),
+  });
+  assert(syncedWppTable.values.some((row) => row[0] === "E" && Number(row[1]) === 500), "WPS ET-WPP sync did not append the new ET key row into WPP table.");
+  const tableSyncUnbound = await request("/api/tools/wps/unbind_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId }) });
+  assert(tableSyncUnbound.unbound === true && tableSyncUnbound.removedCount === 1, "WPS ET-WPP unbind did not remove the saved mapping.");
+  const tableSyncDeleted = await request("/api/tools/wps/delete_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId }) });
+  assert(tableSyncDeleted.deleted === true, "WPS ET-WPP delete data source did not delete the unbound source.");
 
   const wppMergeCells = await request("/api/tools/wpp/merge_table_cells", {
     method: "POST",
