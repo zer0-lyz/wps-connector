@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN_NAME="wps-connector"
 PLUGIN_SOURCE="$ROOT_DIR/plugins/$PLUGIN_NAME"
-PLUGIN_TARGET="${WPS_CONNECTOR_PLUGIN_INSTALL_DIR:-$HOME/.codex/plugins/cache/personal/$PLUGIN_NAME/0.2.0}"
+PLUGIN_TARGET="${WPS_CONNECTOR_PLUGIN_INSTALL_DIR:-$HOME/.codex/plugins/cache/personal/$PLUGIN_NAME/0.2.1}"
 MARKETPLACE_PATH="${WPS_CONNECTOR_MARKETPLACE_PATH:-$HOME/.agents/plugins/marketplace.json}"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then

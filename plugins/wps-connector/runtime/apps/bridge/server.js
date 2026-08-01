@@ -44,6 +44,11 @@ codexAgent.on("log", (message) => {
   const text = String(message || "").trim();
   if (text) console.error(`[codex-agent] ${text}`);
 });
+function warmAgentTransport() {
+  void codexAgent.ensureStarted().catch((error) => {
+    console.error(`[codex-agent] Agent transport warm-up failed: ${error.message || error}`);
+  });
+}
 
 function nowIso() { return new Date().toISOString(); }
 function sendJson(res, status, payload) {
@@ -87,7 +92,7 @@ function canonicalDocumentKey(value) {
 }
 function queryBool(value, fallback = false) { if (value === undefined || value === null || value === "") return fallback; return /^(1|true|yes|on)$/i.test(String(value)); }
 function documentKeyFor(session) { return session.documentKey || session.documentIdentity?.fullPath || session.documentIdentity?.url || session.documentName || session.sessionId; }
-const bindingKeys = ["projectName", "projectPath", "projectId", "threadId", "conversationId", "documentRole", "bindingId", "documentKey", "host", "documentName", "createdAt", "updatedAt"];
+const bindingKeys = ["projectName", "projectPath", "projectId", "threadId", "threadTitle", "threadCwd", "conversationId", "documentRole", "bindingId", "documentKey", "host", "documentName", "createdAt", "updatedAt"];
 const selectorBindingKeys = ["projectName", "projectPath", "projectId", "threadId", "conversationId", "documentRole", "bindingId", "documentKey", "host", "documentName"];
 function normalizeBinding(binding) {
   if (!binding || typeof binding !== "object") return null;
@@ -99,7 +104,7 @@ function normalizeBinding(binding) {
   return Object.keys(out).length ? out : null;
 }
 function hasProjectBinding(binding) { return Boolean(binding?.projectId || binding?.projectPath || binding?.projectName); }
-function hasProjectSelector(binding) { return Boolean(binding?.bindingId || binding?.projectId || binding?.projectPath || binding?.projectName); }
+function hasBindingSelector(binding) { return Boolean(binding?.bindingId || binding?.projectId || binding?.projectPath || binding?.projectName || binding?.threadId || binding?.conversationId); }
 function requestedBinding(input = {}) {
   const nested = normalizeBinding(input.binding) || {};
   const direct = {};
@@ -115,7 +120,15 @@ function requestedBinding(input = {}) {
 function bindingMatches(session, requested) {
   if (!requested) return true;
   if (!session?.binding) return false;
-  if (!hasProjectBinding(session.binding) || !hasProjectSelector(requested)) return false;
+  if (!hasBindingSelector(requested)) return false;
+  const actualThreadId = String(session.binding.threadId || session.binding.conversationId || "");
+  const requestedThreadId = String(requested.threadId || requested.conversationId || "");
+  if (!hasProjectBinding(session.binding)) {
+    return Boolean(
+      (requested.bindingId && String(requested.bindingId) === String(session.binding.bindingId || ""))
+      || (actualThreadId && requestedThreadId && actualThreadId === requestedThreadId),
+    );
+  }
   return Object.entries(requested).every(([key, value]) => {
     const actual = String(session.binding?.[key] ?? "");
     if (key === "threadId" || key === "conversationId") {
@@ -158,7 +171,9 @@ function findBindingForSession(session) {
 function upsertBinding(session, inputBinding) {
   const binding = normalizeBinding(inputBinding);
   if (!binding) return clearBinding(session);
-  if (!hasProjectBinding(binding)) throw { code: "PROJECT_BINDING_REQUIRED", message: "至少需要选择一个 Codex 项目后才能保存绑定。", details: { sessionId: session.sessionId, required: ["projectId", "projectPath", "projectName"] } };
+  if (!hasProjectBinding(binding) && !binding.threadId) {
+    throw { code: "BINDING_TARGET_REQUIRED", message: "至少需要选择一个项目，或允许首次发送时创建新的 Codex 对话。", details: { sessionId: session.sessionId } };
+  }
   const now = nowIso();
   const previous = findBindingForSession(session);
   const documentKey = documentKeyFor(session);
@@ -172,12 +187,34 @@ function upsertBinding(session, inputBinding) {
   return next;
 }
 function clearBinding(session) { const key = canonicalDocumentKey(documentKeyFor(session)); const before = bindingsStore.bindings.length; bindingsStore.bindings = bindingsStore.bindings.filter((binding) => canonicalDocumentKey(binding.documentKey) !== key && binding.bindingId !== session.binding?.bindingId); session.binding = null; return before !== bindingsStore.bindings.length; }
-function agentBindingForSession(sessionId) {
+function agentBindingForSession(sessionId, { requireThread = false } = {}) {
   const session = sessions.get(sessionId);
   if (!session) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
   session.binding = findBindingForSession(session) || session.binding || null;
-  if (!session.binding?.threadId) throw { code: "AGENT_THREAD_BINDING_REQUIRED", message: "当前 WPS 文档尚未绑定 Codex 对话。", details: { sessionId, documentName: session.documentName } };
+  if (requireThread && !session.binding?.threadId) {
+    throw { code: "AGENT_THREAD_BINDING_REQUIRED", message: "当前 WPS 文档尚未绑定 Codex 对话。", details: { sessionId, documentName: session.documentName } };
+  }
   return { session, binding: session.binding };
+}
+
+async function ensureAgentBinding(session) {
+  let binding = session.binding || findBindingForSession(session) || null;
+  if (binding?.threadId) return binding;
+  const projectPath = binding?.threadCwd || binding?.projectPath || binding?.projectId || "";
+  const created = await codexAgent.startThread({ cwd: projectPath });
+  const thread = created.thread || {};
+  binding = upsertBinding(session, {
+    ...(binding || {}),
+    threadId: created.threadId,
+    threadTitle: thread.name || thread.title || "新建 Codex 对话",
+    threadCwd: projectPath,
+    projectId: binding?.projectId || "",
+    projectName: binding?.projectName || "",
+    projectPath: binding?.projectPath || "",
+    documentRole: binding?.documentRole || "",
+  });
+  await saveBindings();
+  return binding;
 }
 function setPaneView(sessionId, view) {
   const session = sessions.get(sessionId);
@@ -459,7 +496,7 @@ function selectSession(input = {}, expectedHostPrefix, toolName = "tool") {
     if (session?.binding && !requested) {
       throw { code: "SESSION_BINDING_REQUIRED", message: "Session " + session.sessionId + " is bound to a Codex project/thread. Provide matching bindingId, projectId/threadId, or binding to use it.", details: { sessionId: session.sessionId, actualBinding: session.binding || null } };
     }
-    if (session?.binding && requested && !hasProjectSelector(requested)) throw { code: "PROJECT_BINDING_REQUIRED", message: "请提供项目绑定信息（projectId、projectPath、projectName 或 bindingId）。", details: { sessionId: session.sessionId } };
+    if (session?.binding && requested && !hasBindingSelector(requested)) throw { code: "PROJECT_BINDING_REQUIRED", message: "请提供项目或对话绑定信息（项目、对话或 bindingId）。", details: { sessionId: session.sessionId } };
     if (session && requested && !bindingMatches(session, requested)) {
       throw { code: "SESSION_BINDING_MISMATCH", message: "Session " + session.sessionId + " is not bound to the requested Codex project/thread.", details: { sessionId: session.sessionId, requestedBinding: requested, actualBinding: session.binding || null, aliases: ["BINDING_MISMATCH"] } };
     }
@@ -470,7 +507,7 @@ function selectSession(input = {}, expectedHostPrefix, toolName = "tool") {
     .filter((s) => s.status === "online")
     .filter((s) => !expectedHostPrefix || String(s.host || "").startsWith(expectedHostPrefix));
   if (!requested) throw { code: "PROJECT_BINDING_REQUIRED", message: "执行 " + toolName + " 前必须先绑定 Codex 项目。", details: { candidateCount: candidates.length, candidates: candidates.map((session) => ({ sessionId: session.sessionId, host: session.host, documentName: session.documentName })) } };
-  if (!hasProjectSelector(requested)) throw { code: "PROJECT_BINDING_REQUIRED", message: "请提供项目绑定信息后再执行 " + toolName + ".", details: { requestedBinding: requested } };
+  if (!hasBindingSelector(requested)) throw { code: "PROJECT_BINDING_REQUIRED", message: "请提供项目或对话绑定信息后再执行 " + toolName + ".", details: { requestedBinding: requested } };
   const matches = candidates.filter((session) => bindingMatches(session, requested));
   if (requested && !matches.length) {
     const waiting = [...sessions.values()].filter((session) => (!expectedHostPrefix || String(session.host || "").startsWith(expectedHostPrefix)) && bindingMatches(session, requested));
@@ -1031,31 +1068,45 @@ async function handle(req, res) {
     if (req.method === "GET" && agentHistory) {
       assertAgentOrigin(req);
       const { session, binding } = agentBindingForSession(agentHistory[1]);
+      if (!binding?.threadId) {
+        warmAgentTransport();
+        return sendJson(res, 200, {
+          ok: true,
+          sessionId: session.sessionId,
+          documentName: session.documentName,
+          binding: null,
+          thread: null,
+          messages: [],
+          run: null,
+          sync: await desktopSyncStatus(),
+        });
+      }
       const result = await codexAgent.readThread(binding.threadId, Number(url.searchParams.get("limit") || 200));
       return sendJson(res, 200, { ok: true, sessionId: session.sessionId, documentName: session.documentName, binding, thread: { id: result.thread?.id || binding.threadId, name: result.thread?.name || binding.threadTitle || "" }, messages: result.messages, run: result.run, sync: await desktopSyncStatus() });
     }
     const agentMessage = /^\/api\/agent\/([^/]+)\/message$/.exec(pathname);
     if (req.method === "POST" && agentMessage) {
       assertAgentOrigin(req);
-      const { session, binding } = agentBindingForSession(agentMessage[1]);
+      const { session } = agentBindingForSession(agentMessage[1]);
       const body = await readJson(req);
       const text = String(body.text || "").trim();
       if (!text) return sendError(res, 400, "AGENT_MESSAGE_REQUIRED", "请输入要发送给 Agent 的内容。");
       const sync = await assertAgentSyncReady();
+      const binding = await ensureAgentBinding(session);
       const prompt = buildAgentPrompt(session, binding, text);
       const run = await codexAgent.startTurn(binding.threadId, prompt, { cwd: binding.threadCwd || binding.projectPath || binding.projectId || "" });
-      return sendJson(res, 202, { ok: true, sessionId: session.sessionId, documentName: session.documentName, threadId: binding.threadId, run, sync });
+      return sendJson(res, 202, { ok: true, sessionId: session.sessionId, documentName: session.documentName, threadId: binding.threadId, binding, thread: { id: binding.threadId, name: binding.threadTitle || "" }, run, sync });
     }
     const agentStatus = /^\/api\/agent\/([^/]+)\/status$/.exec(pathname);
     if (req.method === "GET" && agentStatus) {
       assertAgentOrigin(req);
-      const { session, binding } = agentBindingForSession(agentStatus[1]);
+      const { session, binding } = agentBindingForSession(agentStatus[1], { requireThread: true });
       return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run: codexAgent.getRun(binding.threadId), sync: await desktopSyncStatus() });
     }
     const agentInterrupt = /^\/api\/agent\/([^/]+)\/interrupt$/.exec(pathname);
     if (req.method === "POST" && agentInterrupt) {
       assertAgentOrigin(req);
-      const { session, binding } = agentBindingForSession(agentInterrupt[1]);
+      const { session, binding } = agentBindingForSession(agentInterrupt[1], { requireThread: true });
       const run = await codexAgent.interrupt(binding.threadId);
       return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run });
     }
@@ -1128,5 +1179,5 @@ await loadTableSyncs();
 await reconcileConnectorState();
 process.on("exit", () => codexAgent.close());
 codexAgent.ensureStarted().catch((error) => console.error(`[codex-agent] Shared transport preflight failed: ${error.message}`));
-startConnectorPlatformHeartbeat({ version: "0.2.0" });
+startConnectorPlatformHeartbeat({ version: "0.2.1" });
 createServer(handle).listen(port, host, () => { console.error(`wps-connector bridge listening on http://${host}:${port}`); });

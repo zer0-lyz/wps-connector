@@ -1,5 +1,5 @@
 {
-  "productVersion": "0.2.0",
+  "productVersion": "0.2.1",
   "sharedVersion": "0.2.0",
   "source": "@connector-platform/shared",
   "modules": [
@@ -54,7 +54,7 @@
   "files": [
     {
       "file": "browserUiModel.js",
-      "sha256": "fe6ae596f471fd4eee94d8fb1567c947ba0da25598c6d81dab858ff13739414b"
+      "sha256": "abf1f56020292721a1e04e132282d1dc6ad26cec6afe2d39e7eb74a836a5845e"
     },
     {
       "file": "connectorStateClient.js",
@@ -62,7 +62,7 @@
     },
     {
       "file": "featureRegistry.js",
-      "sha256": "2b15edc19b51758d47a89b0e3637158fd705007b264209b279c385cad02c6207"
+      "sha256": "a33d5c6ef550b00d6c4830fa6e36c6c9810831702086fb33b5466ea68ce6a9ae"
     },
     {
       "file": "moduleCatalog.js",

@@ -1,7 +1,7 @@
 import { moduleCatalog, moduleVersions } from "./moduleCatalog.js";
 
 export const PRODUCT_NAME = "Connector Suite";
-export const PRODUCT_VERSION = "0.2.0";
+export const PRODUCT_VERSION = "0.2.1";
 export const SHARED_VERSION = "0.2.0";
 export const ADAPTER_PROTOCOL_VERSION = "connector-adapter-v1";
 

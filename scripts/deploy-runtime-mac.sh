@@ -4,10 +4,25 @@ set -euo pipefail
 SOURCE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 RUNTIME_ROOT="${WPS_CONNECTOR_RUNTIME_ROOT:-$HOME/.local/share/wps-connector/runtime}"
 PLUGIN_DIR="${WPS_CONNECTOR_PLUGIN_DIR:-$HOME/plugins/wps-connector}"
+BACKUP_ROOT="${WPS_CONNECTOR_BACKUP_ROOT:-$HOME/Library/Application Support/Connector Suite/backups/wps-runtime}"
+RUN_ID="${CONNECTOR_SUITE_RUN_ID:-$(date +%Y%m%d-%H%M%S)}"
+RUNTIME_PARENT="$(dirname "$RUNTIME_ROOT")"
+STAGE_ROOT="$RUNTIME_PARENT/.runtime-stage-$RUN_ID-$$"
+OLD_RUNTIME=""
 
-mkdir -p "$RUNTIME_ROOT"
+log() {
+  printf '[wps-runtime] %s\n' "$*" >&2
+}
+
+cleanup() {
+  rm -rf -- "$STAGE_ROOT"
+}
+trap cleanup EXIT
+
+mkdir -p "$RUNTIME_PARENT" "$BACKUP_ROOT"
 bash "$SOURCE_DIR/scripts/sync-plugin-runtime-mac.sh"
 
+mkdir -p "$STAGE_ROOT"
 rsync -a --delete \
   --exclude '.git/' \
   --exclude 'node_modules/' \
@@ -16,9 +31,33 @@ rsync -a --delete \
   --exclude 'project-bindings.local.json' \
   --exclude 'codex-catalog.snapshot.json' \
   --exclude 'et-wpp-table-syncs.local.json' \
-  "$SOURCE_DIR/" "$RUNTIME_ROOT/"
+  "$SOURCE_DIR/" "$STAGE_ROOT/" >&2
 
-npm install --omit=dev --ignore-scripts --no-audit --no-fund --prefix "$RUNTIME_ROOT"
+for file in project-bindings.local.json codex-catalog.snapshot.json et-wpp-table-syncs.local.json; do
+  [[ -f "$RUNTIME_ROOT/$file" ]] && cp -p "$RUNTIME_ROOT/$file" "$STAGE_ROOT/$file"
+done
+
+log "Installing production dependencies in writable staging runtime"
+npm install --omit=dev --ignore-scripts --no-audit --no-fund --prefix "$STAGE_ROOT" >&2
+
+if [[ -d "$RUNTIME_ROOT" ]]; then
+  BACKUP_DIR="$BACKUP_ROOT/$RUN_ID"
+  mkdir -p "$BACKUP_DIR"
+  OLD_RUNTIME="$BACKUP_DIR/runtime"
+  log "Backing up current runtime to $OLD_RUNTIME"
+  mv "$RUNTIME_ROOT" "$OLD_RUNTIME"
+fi
+
+if ! mv "$STAGE_ROOT" "$RUNTIME_ROOT"; then
+  log "Runtime activation failed"
+  if [[ -n "$OLD_RUNTIME" && -d "$OLD_RUNTIME" && ! -e "$RUNTIME_ROOT" ]]; then
+    mv "$OLD_RUNTIME" "$RUNTIME_ROOT"
+    log "Previous runtime restored"
+  fi
+  exit 1
+fi
+trap - EXIT
+log "Activated runtime: $RUNTIME_ROOT"
 
 if [ -f "$PLUGIN_DIR/.codex-plugin/plugin.json" ]; then
   mkdir -p "$PLUGIN_DIR/skills/wps-connector" "$PLUGIN_DIR/assets"
