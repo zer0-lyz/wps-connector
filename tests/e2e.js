@@ -153,7 +153,12 @@ async function main() {
   assert(paneHtml.includes("fetchPaneView()") && paneHtml.includes("wpsConnectorViewChanged"), "Open panes must switch between connector, Agent, and table sync views without recreating the pane.");
   assert(paneHtml.includes('onlyOnline:"true"') && paneHtml.includes("state.sessions.length===1"), "Pane session loading must recover when its original session anchor disappears after a bridge restart.");
   assert(paneHtml.includes('id="agentScopeValue"') && paneHtml.includes('id="agentClearScope"') && paneHtml.includes("operationScopeView"), "Agent pane must display the effective operation scope and provide an independent cancel action.");
-  assert(paneHtml.includes('WPS_CONNECTOR_PANE_VERSION="0.2.0"') && paneHtml.includes("20260729-operation-scope-0.2.0.5"), "pane.html must not keep stale pane version or stale main.js cache keys.");
+  assert(paneHtml.includes('WPS_CONNECTOR_PANE_VERSION="0.2.1"') && paneHtml.includes("20260731-agent-codex-composer-0.2.1.0"), "pane.html must not keep stale pane version or stale main.js cache keys.");
+  assert(paneHtml.includes("agent-pane-mode") && paneHtml.includes("height:100vh") && paneHtml.includes("grid-template-rows:auto minmax(0,1fr) auto") && paneHtml.includes("max-height:none"), "Agent pane must lock the composer and scroll messages independently.");
+  assert(paneHtml.includes("agent-selection-content>div:first-child{display:none}") && paneHtml.includes("agent-scope-action{flex:0 0 auto}"), "Narrow Agent pane must compact operation scope controls instead of stacking them.");
+  assert(paneHtml.includes("min-height:120px;max-height:220px") && paneHtml.includes("agent-empty{display:flex"), "Agent composer must prioritize a usable input area and render an intentional empty-history state.");
+  assert(paneHtml.indexOf('class="agent-selection-row"') < paneHtml.indexOf('class="agent-messages"') && paneHtml.includes("background:#f7f8fa") && paneHtml.includes("agent-action{width:34px"), "Agent scope must appear above messages and the composer must use the Codex-style light surface.");
+  assert(paneHtml.includes("agent-selection-row{position:relative;z-index:3;min-height:40px") && paneHtml.includes("agent-messages{position:relative;z-index:1;padding-top:8px"), "Agent scope bar must remain visually separated from the first message.");
   assert(!paneHtml.includes('refreshActiveEtSelection({render:true}).catch'), "pane.html must not continuously poll ET selection because it can stall WPS Writer input.");
   assert(!paneHtml.includes("仍在旧通道中，重启后可实时同步"), "Agent pane must not instruct endless Codex restarts when the shared transport is connected.");
   assert(paneHtml.includes("configurationRequired") && paneHtml.includes("共享通道已配置，请重启 Codex Desktop 一次后测试"), "Agent pane must distinguish missing daemon configuration from one required Desktop restart.");
@@ -189,7 +194,7 @@ async function main() {
   const commandDebugInitial = await requestAt(bridgeUrl, "/api/debug/commands");
   assert(commandDebugInitial.ok === true && Array.isArray(commandDebugInitial.active) && Array.isArray(commandDebugInitial.recent), "Command debug endpoint did not return a safe command summary.");
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "0.2.0", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "0.2.1", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true && remoteUpdateCheck.versionState === "update_available", "Update check did not discover a newer remote version.");
 
@@ -379,7 +384,24 @@ async function main() {
   const unboundExecution = await rawRequest("/api/tools/et/list_worksheets", { method: "POST", body: JSON.stringify({ sessionId: "test-et-large-selection" }) });
   assert(unboundExecution.ok === false && unboundExecution.error?.code === "PROJECT_BINDING_REQUIRED", "Unbound execution was not rejected.");
   const unboundAgent = await rawRequest("/api/agent/test-et-large-selection/history");
-  assert(unboundAgent.ok === false && unboundAgent.error?.code === "AGENT_THREAD_BINDING_REQUIRED", "Agent history accepted an unbound WPS document.");
+  assert(unboundAgent.ok === true && !unboundAgent.thread && unboundAgent.messages?.length === 0, "Agent history did not allow an unbound WPS document to start empty.");
+  const unboundAgentMessage = await rawRequest("/api/agent/test-et-large-selection/message", {
+    method: "POST",
+    body: JSON.stringify({ text: "首次新建对话" }),
+  });
+  assert(unboundAgentMessage.ok === true && unboundAgentMessage.threadId === "thread-created", "Agent did not create a new Codex conversation for an unbound WPS document.");
+  const createdBinding = await request("/api/sessions/test-et-large-selection/binding");
+  assert(createdBinding.binding?.threadId === "thread-created", "Newly created Agent conversation was not persisted to the WPS document binding.");
+  const recoveredUnmaterializedBinding = await request("/api/sessions/test-et-large-selection/binding", {
+    method: "POST",
+    body: JSON.stringify({ binding: { projectId: "project-a", projectName: "Project A", projectPath: "/tmp/project-a", threadId: "thread-unmaterialized" } }),
+  });
+  assert(recoveredUnmaterializedBinding.binding?.threadId === "thread-unmaterialized", "Unmaterialized-thread test binding was not saved.");
+  const recoveredUnmaterializedMessage = await rawRequest("/api/agent/test-et-large-selection/message", {
+    method: "POST",
+    body: JSON.stringify({ text: "恢复未落盘首条消息" }),
+  });
+  assert(recoveredUnmaterializedMessage.ok === true && recoveredUnmaterializedMessage.threadId === "thread-unmaterialized", "Agent did not recover a pre-existing unmaterialized conversation after bridge restart.");
   const bindLargeEt = await request("/api/sessions/test-et-large-selection/binding", {
     method: "POST",
     body: JSON.stringify({ binding: { projectId: "project-a", projectName: "Project A", projectPath: "/tmp/project-a", threadId: "thread-a" } }),
@@ -1225,6 +1247,22 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", rowCount: 0, columnCount: 2 }),
   });
   assert(wppBadTable.ok === false && wppBadTable.error?.code === "INVALID_ARGUMENT", "WPP invalid table dimensions did not return INVALID_ARGUMENT.");
+
+  const threadOnlyBinding = await request("/api/sessions/test-et-large-selection/binding", {
+    method: "POST",
+    body: JSON.stringify({ binding: { projectId: "", projectName: "", projectPath: "", threadId: "thread-only", threadTitle: "仅绑定对话" } }),
+  });
+  assert(threadOnlyBinding.binding?.threadId === "thread-only" && !threadOnlyBinding.binding?.projectId, "Thread-only binding was not saved as an independent binding.");
+  const threadOnlyRead = await request("/api/tools/et/read_selection", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-large-selection", threadId: "thread-only" }),
+  });
+  assert(threadOnlyRead.sessionId === "test-et-large-selection", "A matching thread-only binding did not route the WPS tool call.");
+  const threadOnlyStatus = await request("/api/tools/wps/connection_status", {
+    method: "POST",
+    body: JSON.stringify({ onlyOnline: true, host: "et", sessionId: "test-et-large-selection", threadId: "thread-only" }),
+  });
+  assert(threadOnlyStatus.recommendedSession?.sessionId === "test-et-large-selection", "Connection status did not accept the matching thread-only binding.");
 
   console.log(JSON.stringify({
     ok: true,

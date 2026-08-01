@@ -61,6 +61,18 @@ export function threadToMessages(thread, limit = 200) {
   return messages.slice(-Math.max(1, Number(limit) || 200));
 }
 
+function isNotMaterializedError(error) {
+  return /not materialized yet/i.test(String(error?.message || error || ""));
+}
+
+function emptyThreadState(threadId, run) {
+  return {
+    thread: { id: threadId, turns: [] },
+    messages: [],
+    run,
+  };
+}
+
 function parseArgs(value) {
   if (!value) return null;
   try {
@@ -88,6 +100,9 @@ export class CodexAgentClient extends EventEmitter {
     this.pending = new Map();
     this.runs = new Map();
     this.subscribedThreads = new Set();
+    // A thread/start response arrives before Codex persists its first user turn.
+    // Keep that short-lived state so a new conversation is never resumed/read too early.
+    this.unmaterializedThreads = new Map();
   }
 
   async ensureStarted() {
@@ -124,7 +139,7 @@ export class CodexAgentClient extends EventEmitter {
     child.on("error", (error) => this.emit("log", `Codex App Server process error: ${error.message}`));
     child.on("exit", (code, signal) => this.onExit(code, signal));
     await this.request("initialize", {
-      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "0.2.0" },
+      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "0.2.1" },
       capabilities: { experimentalApi: true },
     }, true);
     this.notify("initialized", {});
@@ -182,7 +197,7 @@ export class CodexAgentClient extends EventEmitter {
     socket.on("error", (error) => this.emit("log", `Codex shared App Server socket error: ${error.message}`));
     socket.on("close", (code, reason) => this.onExit(code, String(reason || "")));
     await this.request("initialize", {
-      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "0.2.0" },
+      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "0.2.1" },
       capabilities: { experimentalApi: true },
     }, true);
     this.notify("initialized", {});
@@ -321,21 +336,41 @@ export class CodexAgentClient extends EventEmitter {
   }
 
   async readThread(threadId, limit = 200) {
-    if (!this.subscribedThreads.has(threadId)) {
-      await this.request("thread/resume", { threadId, excludeTurns: true });
-      this.subscribedThreads.add(threadId);
+    const pendingThread = this.unmaterializedThreads.get(threadId);
+    if (pendingThread) {
+      return {
+        thread: { ...pendingThread, id: threadId, turns: [] },
+        messages: [],
+        run: this.getRun(threadId),
+      };
     }
     let thread;
     try {
+      if (!this.subscribedThreads.has(threadId)) {
+        await this.request("thread/resume", { threadId, excludeTurns: true });
+        this.subscribedThreads.add(threadId);
+      }
       const turnLimit = Math.max(10, Math.min(100, Math.ceil((Number(limit) || 80) / 2)));
       const [metadata, turns] = await Promise.all([
         this.request("thread/read", { threadId, includeTurns: false }),
         this.request("thread/turns/list", { threadId, limit: turnLimit, sortDirection: "desc", itemsView: "full" }),
       ]);
       thread = { ...metadata.thread, turns: [...(turns.data || [])].reverse() };
-    } catch {
-      const result = await this.request("thread/read", { threadId, includeTurns: true });
-      thread = result.thread;
+    } catch (error) {
+      if (isNotMaterializedError(error)) {
+        this.unmaterializedThreads.set(threadId, { id: threadId });
+        return emptyThreadState(threadId, this.getRun(threadId));
+      }
+      try {
+        const result = await this.request("thread/read", { threadId, includeTurns: true });
+        thread = result.thread;
+      } catch (fallbackError) {
+        if (isNotMaterializedError(fallbackError)) {
+          this.unmaterializedThreads.set(threadId, { id: threadId });
+          return emptyThreadState(threadId, this.getRun(threadId));
+        }
+        throw fallbackError;
+      }
     }
     return {
       thread,
@@ -344,12 +379,40 @@ export class CodexAgentClient extends EventEmitter {
     };
   }
 
+  async startThread(options = {}) {
+    const result = await this.request("thread/start", {
+      cwd: options.cwd || null,
+    });
+    const thread = result?.thread || result;
+    const threadId = String(thread?.id || thread?.threadId || "").trim();
+    if (!threadId) {
+      throw Object.assign(new Error("Codex App Server did not return a new thread id."), {
+        code: "AGENT_THREAD_CREATE_FAILED",
+        details: { result },
+      });
+    }
+    this.subscribedThreads.add(threadId);
+    this.unmaterializedThreads.set(threadId, thread);
+    return {
+      threadId,
+      thread,
+    };
+  }
+
   async startTurn(threadId, text, options = {}) {
     const current = this.runs.get(threadId);
     if (current && (current.status === "starting" || current.status === "running")) {
       throw Object.assign(new Error("The bound Codex conversation already has an active Agent turn."), { code: "AGENT_TURN_ACTIVE" });
     }
-    await this.request("thread/resume", { threadId, excludeTurns: true });
+    const unmaterialized = this.unmaterializedThreads.has(threadId);
+    if (!unmaterialized) {
+      try {
+        await this.request("thread/resume", { threadId, excludeTurns: true });
+      } catch (error) {
+        if (!isNotMaterializedError(error)) throw error;
+        this.unmaterializedThreads.set(threadId, { id: threadId });
+      }
+    }
     this.subscribedThreads.add(threadId);
     const now = new Date().toISOString();
     const run = {
@@ -372,6 +435,7 @@ export class CodexAgentClient extends EventEmitter {
         approvalPolicy: "never",
         cwd: options.cwd || null,
       });
+      this.unmaterializedThreads.delete(threadId);
       run.turnId = result.turn?.id || "";
       run.status = "running";
       run.updatedAt = new Date().toISOString();

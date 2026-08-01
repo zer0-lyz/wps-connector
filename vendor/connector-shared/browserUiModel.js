@@ -39,7 +39,7 @@
   }
 ];
   const model = Object.freeze({
-    productVersion: "0.2.0",
+    productVersion: "0.2.1",
     sharedVersion: "0.2.0",
     views: Object.freeze(views.map((view) => Object.freeze({
       ...view,
