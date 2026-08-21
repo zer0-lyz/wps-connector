@@ -291,6 +291,76 @@ export const tools = [
     },
   },
   {
+    name: "et.create_chart",
+    description: "Create or insert a chart in a WPS Spreadsheet worksheet as a floating object anchored to a cell.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        sheetName: { type: "string" },
+        bindingId: { type: "string" },
+        projectId: { type: "string" },
+        threadId: { type: "string" },
+        address: { type: "string" },
+        chartType: { type: "string", enum: ["column", "bar", "line", "pie", "combo", "area", "scatter"] },
+        dataRange: { type: "string" },
+        categoryRange: { type: "string" },
+        seriesRanges: { type: "array", items: { type: "string" } },
+        title: { type: "string" },
+        legendPosition: { type: "string", enum: ["top", "bottom", "left", "right", "none"] },
+        width: { type: "number" },
+        height: { type: "number" }
+      },
+      required: ["sessionId", "sheetName", "address", "chartType", "dataRange"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.insert_picture",
+    description: "Insert a local or remote picture into a WPS Spreadsheet worksheet as a floating object anchored to a cell.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        sheetName: { type: "string" },
+        bindingId: { type: "string" },
+        projectId: { type: "string" },
+        threadId: { type: "string" },
+        address: { type: "string" },
+        imagePath: { type: "string" },
+        imageUrl: { type: "string" },
+        width: { type: "number" },
+        height: { type: "number" },
+        lockAspectRatio: { type: "boolean" }
+      },
+      required: ["sessionId", "sheetName", "address"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.insert_shape",
+    description: "Insert a floating shape such as a text box, rectangle, arrow, line, or oval into a WPS Spreadsheet worksheet.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        sheetName: { type: "string" },
+        bindingId: { type: "string" },
+        projectId: { type: "string" },
+        threadId: { type: "string" },
+        address: { type: "string" },
+        shapeType: { type: "string", enum: ["textBox", "rectangle", "arrow", "line", "oval"] },
+        text: { type: "string" },
+        width: { type: "number" },
+        height: { type: "number" },
+        fillColor: { type: "string" },
+        lineColor: { type: "string" }
+      },
+      required: ["sessionId", "sheetName", "address", "shapeType"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "wpp.read_selection",
     description: "Read the current WPS Writer selection.",
     inputSchema: {

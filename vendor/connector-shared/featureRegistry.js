@@ -35,24 +35,28 @@ export const featureRegistry = [
     version: "1",
     layer: "platform",
     hosts: ["WPS", "Office"],
-    capabilities: ["sync", "test", "deploy", "verify"],
+    capabilities: ["check", "download", "apply", "sync", "test", "deploy", "verify"],
   },
 ];
 
 export function productManifest(adapters = []) {
-  const normalizedAdapters = adapters.map((adapter) => ({
-    id: adapter.id || "",
-    connector: adapter.connector || "",
-    name: adapter.name || "",
-    version: adapter.version || "",
-    productVersion: adapter.productVersion || "",
-    sharedVersion: adapter.sharedVersion || "",
-    protocolVersion: adapter.protocolVersion || "",
-    compatible:
+  const normalizedAdapters = adapters.map((adapter) => {
+    const compatible =
       adapter.productVersion === PRODUCT_VERSION
       && adapter.sharedVersion === SHARED_VERSION
-      && adapter.protocolVersion === ADAPTER_PROTOCOL_VERSION,
-  }));
+      && adapter.protocolVersion === ADAPTER_PROTOCOL_VERSION;
+    return {
+      id: adapter.id || "",
+      connector: adapter.connector || "",
+      name: adapter.name || "",
+      version: adapter.version || "",
+      productVersion: adapter.productVersion || "",
+      sharedVersion: adapter.sharedVersion || "",
+      protocolVersion: adapter.protocolVersion || "",
+      compatible,
+      ok: compatible,
+    };
+  });
   return {
     name: PRODUCT_NAME,
     productVersion: PRODUCT_VERSION,
@@ -62,7 +66,7 @@ export function productManifest(adapters = []) {
     modules: moduleCatalog,
     moduleVersions,
     adapters: normalizedAdapters,
-    healthyAdapterCount: normalizedAdapters.filter((adapter) => adapter.compatible).length,
+    healthyAdapterCount: normalizedAdapters.filter((adapter) => adapter.ok).length,
     compatible: normalizedAdapters.length > 0 && normalizedAdapters.every((adapter) => adapter.compatible),
   };
 }

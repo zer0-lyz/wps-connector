@@ -49,12 +49,29 @@
           "sha256": "6fe3c5c5d53fb8b72f922610890b774f1fef5ae0ce249fe5e7147f391bc1f34c"
         }
       ]
+    },
+    {
+      "id": "product-updater",
+      "version": "0.2.0",
+      "status": "active",
+      "manifestSha256": "d5a357faa3264c6696c05b12029bb270836773fd50ac32373f28b2f6a19c686e",
+      "packageSha256": "ca7561e2a056666dcad2e3b3159f6f7395578923e3894ad394a09d836dd84ec8",
+      "files": [
+        {
+          "file": "updateCheckCore.js",
+          "sha256": "7f6c0cb94b407b14aff1d35423a52fc44ef4a25ed7dbcf0bbc47081e4e6ce3e2"
+        },
+        {
+          "file": "state.js",
+          "sha256": "2954ed6be210fed639ba9f00011205a6a431d2fadeaaf97a3ef23af03e1d61b7"
+        }
+      ]
     }
   ],
   "files": [
     {
       "file": "browserUiModel.js",
-      "sha256": "abf1f56020292721a1e04e132282d1dc6ad26cec6afe2d39e7eb74a836a5845e"
+      "sha256": "027a32039fb1ca4b53fbdbf20b7644cc53a714960a302e18b3b748e8e80fafd8"
     },
     {
       "file": "connectorStateClient.js",
@@ -62,15 +79,19 @@
     },
     {
       "file": "featureRegistry.js",
-      "sha256": "a33d5c6ef550b00d6c4830fa6e36c6c9810831702086fb33b5466ea68ce6a9ae"
+      "sha256": "d637de8392631f34ed8777e7d0b4358df4977fefa2bf5bc3bc0688d114858d45"
     },
     {
       "file": "moduleCatalog.js",
-      "sha256": "186f79e55068ab3be32a6604773fbe3d3680860bb51850bc220f65a2a97cfec1"
+      "sha256": "564a9667f714baae162ed752b2795ddb7157976ce1b30cb314e7944f4d3f0e24"
     },
     {
       "file": "sourceMetadata.js",
       "sha256": "870037d989d38f18ded684adb638ac11de46ec9de4c5c938127197fe01b7f804"
+    },
+    {
+      "file": "sqliteStore.js",
+      "sha256": "f7244c7a2cdc031261eb3ca99cebfa6cdb4a3f27df5e682d65f00e62a131b055"
     },
     {
       "file": "stateMerge.js",
@@ -99,6 +120,14 @@
     {
       "file": "modules/table-sync/tableSyncCore.js",
       "sha256": "6fe3c5c5d53fb8b72f922610890b774f1fef5ae0ce249fe5e7147f391bc1f34c"
+    },
+    {
+      "file": "modules/product-updater/updateCheckCore.js",
+      "sha256": "7f6c0cb94b407b14aff1d35423a52fc44ef4a25ed7dbcf0bbc47081e4e6ce3e2"
+    },
+    {
+      "file": "modules/product-updater/state.js",
+      "sha256": "2954ed6be210fed639ba9f00011205a6a431d2fadeaaf97a3ef23af03e1d61b7"
     }
   ]
 }

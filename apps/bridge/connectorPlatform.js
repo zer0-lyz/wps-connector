@@ -59,7 +59,7 @@ export async function registerConnectorPlatform(adapter = {}) {
   }
 }
 
-export function startConnectorPlatformHeartbeat(adapter = {}, intervalMs = Number(process.env.CONNECTOR_PLATFORM_HEARTBEAT_MS || 60000)) {
+export function startConnectorPlatformHeartbeat(adapter = {}, intervalMs = Number(process.env.CONNECTOR_PLATFORM_HEARTBEAT_MS || 5000)) {
   registerConnectorPlatform(adapter);
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   heartbeatTimer = setInterval(() => registerConnectorPlatform(adapter), intervalMs);

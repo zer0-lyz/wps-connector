@@ -26,6 +26,15 @@ const catalogPath = process.env.WPS_CONNECTOR_CATALOG_PATH || join(runtimeRoot, 
 const bindingsPath = process.env.WPS_CONNECTOR_BINDINGS_PATH || join(runtimeRoot, "project-bindings.local.json");
 const tableSyncsPath = process.env.WPS_CONNECTOR_TABLE_SYNCS_PATH || join(runtimeRoot, "et-wpp-table-syncs.local.json");
 const connectorPlatformUrl = (process.env.CONNECTOR_PLATFORM_URL || "http://127.0.0.1:40315").replace(/\/$/, "");
+
+process.on("uncaughtException", (error) => {
+  console.error(`[wps-bridge] FATAL uncaughtException: ${error?.stack || error}`);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error(`[wps-bridge] FATAL unhandledRejection: ${reason?.stack || reason}`);
+  process.exit(1);
+});
 const productUpdateCheckUrl = process.env.WPS_CONNECTOR_PRODUCT_UPDATE_URL || `${connectorPlatformUrl}/api/product`;
 const updateCheckUrl = process.env.WPS_CONNECTOR_UPDATE_CHECK_URL || "https://raw.githubusercontent.com/zer0-lyz/wps-connector/main/apps/wps-addin/main.js";
 const updateCheckFallbackUrl = process.env.WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL || "https://cdn.jsdelivr.net/gh/zer0-lyz/wps-connector@main/apps/wps-addin/main.js";
@@ -44,9 +53,13 @@ codexAgent.on("log", (message) => {
   const text = String(message || "").trim();
   if (text) console.error(`[codex-agent] ${text}`);
 });
+codexAgent.on("warning", (warning) => {
+  const text = warning?.message || String(warning || "Codex shared transport warning");
+  console.warn(`[codex-agent] WARNING: ${text}`);
+});
 function warmAgentTransport() {
   void codexAgent.ensureStarted().catch((error) => {
-    console.error(`[codex-agent] Agent transport warm-up failed: ${error.message || error}`);
+    console.warn(`[codex-agent] WARNING: Shared transport preflight failed: ${error.message || error}`);
   });
 }
 
@@ -1045,7 +1058,7 @@ async function handle(req, res) {
   const pathname = url.pathname;
   if (req.method === "OPTIONS") return sendJson(res, 200, { ok: true });
   try {
-    if (req.method === "GET" && pathname === "/api/health") return sendJson(res, 200, { ok: true, name: "wps-connector", time: nowIso(), connectorPlatform: connectorPlatformStatus(), connectorState: connectorStateStatus });
+    if (req.method === "GET" && pathname === "/api/health") return sendJson(res, 200, { ok: true, name: "wps-connector", time: nowIso(), connectorPlatform: connectorPlatformStatus(), connectorState: connectorStateStatus, sharedTransport: codexAgent.sharedTransportStatus() });
     if (pathname === "/api/clipboard" && req.method === "GET") {
       assertAgentOrigin(req);
       return sendJson(res, 200, { ok: true, text: await readSystemClipboard() });
@@ -1178,6 +1191,10 @@ await loadBindings();
 await loadTableSyncs();
 await reconcileConnectorState();
 process.on("exit", () => codexAgent.close());
-codexAgent.ensureStarted().catch((error) => console.error(`[codex-agent] Shared transport preflight failed: ${error.message}`));
 startConnectorPlatformHeartbeat({ version: "0.2.1" });
-createServer(handle).listen(port, host, () => { console.error(`wps-connector bridge listening on http://${host}:${port}`); });
+const server = createServer(handle);
+server.listen(port, host, () => {
+  console.error(`wps-connector bridge listening on http://${host}:${port}`);
+  // Codex is optional for bridge health and document session registration.
+  setTimeout(warmAgentTransport, 0);
+});

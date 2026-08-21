@@ -158,6 +158,57 @@ export const moduleCatalog = deepFreeze([
         "table_sync_anchor"
       ]
     }
+  },
+  {
+    "id": "product-updater",
+    "displayName": "检查更新",
+    "version": "0.2.0",
+    "status": "active",
+    "description": "统一检查 Connector Suite 产品版本、解析发布清单并判断是否需要更新。",
+    "hosts": [
+      "Office",
+      "WPS"
+    ],
+    "dependencies": [
+      "connector-kernel"
+    ],
+    "state": {
+      "namespace": "product-updater",
+      "schemaVersion": 1,
+      "legacyPaths": [
+        "update"
+      ]
+    },
+    "ui": {
+      "viewId": "update",
+      "label": "检查更新",
+      "aliases": [
+        "updates",
+        "版本更新"
+      ]
+    },
+    "runtime": {
+      "files": [
+        "updateCheckCore.js",
+        "state.js"
+      ]
+    },
+    "ownership": {
+      "capabilities": [
+        "updateCheck",
+        "updateManifest",
+        "updateApply"
+      ],
+      "httpRoutes": [
+        "/api/update/check",
+        "/api/update/manifest",
+        "/api/update/apply"
+      ],
+      "toolFamilies": [
+        "update_check",
+        "update_apply"
+      ]
+    }
   }
 ]);
 export const moduleVersions = deepFreeze(Object.fromEntries(moduleCatalog.map((module) => [module.id, module.version])));

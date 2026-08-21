@@ -22,6 +22,15 @@ function contentType(pathname) {
   return mimeTypes[ext] || "text/plain; charset=utf-8";
 }
 
+process.on("uncaughtException", (error) => {
+  console.error(`[wps-addin] FATAL uncaughtException: ${error?.stack || error}`);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error(`[wps-addin] FATAL unhandledRejection: ${reason?.stack || reason}`);
+  process.exit(1);
+});
+
 async function sendAsset(res, relPath) {
   const isBinary = relPath.endsWith(".png");
   const body = await readFile(join(rootDir, relPath), isBinary ? undefined : "utf8");
@@ -57,6 +66,11 @@ async function handle(req, res) {
   }
 }
 
-createServer(handle).listen(port, host, () => {
+const server = createServer(handle);
+server.on("error", (error) => {
+  console.error(`[wps-addin] FATAL server error: ${error?.stack || error}`);
+  process.exit(1);
+});
+server.listen(port, host, () => {
   console.error(`wps-connector addin server listening on http://${host}:${port}`);
 });

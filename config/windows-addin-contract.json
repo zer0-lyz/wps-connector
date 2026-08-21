@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "url": "http://127.0.0.1:3891/",
+  "image": "http://127.0.0.1:3891/images/connector.svg",
+  "icon": "http://127.0.0.1:3891/images/connector.svg",
+  "imageUrl": "http://127.0.0.1:3891/images/connector.svg",
+  "enable": "enable",
+  "debug": "",
+  "install": "null",
+  "registrations": [
+    {
+      "name": "wps_connector_wps_binding_v7",
+      "type": "wps"
+    },
+    {
+      "name": "wps_connector_et_binding_v7",
+      "type": "et"
+    }
+  ]
+}

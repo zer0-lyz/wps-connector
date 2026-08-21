@@ -1,11 +1,8 @@
 import { readdir, readFile, writeFile, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { dirname, join, basename } from "node:path";
 import { homedir } from "node:os";
-
-const execFileAsync = promisify(execFile);
+import { queryReadonly } from "../vendor/connector-shared/sqliteStore.js";
 
 function argValue(name, fallback = "") {
   const idx = process.argv.indexOf(name);
@@ -102,8 +99,7 @@ async function readCodexThreadIndex(codexHome) {
     "order by recency_at_ms desc, updated_at_ms desc, id desc"
   ].join(" ");
   try {
-    const { stdout } = await execFileAsync("sqlite3", ["-json", dbPath, sql], { maxBuffer: 1024 * 1024 * 20 });
-    const rows = JSON.parse(stdout || "[]").map((row, index) => ({ ...row, catalogOrder: index }));
+    const rows = (await queryReadonly(dbPath, sql)).map((row, index) => ({ ...row, catalogOrder: index }));
     return { byId: new Map(rows.map((row) => [String(row.id), row])), rows };
   } catch {
     return { byId: new Map(), rows: [] };

@@ -8,7 +8,8 @@
     "bridge": "node apps/bridge/server.js",
     "mcp": "node apps/mcp/server.js",
     "simulator": "node apps/wps-addin/simulator.js",
-    "check": "node --check apps/bridge/codexAgent.js && node --check apps/bridge/server.js && node --check apps/mcp/server.js && node --check apps/shared/toolSchemas.js && node --check apps/wps-addin/main.js && node --check apps/wps-addin/simulator.js && node --check scripts/sync-codex-catalog.js && node --check scripts/disable-wps-js-debug-mac.js && node --check scripts/agent-connection-status.js && node --check scripts/agent-tool-call.js && node --check tests/fixtures/fake-codex-app-server.js && node --check tests/e2e.js",
+    "check": "node --check apps/bridge/codexAgent.js && node --check apps/bridge/server.js && node --check apps/mcp/server.js && node --check apps/shared/toolSchemas.js && node --check apps/wps-addin/main.js && node --check apps/wps-addin/simulator.js && node --check scripts/sync-codex-catalog.js && node --check scripts/agent-connection-status.js && node --check scripts/agent-tool-call.js && node --check tests/fixtures/fake-codex-app-server.js && node --check tests/e2e.js",
+    "check:mac": "npm run check && node --check scripts/disable-wps-js-debug-mac.js",
     "test": "node tests/e2e.js",
     "test:et": "node scripts/regression-et.js",
     "sync:plugin-runtime:mac": "bash scripts/sync-plugin-runtime-mac.sh",
@@ -27,6 +28,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "sql.js": "1.14.1",
     "ws": "^8.21.1"
   }
 }

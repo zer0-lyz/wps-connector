@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
 const WPS_CONNECTOR_CLIENT_VERSION = "0.2.1";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.07.31-agent-codex-composer.4";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.08.17-et-graphics.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
 const WPS_CONNECTOR_POLL_INTERVAL_MS = 750;
 const WPS_CONNECTOR_WPP_IDLE_POLL_INTERVAL_MS = 15000;
@@ -17,10 +17,20 @@ let wpsConnectorHeartbeatTimer = null;
 let wpsConnectorPollInFlight = false;
 let wpsConnectorHeartbeatInFlight = false;
 let wpsConnectorFastPollUntil = 0;
+let wpsConnectorStartPromise = null;
 const wpsConnectorCommentIdMap = {};
 const wpsConnectorRangeIdMap = {};
 const wpsConnectorFallbackDocumentKeys = {};
 const wpsConnectorDocumentObjectKeys = new WeakMap();
+
+// WPS Windows builds do not expose the browser global consistently. Ribbon
+// callbacks must use the same global object as the runtime page without
+// assuming that globalThis exists.
+function wpsConnectorGlobalObject() {
+  if (typeof window !== "undefined") return window;
+  if (typeof globalThis !== "undefined") return globalThis;
+  return {};
+}
 
 function wpsConnectorUuid() {
   if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
@@ -90,6 +100,27 @@ function wpsConnectorColumnName(index) {
 function wpsConnectorA1(row, column) {
   return `${wpsConnectorColumnName(column)}${row}`;
 }
+const WPS_CONNECTOR_ET_CHART_TYPE_CONSTANTS = {
+  column: 51,
+  bar: 57,
+  line: 4,
+  pie: 5,
+  combo: -4152,
+  area: 1,
+  scatter: -4169,
+};
+const WPS_CONNECTOR_ET_LEGEND_POSITION_CONSTANTS = {
+  top: -4160,
+  bottom: -4107,
+  left: -4131,
+  right: -4152,
+};
+const WPS_CONNECTOR_ET_SHAPE_TYPE_CONSTANTS = {
+  rectangle: 1,
+  oval: 9,
+  arrow: 33,
+  line: 32,
+};
 class WpsConnectorError extends Error {
   constructor(code, message, details = {}) {
     super(message);
@@ -342,7 +373,7 @@ function wpsConnectorScope() {
   const documentIdentity = wpsConnectorDocumentIdentity(app, host);
   const documentKey = wpsConnectorDocumentKey(host, documentIdentity);
   const sessionId = `wps-${host}-${wpsConnectorHash(documentKey)}`;
-  const capabilities = host === "et" ? ["et.read_selection", "et.select_range", "et.inspect_sheet_overlays", "et.delete_sheet_overlays", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.read_format_sample", "et.verify_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks", "et.save_workbook"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values", "wpp.ensure_table_sync_anchor", "wpp.resolve_table_sync_anchor", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
+  const capabilities = host === "et" ? ["et.read_selection", "et.select_range", "et.inspect_sheet_overlays", "et.delete_sheet_overlays", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.read_format_sample", "et.verify_range", "et.clear_range", "et.insert_range", "et.delete_range", "et.find_cells", "et.write_blocks", "et.save_workbook", "et.create_chart", "et.insert_picture", "et.insert_shape"] : host === "wpp" ? ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values", "wpp.ensure_table_sync_anchor", "wpp.resolve_table_sync_anchor", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.insert_news_article", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table", "wps.open_pane"] : [];
   return { app, host, documentIdentity, documentKey, sessionId, capabilities };
 }
 async function wpsConnectorRegister() {
@@ -574,6 +605,475 @@ function wpsConnectorEtSaveWorkbook(input = {}) {
   return { host: "et", saved: true, path: identity.fullPath || identity.path || identity.name || "", savedAt: new Date().toISOString(), documentIdentity: identity, readback };
 }
 
+function wpsConnectorEtRange(input = {}, address, field = "address") {
+  const text = String(address || "").trim();
+  if (!text) wpsConnectorFail("INVALID_ADDRESS", `${field} is required.`, { field });
+  const match = /^(?:(?:'([^']+)'|([^!]+))!)?\$?([A-Za-z]{1,3})\$?(\d{1,7})(?::\$?([A-Za-z]{1,3})\$?(\d{1,7}))?$/.exec(text);
+  if (!match) wpsConnectorFail("INVALID_ADDRESS", `Invalid range address: ${text}`, { field, address: text });
+  const sourceSheetName = match[1] || match[2] || "";
+  const local = `${match[3]}${match[4]}${match[5] ? `:${match[5]}${match[6]}` : ""}`;
+  const targetSheet = sourceSheetName ? wpsConnectorSheet({ ...input, sheetName: sourceSheetName }) : wpsConnectorSheet(input);
+  try {
+    const range = targetSheet.Range(local);
+    if (!range) throw new Error("empty range");
+    return {
+      sheet: targetSheet,
+      range,
+      address: text,
+      sheetName: String(wpsConnectorMember(targetSheet, "Name") || sourceSheetName || input.sheetName || ""),
+    };
+  } catch (error) {
+    if (error?.code) throw error;
+    wpsConnectorFail("INVALID_ADDRESS", `Invalid range address: ${text}`, { field, address: text, hostMessage: error?.message || String(error) });
+  }
+}
+function wpsConnectorEtAnchor(input = {}) {
+  const { sheet, address } = wpsConnectorRange(input, "address");
+  let left = 0;
+  let top = 0;
+  try { left = Number(wpsConnectorMember(sheet.Range(address), "Left") || 0); } catch {}
+  try { top = Number(wpsConnectorMember(sheet.Range(address), "Top") || 0); } catch {}
+  return { sheet, address, left: Number.isFinite(left) ? left : 0, top: Number.isFinite(top) ? top : 0 };
+}
+function wpsConnectorEtChartTypeConstant(chartType) {
+  const type = String(chartType || "").trim().toLowerCase();
+  const constant = WPS_CONNECTOR_ET_CHART_TYPE_CONSTANTS[type];
+  if (constant === undefined) wpsConnectorFail("INVALID_ARGUMENT", `Unsupported chartType: ${chartType}`, { chartType, supported: Object.keys(WPS_CONNECTOR_ET_CHART_TYPE_CONSTANTS) });
+  return constant;
+}
+function wpsConnectorEtLegendPositionConstant(legendPosition) {
+  const position = String(legendPosition || "none").trim().toLowerCase();
+  if (position === "none") return null;
+  const constant = WPS_CONNECTOR_ET_LEGEND_POSITION_CONSTANTS[position];
+  if (constant === undefined) wpsConnectorFail("INVALID_ARGUMENT", `Unsupported legendPosition: ${legendPosition}`, { legendPosition, supported: Object.keys(WPS_CONNECTOR_ET_LEGEND_POSITION_CONSTANTS) });
+  return constant;
+}
+function wpsConnectorEtShapeTypeInfo(shapeType) {
+  const type = String(shapeType || "").trim().toLowerCase();
+  if (type === "textbox") return { type, textBox: true, autoShapeType: 17 };
+  const autoShapeType = WPS_CONNECTOR_ET_SHAPE_TYPE_CONSTANTS[type];
+  if (autoShapeType === undefined) wpsConnectorFail("INVALID_ARGUMENT", `Unsupported shapeType: ${shapeType}`, { shapeType, supported: Object.keys(WPS_CONNECTOR_ET_SHAPE_TYPE_CONSTANTS) });
+  return { type, textBox: false, autoShapeType };
+}
+function wpsConnectorEtChartFromShape(shape) {
+  if (!shape) return null;
+  try { const direct = wpsConnectorMember(shape, "Chart"); if (direct) return direct; } catch {}
+  try {
+    const chartObject = wpsConnectorMember(shape, "ChartObject");
+    if (chartObject) {
+      const nested = wpsConnectorMember(chartObject, "Chart");
+      if (nested) return nested;
+    }
+  } catch {}
+  return null;
+}
+function wpsConnectorEtChartTitle(shape) {
+  const chart = wpsConnectorEtChartFromShape(shape);
+  if (!chart) return "";
+  for (const attempt of [
+    () => wpsConnectorMember(wpsConnectorMember(chart, "ChartTitle"), "Text"),
+    () => wpsConnectorMember(wpsConnectorMember(wpsConnectorMember(chart, "ChartTitle"), "Characters"), "Text"),
+    () => wpsConnectorMember(chart, "Title"),
+  ]) {
+    try {
+      const value = attempt();
+      if (value !== undefined && value !== null && String(value)) return String(value);
+    } catch {}
+  }
+  return "";
+}
+function wpsConnectorEtShapeKind(shape) {
+  if (wpsConnectorEtChartFromShape(shape)) return "chart";
+  const type = Number(wpsConnectorMember(shape, "Type") || 0);
+  if ([11, 13].includes(type)) return "picture";
+  if (type === 17) return "textBox";
+  try { if (wpsConnectorMember(shape, "PictureFormat")) return "picture"; } catch {}
+  return "shape";
+}
+function wpsConnectorEtShapeItem(shape, index, sheetName) {
+  const type = Number(wpsConnectorMember(shape, "Type") || 0);
+  const item = {
+    index,
+    name: String(wpsConnectorMember(shape, "Name") || ""),
+    kind: wpsConnectorEtShapeKind(shape),
+    text: wpsConnectorEtShapeText(shape),
+    chartTitle: wpsConnectorEtChartTitle(shape),
+    visible: wpsConnectorMember(shape, "Visible"),
+    left: wpsConnectorMember(shape, "Left"),
+    top: wpsConnectorMember(shape, "Top"),
+    width: wpsConnectorMember(shape, "Width"),
+    height: wpsConnectorMember(shape, "Height"),
+  };
+  if (type) item.type = type;
+  return item;
+}
+function wpsConnectorEtLastShape(sheet, beforeCount = 0) {
+  const shapes = sheet.Shapes;
+  const count = Number(wpsConnectorMember(shapes, "Count") || 0);
+  for (let i = count; i > beforeCount; i -= 1) {
+    try {
+      const shape = shapes.Item(i);
+      if (shape) return shape;
+    } catch {}
+  }
+  return null;
+}
+function wpsConnectorEtAddChartShape(sheet, chartType, left, top, width, height) {
+  const shapes = sheet.Shapes;
+  const before = Number(wpsConnectorMember(shapes, "Count") || 0);
+  const errors = [];
+  const attempts = [
+    ["Shapes.AddChart2", () => wpsConnectorMember(shapes, "AddChart2", 251, chartType, left, top, width, height, true)],
+    ["Shapes.AddChart(type)", () => wpsConnectorMember(shapes, "AddChart", chartType, left, top, width, height)],
+    ["Shapes.AddChart(rect)", () => wpsConnectorMember(shapes, "AddChart", left, top, width, height)],
+  ];
+  for (const [label, attempt] of attempts) {
+    try {
+      const created = attempt();
+      if (created) return created;
+      const last = wpsConnectorEtLastShape(sheet, before);
+      if (last) return last;
+    } catch (error) {
+      errors.push({ attempt: label, message: error?.message || String(error) });
+    }
+  }
+  try {
+    const chartObjects = wpsConnectorMember(sheet, "ChartObjects");
+    if (chartObjects && typeof wpsConnectorMember(chartObjects, "Add") === "function") {
+      const chartObject = wpsConnectorMember(chartObjects, "Add", left, top, width, height);
+      if (chartObject) return wpsConnectorEtChartFromShape(chartObject) || chartObject;
+    }
+  } catch (error) {
+    errors.push({ attempt: "ChartObjects.Add", message: error?.message || String(error) });
+  }
+  wpsConnectorFail("CHART_CREATE_FAILED", "WPS Spreadsheet did not create the requested chart.", { chartType, attempts: errors });
+}
+function wpsConnectorEtChartSeriesCollection(chart) {
+  try { return wpsConnectorMember(chart, "SeriesCollection") || null; } catch { return null; }
+}
+function wpsConnectorEtChartSeriesCount(chart) {
+  const collection = wpsConnectorEtChartSeriesCollection(chart);
+  if (!collection) return 0;
+  try { return Number(wpsConnectorMember(collection, "Count") || 0); } catch { return 0; }
+}
+function wpsConnectorEtChartSeries(chart, index) {
+  const collection = wpsConnectorEtChartSeriesCollection(chart);
+  if (!collection) return null;
+  try { return collection.Item(index); } catch { return null; }
+}
+function wpsConnectorEtChartClearSeries(chart) {
+  const count = wpsConnectorEtChartSeriesCount(chart);
+  for (let i = count; i >= 1; i -= 1) {
+    try {
+      const series = wpsConnectorEtChartSeries(chart, i);
+      if (series && typeof wpsConnectorMember(series, "Delete") === "function") wpsConnectorMember(series, "Delete");
+    } catch {}
+  }
+}
+function wpsConnectorEtChartSetSeriesValues(series, range) {
+  try { series.Values = range; return true; } catch {}
+  try { series.Value = range; return true; } catch {}
+  try { wpsConnectorMember(series, "Values", range); return true; } catch {}
+  return false;
+}
+function wpsConnectorEtChartSetSeriesCategories(series, range) {
+  try { series.XValues = range; return true; } catch {}
+  try { wpsConnectorMember(series, "XValues", range); return true; } catch {}
+  return false;
+}
+function wpsConnectorEtChartAddSeries(chart, resolved) {
+  const collection = wpsConnectorEtChartSeriesCollection(chart);
+  if (!collection) return null;
+  const before = wpsConnectorEtChartSeriesCount(chart);
+  for (const attempt of [
+    () => wpsConnectorMember(collection, "NewSeries"),
+    () => wpsConnectorMember(collection, "Add", resolved.range),
+    () => wpsConnectorMember(collection, "Add"),
+  ]) {
+    try {
+      const series = attempt();
+      if (series) return series;
+      if (wpsConnectorEtChartSeriesCount(chart) > before) return wpsConnectorEtChartSeries(chart, before + 1);
+    } catch {}
+  }
+  return null;
+}
+function wpsConnectorEtChartApplySource(chart, input, dataRange) {
+  const seriesRanges = Array.isArray(input.seriesRanges) ? input.seriesRanges.map((item) => String(item || "").trim()).filter(Boolean) : [];
+  if (seriesRanges.length) {
+    wpsConnectorEtChartClearSeries(chart);
+    const added = [];
+    const categoryResolved = input.categoryRange ? wpsConnectorEtRange(input, input.categoryRange, "categoryRange") : null;
+    for (const rangeText of seriesRanges) {
+      const resolved = wpsConnectorEtRange(input, rangeText, "seriesRanges[]");
+      const series = wpsConnectorEtChartAddSeries(chart, resolved);
+      if (!series || !wpsConnectorEtChartSetSeriesValues(series, resolved.range)) {
+        wpsConnectorFail("CHART_DATA_APPLY_FAILED", "WPS Spreadsheet could not apply one chart series.", { range: rangeText });
+      }
+      if (categoryResolved) wpsConnectorEtChartSetSeriesCategories(series, categoryResolved.range);
+      added.push(rangeText);
+    }
+    return { sourceApplied: true, seriesApplied: added.length, seriesRanges: added };
+  }
+  let sourceApplied = false;
+  for (const attempt of [
+    () => wpsConnectorMember(chart, "SetSourceData", dataRange.range, 2),
+    () => wpsConnectorMember(wpsConnectorMember(chart, "Chart"), "SetSourceData", dataRange.range, 2),
+  ]) {
+    try { attempt(); sourceApplied = true; break; } catch {}
+  }
+  if (!sourceApplied) {
+    const before = wpsConnectorEtChartSeriesCount(chart);
+    const series = wpsConnectorEtChartAddSeries(chart, dataRange);
+    if (series || wpsConnectorEtChartSeriesCount(chart) > before) {
+      if (series) wpsConnectorEtChartSetSeriesValues(series, dataRange.range);
+      sourceApplied = true;
+    }
+  }
+  if (!sourceApplied) wpsConnectorFail("CHART_DATA_APPLY_FAILED", "WPS Spreadsheet did not apply the chart data source.", { dataRange: input.dataRange });
+  if (input.categoryRange) {
+    const categoryResolved = wpsConnectorEtRange(input, input.categoryRange, "categoryRange");
+    const count = wpsConnectorEtChartSeriesCount(chart);
+    for (let i = 1; i <= count; i += 1) {
+      const series = wpsConnectorEtChartSeries(chart, i);
+      if (series) wpsConnectorEtChartSetSeriesCategories(series, categoryResolved.range);
+    }
+  }
+  return { sourceApplied: true, seriesApplied: wpsConnectorEtChartSeriesCount(chart), seriesRanges: [] };
+}
+function wpsConnectorEtChartApplyTitleLegend(chart, input = {}) {
+  const title = String(input.title || "").trim();
+  if (title) {
+    try {
+      chart.HasTitle = true;
+      const titleObject = wpsConnectorMember(chart, "ChartTitle");
+      if (titleObject) {
+        try { titleObject.Text = title; } catch { wpsConnectorMember(titleObject, "Text", title); }
+      }
+    } catch {}
+  }
+  if (input.legendPosition === undefined) return;
+  const legendPosition = wpsConnectorEtLegendPositionConstant(input.legendPosition);
+  try {
+    chart.HasLegend = legendPosition !== null;
+    if (legendPosition !== null) {
+      const legend = wpsConnectorMember(chart, "Legend");
+      if (legend) legend.Position = legendPosition;
+    }
+  } catch {}
+}
+function wpsConnectorEtSetShapeName(shape, name) {
+  if (!shape || !name) return String(wpsConnectorMember(shape, "Name") || name || "");
+  try { shape.Name = name; } catch { try { wpsConnectorMember(shape, "Name", name); } catch {} }
+  return String(wpsConnectorMember(shape, "Name") || name);
+}
+function wpsConnectorEtVerifyOverlayObject(sheet, expected = {}) {
+  const sheetName = String(wpsConnectorMember(sheet, "Name") || "");
+  const inspected = wpsConnectorEtSheetOverlays({ sheetName, maxItems: 500 });
+  let object = null;
+  if (expected.name) object = inspected.shapes.find((item) => item.name === expected.name) || null;
+  if (!object && expected.kind) object = inspected.shapes.filter((item) => item.kind === expected.kind).slice(-1)[0] || null;
+  return { found: Boolean(object), object: object || null, shapeCount: inspected.counts.shapes };
+}
+function wpsConnectorEtCreateChart(input = {}) {
+  const anchor = wpsConnectorEtAnchor(input);
+  const chartType = String(input.chartType || "").trim().toLowerCase();
+  const chartTypeConstant = wpsConnectorEtChartTypeConstant(chartType);
+  const dataRange = wpsConnectorEtRange(input, input.dataRange, "dataRange");
+  const width = input.width === undefined ? 360 : wpsConnectorPositiveNumber(input.width, "width");
+  const height = input.height === undefined ? 240 : wpsConnectorPositiveNumber(input.height, "height");
+  const shape = wpsConnectorEtAddChartShape(anchor.sheet, chartTypeConstant, anchor.left, anchor.top, width, height);
+  if (!shape) wpsConnectorFail("CHART_CREATE_FAILED", "WPS Spreadsheet did not create the requested chart.", { chartType });
+  const chart = wpsConnectorEtChartFromShape(shape);
+  if (!chart) wpsConnectorFail("CHART_CREATE_FAILED", "WPS Spreadsheet chart object is not available after insertion.", { chartType });
+  wpsConnectorEtChartApplySource(chart, input, dataRange);
+  wpsConnectorEtChartApplyTitleLegend(chart, input);
+  const preferredName = String(input.name || `ConnectorChart_${Date.now().toString(36)}`);
+  const shapeName = wpsConnectorEtSetShapeName(shape, preferredName);
+  const shapeIndex = Number(wpsConnectorMember(anchor.sheet.Shapes, "Count") || 0);
+  const verification = wpsConnectorEtVerifyOverlayObject(anchor.sheet, { name: shapeName, kind: "chart" });
+  return {
+    host: "et",
+    createdChart: true,
+    chartType,
+    shapeName,
+    shapeIndex,
+    address: anchor.address,
+    sheetName: String(wpsConnectorMember(anchor.sheet, "Name") || input.sheetName || ""),
+    dataRange: input.dataRange,
+    categoryRange: input.categoryRange || "",
+    seriesRanges: Array.isArray(input.seriesRanges) ? input.seriesRanges : [],
+    title: input.title || "",
+    legendPosition: input.legendPosition || "none",
+    width,
+    height,
+    verification,
+  };
+}
+function wpsConnectorEtPictureSource(input = {}) {
+  const source = String(input.imagePath || input.imageUrl || "").trim();
+  if (!source) wpsConnectorFail("INVALID_ARGUMENT", "imagePath or imageUrl is required.", { fields: ["imagePath", "imageUrl"] });
+  return source;
+}
+function wpsConnectorEtAddPictureShape(sheet, source, left, top, input = {}) {
+  const shapes = sheet.Shapes;
+  const before = Number(wpsConnectorMember(shapes, "Count") || 0);
+  const defaultWidth = input.width === undefined ? 160 : wpsConnectorPositiveNumber(input.width, "width");
+  const defaultHeight = input.height === undefined ? 120 : wpsConnectorPositiveNumber(input.height, "height");
+  const errors = [];
+  const attempts = [
+    ["Shapes.AddPicture(full)", () => wpsConnectorMember(shapes, "AddPicture", source, false, true, left, top, defaultWidth, defaultHeight)],
+    ["Shapes.AddPicture(simple)", () => wpsConnectorMember(shapes, "AddPicture", source, false, true, left, top)],
+    ["Shapes.AddPicture(source)", () => wpsConnectorMember(shapes, "AddPicture", source)],
+  ];
+  for (const [label, attempt] of attempts) {
+    try {
+      const created = attempt();
+      if (created) return created;
+      const last = wpsConnectorEtLastShape(sheet, before);
+      if (last) return last;
+    } catch (error) {
+      errors.push({ attempt: label, message: error?.message || String(error) });
+    }
+  }
+  try {
+    const pictures = wpsConnectorMember(sheet, "Pictures");
+    if (pictures && typeof wpsConnectorMember(pictures, "Insert") === "function") {
+      const inserted = wpsConnectorMember(pictures, "Insert", source);
+      if (inserted) return inserted;
+      const last = wpsConnectorEtLastShape(sheet, before);
+      if (last) return last;
+    }
+  } catch (error) {
+    errors.push({ attempt: "Pictures.Insert", message: error?.message || String(error) });
+  }
+  wpsConnectorFail("PICTURE_INSERT_FAILED", "WPS Spreadsheet did not insert the picture. For URLs, pass a local imagePath when the host cannot load the URL.", { source, attempts: errors });
+}
+function wpsConnectorEtInsertPicture(input = {}) {
+  const source = wpsConnectorEtPictureSource(input);
+  const anchor = wpsConnectorEtAnchor(input);
+  const shape = wpsConnectorEtAddPictureShape(anchor.sheet, source, anchor.left, anchor.top, input);
+  const preferredName = String(input.name || `ConnectorPicture_${Date.now().toString(36)}`);
+  const shapeName = wpsConnectorEtSetShapeName(shape, preferredName);
+  const applied = [];
+  if (typeof input.lockAspectRatio === "boolean") {
+    try { shape.LockAspectRatio = input.lockAspectRatio ? -1 : 0; applied.push("lockAspectRatio"); } catch {}
+  }
+  if (input.width !== undefined) { try { shape.Width = wpsConnectorPositiveNumber(input.width, "width"); applied.push("width"); } catch {} }
+  if (input.height !== undefined) { try { shape.Height = wpsConnectorPositiveNumber(input.height, "height"); applied.push("height"); } catch {} }
+  const shapeIndex = Number(wpsConnectorMember(anchor.sheet.Shapes, "Count") || 0);
+  const verification = wpsConnectorEtVerifyOverlayObject(anchor.sheet, { name: shapeName, kind: "picture" });
+  return {
+    host: "et",
+    insertedPicture: true,
+    shapeName,
+    shapeIndex,
+    address: anchor.address,
+    sheetName: String(wpsConnectorMember(anchor.sheet, "Name") || input.sheetName || ""),
+    source,
+    sourceType: input.imagePath ? "path" : "url",
+    width: input.width,
+    height: input.height,
+    lockAspectRatio: input.lockAspectRatio === undefined ? true : input.lockAspectRatio,
+    applied,
+    verification,
+  };
+}
+function wpsConnectorEtColorValue(value) {
+  const text = String(value || "").trim();
+  if (!text) wpsConnectorFail("INVALID_ARGUMENT", "color is required.", { field: "color" });
+  if (/^#[0-9a-f]{6}$/i.test(text)) {
+    const number = parseInt(text.slice(1), 16);
+    return (number & 255) | (((number >> 8) & 255) << 8) | (((number >> 16) & 255) << 16);
+  }
+  return text;
+}
+function wpsConnectorEtSetShapeText(shape, text) {
+  if (text === undefined || text === null) return false;
+  try {
+    const textFrame = wpsConnectorMember(shape, "TextFrame");
+    const characters = textFrame ? wpsConnectorMember(textFrame, "Characters") : null;
+    if (characters) { characters.Text = String(text); return true; }
+  } catch {}
+  try { shape.Text = String(text); return true; } catch {}
+  try { wpsConnectorMember(shape, "Text", String(text)); return true; } catch {}
+  return false;
+}
+function wpsConnectorEtApplyShapeStyle(shape, input = {}) {
+  const applied = [];
+  if (input.fillColor !== undefined) {
+    const color = wpsConnectorEtColorValue(input.fillColor);
+    try { shape.Fill.ForeColor.RGB = color; applied.push("fillColor"); }
+    catch { try { shape.Fill.ForeColor = color; applied.push("fillColor"); } catch {} }
+  }
+  if (input.lineColor !== undefined) {
+    const color = wpsConnectorEtColorValue(input.lineColor);
+    try { shape.Line.ForeColor.RGB = color; applied.push("lineColor"); }
+    catch { try { shape.Line.ForeColor = color; applied.push("lineColor"); } catch {} }
+  }
+  if (input.width !== undefined) { try { shape.Width = wpsConnectorPositiveNumber(input.width, "width"); applied.push("width"); } catch {} }
+  if (input.height !== undefined) { try { shape.Height = wpsConnectorPositiveNumber(input.height, "height"); applied.push("height"); } catch {} }
+  return applied;
+}
+function wpsConnectorEtAddShape(sheet, info, left, top, width, height) {
+  const shapes = sheet.Shapes;
+  const before = Number(wpsConnectorMember(shapes, "Count") || 0);
+  const errors = [];
+  const attempts = [];
+  if (info.textBox) {
+    attempts.push(["Shapes.AddTextbox", () => wpsConnectorMember(shapes, "AddTextbox", 1, left, top, width, height)]);
+    attempts.push(["Shapes.AddShape(17)", () => wpsConnectorMember(shapes, "AddShape", 17, left, top, width, height)]);
+    attempts.push(["Shapes.AddShape(202)", () => wpsConnectorMember(shapes, "AddShape", 202, left, top, width, height)]);
+  } else {
+    attempts.push([`Shapes.AddShape(${info.autoShapeType})`, () => wpsConnectorMember(shapes, "AddShape", info.autoShapeType, left, top, width, height)]);
+  }
+  for (const [label, attempt] of attempts) {
+    try {
+      const created = attempt();
+      if (created) return created;
+      const last = wpsConnectorEtLastShape(sheet, before);
+      if (last) return last;
+    } catch (error) {
+      errors.push({ attempt: label, message: error?.message || String(error) });
+    }
+  }
+  wpsConnectorFail("SHAPE_INSERT_FAILED", "WPS Spreadsheet did not insert the shape.", { shapeType: info.type, attempts: errors });
+}
+function wpsConnectorEtInsertShape(input = {}) {
+  const shapeInfo = wpsConnectorEtShapeTypeInfo(input.shapeType);
+  const anchor = wpsConnectorEtAnchor(input);
+  const width = input.width === undefined
+    ? (shapeInfo.type === "textBox" ? 160 : shapeInfo.type === "line" ? 120 : 120)
+    : wpsConnectorPositiveNumber(input.width, "width");
+  const height = input.height === undefined
+    ? (shapeInfo.type === "textBox" ? 80 : shapeInfo.type === "line" ? 20 : 80)
+    : wpsConnectorPositiveNumber(input.height, "height");
+  const shape = wpsConnectorEtAddShape(anchor.sheet, shapeInfo, anchor.left, anchor.top, width, height);
+  const preferredName = String(input.name || `ConnectorShape_${Date.now().toString(36)}`);
+  const shapeName = wpsConnectorEtSetShapeName(shape, preferredName);
+  const textApplied = wpsConnectorEtSetShapeText(shape, input.text);
+  const applied = wpsConnectorEtApplyShapeStyle(shape, input);
+  if (textApplied) applied.unshift("text");
+  const shapeIndex = Number(wpsConnectorMember(anchor.sheet.Shapes, "Count") || 0);
+  const verification = wpsConnectorEtVerifyOverlayObject(anchor.sheet, { name: shapeName, kind: "shape" });
+  return {
+    host: "et",
+    insertedShape: true,
+    shapeName,
+    shapeIndex,
+    address: anchor.address,
+    sheetName: String(wpsConnectorMember(anchor.sheet, "Name") || input.sheetName || ""),
+    shapeType: shapeInfo.type,
+    text: input.text || "",
+    width,
+    height,
+    fillColor: input.fillColor || "",
+    lineColor: input.lineColor || "",
+    applied,
+    verification,
+  };
+}
+
 function wpsConnectorEtShapeText(shape) {
   const attempts = [
     () => wpsConnectorMember(wpsConnectorMember(shape, "TextFrame"), "Characters")?.Text,
@@ -583,6 +1083,8 @@ function wpsConnectorEtShapeText(shape) {
   for (const attempt of attempts) {
     try { const value = attempt(); if (value !== undefined && value !== null && String(value)) return String(value); } catch {}
   }
+  const chartTitle = wpsConnectorEtChartTitle(shape);
+  if (chartTitle) return chartTitle;
   return "";
 }
 function wpsConnectorEtSheetOverlays(input = {}) {
@@ -596,7 +1098,7 @@ function wpsConnectorEtSheetOverlays(input = {}) {
     const count = Number(wpsConnectorMember(collection, "Count") || 0);
     for (let i = 1; i <= Math.min(count, maxItems); i += 1) {
       const shape = collection.Item(i);
-      shapes.push({ index: i, name: String(wpsConnectorMember(shape, "Name") || ""), text: wpsConnectorEtShapeText(shape), visible: wpsConnectorMember(shape, "Visible"), left: wpsConnectorMember(shape, "Left"), top: wpsConnectorMember(shape, "Top"), width: wpsConnectorMember(shape, "Width"), height: wpsConnectorMember(shape, "Height") });
+      shapes.push(wpsConnectorEtShapeItem(shape, i, String(wpsConnectorMember(sheet, "Name") || "")));
     }
   } catch (error) { shapes.warning = error.message; }
   try {
@@ -3158,7 +3660,8 @@ function wpsConnectorPublishPaneView(sessionId, view) {
 }
 function wpsConnectorNormalizePaneView(input = "connector") {
   const raw = typeof input === "string" ? input : input?.view;
-  return globalThis.ConnectorSuiteUI?.resolveView(raw, "WPS")
+  const root = wpsConnectorGlobalObject();
+  return root.ConnectorSuiteUI?.resolveView(raw, "WPS")
     || (raw === "agent" ? "agent" : raw === "sync" ? "sync" : "connector");
 }
 async function wpsConnectorOpenPane(input = "connector") {
@@ -3175,31 +3678,78 @@ async function wpsConnectorOpenPane(input = "connector") {
   wpsConnectorPublishPaneView(scope.sessionId, view);
   let taskpaneId = null;
   try { taskpaneId = app.PluginStorage && app.PluginStorage.getItem(key); } catch {}
-  if (!taskpaneId) {
+  let taskpane = null;
+  if (taskpaneId) {
+    try {
+      taskpane = app.GetTaskPane(taskpaneId);
+    } catch (error) {
+      console.warn("[wps-connector] Stored task pane is stale; creating a replacement.", error);
+      try { app.PluginStorage?.removeItem?.(key); } catch {}
+    }
+  }
+  if (!taskpane) {
     const taskpane = app.CreateTaskPane(taskpaneUrl);
     if (app.PluginStorage) app.PluginStorage.setItem(key, taskpane.ID);
     taskpane.Visible = true;
     wpsConnectorNotifyPaneView(view);
     return { opened: true, taskpaneId: taskpane.ID, url: taskpaneUrl };
   }
-  const taskpane = app.GetTaskPane(taskpaneId);
-  try { taskpane.Url = taskpaneUrl; } catch {}
+  try {
+    taskpane.Url = taskpaneUrl;
+  } catch (error) {
+    console.warn("[wps-connector] Stored task pane rejected navigation; recreating it.", error);
+    try { taskpane.Delete?.(); } catch {}
+    try { app.PluginStorage?.removeItem?.(key); } catch {}
+    const replacement = app.CreateTaskPane(taskpaneUrl);
+    if (app.PluginStorage) app.PluginStorage.setItem(key, replacement.ID);
+    replacement.Visible = true;
+    wpsConnectorNotifyPaneView(view);
+    return { opened: true, taskpaneId: replacement.ID, url: taskpaneUrl, recreated: true };
+  }
   taskpane.Visible = true;
   wpsConnectorNotifyPaneView(view);
   return { opened: true, taskpaneId, url: taskpaneUrl };
 }
+function wpsConnectorControlId(control) {
+  if (typeof control === "string") return control.trim();
+  const candidates = [
+    control?.Id,
+    control?.id,
+    control?.ID,
+    control?.getId,
+    control?.getID,
+    control?.getControlId,
+  ];
+  for (const candidate of candidates) {
+    try {
+      const value = typeof candidate === "function" ? candidate.call(control) : candidate;
+      if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+    } catch {}
+  }
+  return "";
+}
 function OnAction(control) {
-  const id = control && (control.Id || control.id);
-  if (id === "btnShowConnectorPane" || id === "wpsConnectorPaneButton") wpsConnectorOpenPane("connector").catch(console.error);
-  if (id === "btnShowAgentChat") wpsConnectorOpenPane("agent").catch(console.error);
-  if (id === "btnShowTableSync") wpsConnectorOpenPane("sync").catch(console.error);
-  wpsConnectorStart().catch(console.error);
+  const id = wpsConnectorControlId(control);
+  const view = id === "btnShowConnectorPane" || id === "wpsConnectorPaneButton"
+    ? "connector"
+    : id === "btnShowAgentChat"
+      ? "agent"
+      : id === "btnShowTableSync"
+        ? "sync"
+        : "";
+  if (!view) {
+    console.warn("[wps-connector] Ignored unknown Ribbon action:", id || control);
+    return true;
+  }
+  wpsConnectorStart()
+    .then(() => wpsConnectorOpenPane(view))
+    .catch((error) => console.error("[wps-connector] Ribbon action failed:", error));
   return true;
 }
 function OnGetEnabled() { return true; }
 function OnGetVisible() { return true; }
 function GetImage(control) {
-  const id = control && (control.Id || control.id);
+  const id = wpsConnectorControlId(control);
   if (id === "btnShowAgentChat") return "images/agent.svg";
   if (id === "btnShowTableSync") return "images/connector.svg";
   if (id === "btnShowConnectorPane" || id === "wpsConnectorPaneButton") return "images/connector.svg";
@@ -3225,6 +3775,9 @@ async function wpsConnectorExecute(command) {
   if (command.toolName === "et.verify_range") return wpsConnectorEtVerifyRange(command.input || {});
   if (command.toolName === "et.write_blocks") return wpsConnectorEtWriteBlocks(command.input || {});
   if (command.toolName === "et.save_workbook") return wpsConnectorEtSaveWorkbook(command.input || {});
+  if (command.toolName === "et.create_chart") return wpsConnectorEtCreateChart(command.input || {});
+  if (command.toolName === "et.insert_picture") return wpsConnectorEtInsertPicture(command.input || {});
+  if (command.toolName === "et.insert_shape") return wpsConnectorEtInsertShape(command.input || {});
   if (command.toolName === "wpp.read_selection") return wpsConnectorWppSelection(command.input || {});
   if (command.toolName === "wpp.read_document_identity") return wpsConnectorWppDocumentIdentity(command.input || {});
   if (command.toolName === "wpp.read_document_text") return wpsConnectorWppReadDocumentText(command.input || {});
@@ -3469,21 +4022,31 @@ function wpsConnectorScheduleHeartbeat(delay) {
 }
 async function wpsConnectorStart() {
   if (wpsConnectorStarted) return;
-  await wpsConnectorRegister();
-  wpsConnectorStarted = true;
-  wpsConnectorSchedulePoll(250);
-  wpsConnectorScheduleHeartbeat(wpsConnectorCurrentHeartbeatDelay());
+  if (wpsConnectorStartPromise) return wpsConnectorStartPromise;
+  wpsConnectorStartPromise = (async () => {
+    await wpsConnectorRegister();
+    wpsConnectorStarted = true;
+    wpsConnectorSchedulePoll(250);
+    wpsConnectorScheduleHeartbeat(wpsConnectorCurrentHeartbeatDelay());
+  })();
+  try {
+    return await wpsConnectorStartPromise;
+  } finally {
+    wpsConnectorStartPromise = null;
+  }
 }
-if (typeof window !== "undefined") {
-  window.wpsConnectorStart = wpsConnectorStart;
-  window.wpsConnectorOpenPane = wpsConnectorOpenPane;
-  window.wpsConnectorWakeCommandPump = wpsConnectorWakeCommandPump;
-  window.wpsConnectorPollOnce = wpsConnectorPollOnce;
-  window.OnAction = OnAction;
-  window.OnAddinLoad = OnAddinLoad;
-  window.OnGetEnabled = OnGetEnabled;
-  window.OnGetVisible = OnGetVisible;
-  window.GetImage = GetImage;
-  window.OnGetImage = GetImage;
-}
+const wpsConnectorRuntimeGlobal = wpsConnectorGlobalObject();
+wpsConnectorRuntimeGlobal.wpsConnectorStart = wpsConnectorStart;
+wpsConnectorRuntimeGlobal.wpsConnectorOpenPane = wpsConnectorOpenPane;
+wpsConnectorRuntimeGlobal.wpsConnectorWakeCommandPump = wpsConnectorWakeCommandPump;
+wpsConnectorRuntimeGlobal.wpsConnectorPollOnce = wpsConnectorPollOnce;
+wpsConnectorRuntimeGlobal.OnAction = OnAction;
+wpsConnectorRuntimeGlobal.OnAddinLoad = OnAddinLoad;
+wpsConnectorRuntimeGlobal.OnGetEnabled = OnGetEnabled;
+wpsConnectorRuntimeGlobal.OnGetVisible = OnGetVisible;
+wpsConnectorRuntimeGlobal.GetImage = GetImage;
+wpsConnectorRuntimeGlobal.OnGetImage = GetImage;
+// Keep aliases for WPS builds that normalize callback names differently.
+wpsConnectorRuntimeGlobal.onAction = OnAction;
+wpsConnectorRuntimeGlobal.onAddinLoad = OnAddinLoad;
 if (typeof Application !== "undefined" || (typeof window !== "undefined" && window.Application)) wpsConnectorStart().catch(console.error);

@@ -2,9 +2,17 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { CodexAgentClient } from "../apps/bridge/codexAgent.js";
+
+// npm --prefix is not guaranteed to change the process working directory on
+// Windows. Keep all relative fixture and source reads anchored to this tree.
+const sourceRoot = fileURLToPath(new URL("..", import.meta.url));
+process.chdir(sourceRoot);
+const fakeCodexFixture = fileURLToPath(new URL("./fixtures/fake-codex-app-server.js", import.meta.url));
+const fakeCodexArgs = JSON.stringify([fakeCodexFixture]);
 
 const port = 40216;
 const updatePort = 40218;
@@ -124,21 +132,34 @@ function assert(condition, message) {
 }
 
 async function main() {
-  const externalTurnProbe = new CodexAgentClient({ sharedTransport: false });
+  // The E2E suite must never probe a user's real Codex executable. The real
+  // bridge/session/tool checks below remain strict and still use this fixture.
+  process.env.WPS_CONNECTOR_CODEX_BIN = process.execPath;
+  process.env.WPS_CONNECTOR_CODEX_ARGS = fakeCodexArgs;
+  const externalTurnProbe = new CodexAgentClient({ command: process.execPath, args: [fakeCodexFixture], sharedTransport: false });
   externalTurnProbe.onNotification("turn/started", { threadId: "external-thread", turn: { id: "external-turn" } });
   externalTurnProbe.onNotification("item/agentMessage/delta", { threadId: "external-thread", turnId: "external-turn", delta: "外部回复" });
   externalTurnProbe.onNotification("turn/completed", { threadId: "external-thread", turn: { id: "external-turn", status: "completed" } });
   assert(externalTurnProbe.getRun("external-thread")?.delta === "外部回复" && externalTurnProbe.getRun("external-thread")?.status === "completed", "Agent client did not surface a turn started by Codex Desktop.");
+  const missingCodexCommand = process.platform === "win32" ? "Z:\\missing\\codex.exe" : "/definitely/missing/codex";
+  const unavailableTransportProbe = new CodexAgentClient({ command: missingCodexCommand, args: ["app-server"], sharedTransport: false });
+  let unavailableWarningCount = 0;
+  unavailableTransportProbe.on("warning", () => { unavailableWarningCount += 1; });
+  let unavailableTransportFailed = false;
+  try { await unavailableTransportProbe.ensureStarted(); } catch { unavailableTransportFailed = true; }
+  assert(unavailableTransportFailed && unavailableWarningCount > 0 && unavailableTransportProbe.sharedTransportStatus().status === "unavailable", "Unavailable Codex transport must be a structured warning, not an unhandled bridge failure.");
   const pluginSkill = readFileSync("plugins/wps-connector/skills/wps-connector/SKILL.md", "utf8");
   assert(pluginSkill.includes("Two-Path Routing") && pluginSkill.includes("unsupported call") && pluginSkill.includes("restart WPS"), "Plugin skill missed mandatory automatic MCP fallback guidance.");
   const catalogSyncScript = readFileSync("scripts/sync-codex-catalog.js", "utf8");
   assert(catalogSyncScript.includes("pinned-project-ids") && catalogSyncScript.includes("project-order") && catalogSyncScript.includes("sidebar-project-thread-orders"), "Catalog sync must preserve Codex project and conversation sidebar order.");
   assert(catalogSyncScript.includes("from threads where cwd<>'' and archived=0") && !catalogSyncScript.includes("for (const project of existing.projects"), "Catalog sync must exclude archived threads and stale projects from previous snapshots.");
-  for (const deployScript of ["scripts/deploy-runtime-mac.sh", "plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh"]) {
-    const source = readFileSync(deployScript, "utf8");
-    assert(source.includes("--exclude 'project-bindings.local.json'"), `${deployScript} may delete saved bindings during deployment.`);
-    assert(source.includes("--exclude 'codex-catalog.snapshot.json'"), `${deployScript} may delete the local catalog snapshot during deployment.`);
-    assert(source.includes("--exclude 'et-wpp-table-syncs.local.json'"), `${deployScript} may delete saved WPS table sync mappings during deployment.`);
+  if (process.platform === "darwin" && existsSync("scripts/deploy-runtime-mac.sh") && existsSync("plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh")) {
+    for (const deployScript of ["scripts/deploy-runtime-mac.sh", "plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh"]) {
+      const source = readFileSync(deployScript, "utf8");
+      assert(source.includes("--exclude 'project-bindings.local.json'"), `${deployScript} may delete saved bindings during deployment.`);
+      assert(source.includes("--exclude 'codex-catalog.snapshot.json'"), `${deployScript} may delete the local catalog snapshot during deployment.`);
+      assert(source.includes("--exclude 'et-wpp-table-syncs.local.json'"), `${deployScript} may delete saved WPS table sync mappings during deployment.`);
+    }
   }
   const paneHtml = readFileSync("apps/wps-addin/pane.html", "utf8");
   assert(paneHtml.includes('id="connectorStatus"') && paneHtml.includes('id="agentView"') && paneHtml.includes('id="syncView"'), "pane.html must keep connector-view / agent-view / sync-view surfaces.");
@@ -153,7 +174,7 @@ async function main() {
   assert(paneHtml.includes("fetchPaneView()") && paneHtml.includes("wpsConnectorViewChanged"), "Open panes must switch between connector, Agent, and table sync views without recreating the pane.");
   assert(paneHtml.includes('onlyOnline:"true"') && paneHtml.includes("state.sessions.length===1"), "Pane session loading must recover when its original session anchor disappears after a bridge restart.");
   assert(paneHtml.includes('id="agentScopeValue"') && paneHtml.includes('id="agentClearScope"') && paneHtml.includes("operationScopeView"), "Agent pane must display the effective operation scope and provide an independent cancel action.");
-  assert(paneHtml.includes('WPS_CONNECTOR_PANE_VERSION="0.2.1"') && paneHtml.includes("20260731-agent-codex-composer-0.2.1.0"), "pane.html must not keep stale pane version or stale main.js cache keys.");
+  assert(paneHtml.includes('WPS_CONNECTOR_PANE_VERSION="0.2.1"') && paneHtml.includes("20260817-et-graphics-0.2.1.1"), "pane.html must not keep stale pane version or stale main.js cache keys.");
   assert(paneHtml.includes("agent-pane-mode") && paneHtml.includes("height:100vh") && paneHtml.includes("grid-template-rows:auto minmax(0,1fr) auto") && paneHtml.includes("max-height:none"), "Agent pane must lock the composer and scroll messages independently.");
   assert(paneHtml.includes("agent-selection-content>div:first-child{display:none}") && paneHtml.includes("agent-scope-action{flex:0 0 auto}"), "Narrow Agent pane must compact operation scope controls instead of stacking them.");
   assert(paneHtml.includes("min-height:120px;max-height:220px") && paneHtml.includes("agent-empty{display:flex"), "Agent composer must prioritize a usable input area and render an intentional empty-history state.");
@@ -169,6 +190,13 @@ async function main() {
   assert(wpsMain.includes("transport-only") && wpsMain.includes("do not re-read"), "WPP heartbeat must not touch Writer document objects while idle.");
   assert(wpsMain.includes('host === "et"') && wpsMain.includes("Writer is sensitive after table insertion"), "WPP polling must not enumerate all Writer sessions or touch document identity on every poll.");
   assert(wpsMain.includes("targetHasStableIdentity") && wpsMain.includes("await wpsConnectorRegister();"), "WPP must recover once from an empty document identity after bridge or add-in restart.");
+  assert(wpsMain.includes("function wpsConnectorGlobalObject") && wpsMain.includes("typeof globalThis") && wpsMain.includes("function wpsConnectorControlId") && wpsMain.includes("typeof control === \"string\"") && wpsMain.includes("control?.getId") && wpsMain.includes("Stored task pane is stale") && wpsMain.includes("recreating it"), "Ribbon callbacks must work across WPS global-object and control-ID variants and recover stale TaskPane handles.");
+  assert(wpsMain.includes("function wpsConnectorEtCreateChart") && wpsMain.includes("function wpsConnectorEtInsertPicture") && wpsMain.includes("function wpsConnectorEtInsertShape"), "WPS ET addin must implement chart, picture, and shape creation.");
+  assert(wpsMain.includes("et.create_chart") && wpsMain.includes("et.insert_picture") && wpsMain.includes("et.insert_shape"), "WPS ET capabilities must expose chart, picture, and shape tools.");
+  assert(wpsMain.includes("wpsConnectorStartPromise") && wpsMain.includes(".then(() => wpsConnectorOpenPane(view))"), "Ribbon actions must serialize startup before opening the requested pane.");
+  assert(wpsMain.includes("wpsConnectorRuntimeGlobal.onAction = OnAction") && wpsMain.includes("wpsConnectorRuntimeGlobal.onAddinLoad = OnAddinLoad"), "Ribbon actions must expose callback aliases on the compatible WPS runtime global object.");
+  const wpsAddinServer = readFileSync("apps/wps-addin/server.js", "utf8");
+  assert(wpsAddinServer.includes('pathname === "/"') && wpsAddinServer.includes('pathname === "/runtime.html"') && wpsAddinServer.includes('pathname === "/pane.html"') && wpsAddinServer.includes("paneRequest"), "WPS add-in routing must keep runtime and pane entry points separate.");
   const wpsServer = readFileSync("apps/bridge/server.js", "utf8");
   assert(wpsServer.includes("buildSourcePrompt") && wpsServer.includes("buildAgentPrompt") && wpsServer.includes('connector: "WPS"'), "WPS Agent messages must use the shared connector source metadata contract.");
   assert(wpsServer.includes("deriveDesktopSyncStatus") && wpsServer.includes("sync.configurationRequired"), "WPS Agent readiness must use the shared agent-chat module and require Desktop to join the shared daemon.");
@@ -186,7 +214,7 @@ async function main() {
   servers.push(updateServer);
   await once(updateServer, "listening");
 
-  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-table-syncs-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: JSON.stringify(["tests/fixtures/fake-codex-app-server.js"]), WPS_CONNECTOR_E2E_AGENT_CAPTURE: agentCapturePath, CONNECTOR_PLATFORM_URL: "http://127.0.0.1:43998" });
+  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-table-syncs-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: fakeCodexArgs, WPS_CONNECTOR_E2E_AGENT_CAPTURE: agentCapturePath, CONNECTOR_PLATFORM_URL: "http://127.0.0.1:43998" });
   bridge.on("exit", (code) => {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
@@ -279,6 +307,9 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.select_table"), "MCP tools/list missed wpp.select_table.");
   assert(listedTools.tools.some((tool) => tool.name === "et.read_range"), "MCP tools/list missed et.read_range.");
   assert(listedTools.tools.some((tool) => tool.name === "et.save_workbook"), "MCP tools/list missed et.save_workbook.");
+  assert(listedTools.tools.some((tool) => tool.name === "et.create_chart"), "MCP tools/list missed et.create_chart.");
+  assert(listedTools.tools.some((tool) => tool.name === "et.insert_picture"), "MCP tools/list missed et.insert_picture.");
+  assert(listedTools.tools.some((tool) => tool.name === "et.insert_shape"), "MCP tools/list missed et.insert_shape.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_document_text"), "MCP tools/list missed wpp.read_document_text.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.find_text"), "MCP tools/list missed wpp.find_text.");
@@ -592,6 +623,45 @@ async function main() {
   });
   assert(etBlocks.results?.length === 3 && etBlocks.failedCount === 1, "ET write_blocks returned unexpected mixed results.");
   assert(etBlocks.results[2]?.error?.code === "SHEET_NOT_FOUND", "ET write_blocks failed block missed SHEET_NOT_FOUND.");
+
+  const etChart = await request("/api/tools/et/create_chart", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1", address: "F2", chartType: "column", dataRange: "C3:E4", title: "Connector 回归图表", width: 400, height: 240 }),
+  });
+  assert(etChart.createdChart === true && etChart.verification?.found === true && etChart.verification?.object?.kind === "chart", "ET create_chart did not verify the chart overlay.");
+  const etPicture = await request("/api/tools/et/insert_picture", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1", address: "F8", imagePath: "/tmp/sim-connector.png", width: 80, height: 60 }),
+  });
+  assert(etPicture.insertedPicture === true && etPicture.verification?.found === true && etPicture.verification?.object?.kind === "picture", "ET insert_picture did not verify the picture overlay.");
+  const etShape = await request("/api/tools/et/insert_shape", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1", address: "F12", shapeType: "textBox", text: "Connector 文本框" }),
+  });
+  assert(etShape.insertedShape === true && etShape.verification?.found === true && ["shape", "textBox"].includes(etShape.verification?.object?.kind), "ET insert_shape did not verify the shape overlay.");
+  const etOverlays = await request("/api/tools/et/inspect_sheet_overlays", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1" }),
+  });
+  assert(etOverlays.shapes?.length >= 3 && etOverlays.shapes.some((item) => item.kind === "chart") && etOverlays.shapes.some((item) => item.kind === "picture"), "ET inspect_sheet_overlays did not list chart/picture/shape objects.");
+  const etDeleteOverlays = await request("/api/tools/et/delete_sheet_overlays", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1", query: "Connector" }),
+  });
+  assert(etDeleteOverlays.shapes?.length >= 3, "ET delete_sheet_overlays did not delete the created chart/picture/shape.");
+  const etOverlaysAfterDelete = await request("/api/tools/et/inspect_sheet_overlays", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1" }),
+  });
+  assert(etOverlaysAfterDelete.shapes?.length === 0, "ET overlays remained after delete_sheet_overlays.");
+  const gatewayChart = await runNode(["scripts/agent-tool-call.js", "et.create_chart", JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1", address: "F2", chartType: "line", dataRange: "C3:E4", title: "Gateway 图表" })], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
+  assert(gatewayChart.ok === true && gatewayChart.createdChart === true, "Gateway did not route et.create_chart.");
+  const gatewayPicture = await runNode(["scripts/agent-tool-call.js", "et.insert_picture", JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1", address: "F8", imagePath: "/tmp/sim-connector.png" })], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
+  assert(gatewayPicture.ok === true && gatewayPicture.insertedPicture === true, "Gateway did not route et.insert_picture.");
+  const gatewayShape = await runNode(["scripts/agent-tool-call.js", "et.insert_shape", JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1", address: "F12", shapeType: "rectangle", text: "Gateway 形状" })], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
+  assert(gatewayShape.ok === true && gatewayShape.insertedShape === true, "Gateway did not route et.insert_shape.");
+  const gatewayDelete = await runNode(["scripts/agent-tool-call.js", "et.delete_sheet_overlays", JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", sheetName: "Sheet1", query: "Connector" })], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl });
+  assert(gatewayDelete.ok === true && gatewayDelete.shapes?.length >= 3, "Gateway did not route et.delete_sheet_overlays.");
 
   const wppSelection = await request("/api/tools/wpp/read_selection", {
     method: "POST",

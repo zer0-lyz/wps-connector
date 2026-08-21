@@ -1,7 +1,13 @@
+import { unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 const bridgeUrl = process.env.WPS_CONNECTOR_BRIDGE_URL || 'http://127.0.0.1:40215';
 const requestedSessionId = process.env.WPS_SESSION_ID || '';
 const expectedClientVersion = process.env.WPS_EXPECTED_CLIENT_VERSION || '0.2.1';
-const logSheetName = process.env.WPS_ET_LOG_SHEET || '__WPS_Test_Log__';
+const expectedClientBuild = process.env.WPS_EXPECTED_CLIENT_BUILD || '2026.08.17-et-graphics.1';
+const userImagePath = process.env.WPS_ET_IMAGE_PATH || '';
+const regressionImagePath = userImagePath || join(tmpdir(), `connector-suite-regression-${Date.now()}.png`);
 let toolBinding = {};
 
 async function getJson(path, options = {}) {
@@ -32,47 +38,10 @@ function assert(ok, message) {
   if (!ok) throw new Error(message);
 }
 
-function safeText(value, limit = 500) {
-  if (value === undefined || value === null) return '';
-  if (typeof value === 'string') return value.slice(0, limit);
-  return JSON.stringify(value).slice(0, limit);
-}
-
-async function ensureLogSheet(sessionId) {
-  const listed = await tool('et.list_worksheets', { sessionId });
-  if (!listed.worksheets?.some((sheet) => sheet.name === logSheetName)) {
-    await tool('et.add_worksheet', { sessionId, name: logSheetName, activate: false });
-    await tool('et.write_range', {
-      sessionId,
-      sheetName: logSheetName,
-      address: 'A1:F1',
-      values: [['time', 'sessionId', 'command', 'ok', 'result', 'failureReason']],
-    });
-    await tool('et.format_range', {
-      sessionId,
-      sheetName: logSheetName,
-      address: 'A1:F1',
-      bold: true,
-      fillColor: '#1F4E78',
-      fontColor: '#FFFFFF',
-      horizontalAlignment: 'center',
-      border: true,
-      autofit: true,
-    });
-  }
-}
-
-async function appendAuditLog(sessionId, rows) {
-  await ensureLogSheet(sessionId);
-  const existing = await tool('et.read_range', { sessionId, sheetName: logSheetName, address: 'A1:F200' });
-  const values = Array.isArray(existing.values) ? existing.values : [];
-  const nextRow = Math.max(values.filter((row) => Array.isArray(row) && row.some((cell) => cell !== null && cell !== '')).length + 1, 2);
-  const address = `A${nextRow}:F${nextRow + rows.length - 1}`;
-  await tool('et.write_range', { sessionId, sheetName: logSheetName, address, values: rows });
-  await tool('et.format_range', { sessionId, sheetName: logSheetName, address, border: true, wrapText: true, autofit: true });
-}
-
 async function main() {
+  if (!userImagePath) {
+    writeFileSync(regressionImagePath, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lEJv2wAAAABJRU5ErkJggg==', 'base64'));
+  }
   const sessions = await getJson('/api/sessions');
   const session = requestedSessionId
     ? sessions.sessions.find((s) => s.sessionId === requestedSessionId)
@@ -86,64 +55,49 @@ async function main() {
     threadId: session.binding?.threadId || undefined,
   };
   assert(String(session.clientVersion || '') === expectedClientVersion, `Expected clientVersion ${expectedClientVersion}, got ${session.clientVersion || '<empty>'}. Reopen Connector Pane before running real regression.`);
-  const listedForTarget = await tool('et.list_worksheets', { sessionId });
-  const sheetName = listedForTarget.worksheets?.some((sheet) => sheet.name === 'Sheet1')
-    ? 'Sheet1'
-    : (listedForTarget.worksheets || []).find((sheet) => sheet.name !== logSheetName)?.name || session.documentIdentity?.sheetName || 'Sheet1';
+  assert(String(session.clientBuild || '') === expectedClientBuild, `Expected clientBuild ${expectedClientBuild}, got ${session.clientBuild || '<empty>'}. Close and reopen WPS so the updated Connector runtime can load before running real regression.`);
   const prefix = `回归_${Date.now().toString().slice(-6)}`;
+  const sheetName = `__Connector_ET_${prefix}__`;
   const tempSheet = `${prefix}_tmp`;
   const report = [];
-  await ensureLogSheet(sessionId);
-
-  async function recordAuditRow(row) {
-    try {
-      await appendAuditLog(sessionId, [row]);
-    } catch (error) {
-      console.error(JSON.stringify({ ok: false, auditLogError: error.message, row }, null, 2));
-    }
-  }
+  let testSheetCreated = false;
 
   async function step(name, fn, options = {}) {
-    const started = new Date().toISOString();
     try {
       const result = await fn();
       if (options.expectError) throw new Error(`Expected structured error ${options.expectError}, but command succeeded.`);
       if (typeof options.validate === 'function') options.validate(result);
       report.push({ name, ok: true, result });
-      await recordAuditRow([started, sessionId, name, 'TRUE', safeText(result), '']);
       return result;
     } catch (error) {
       const code = error.response?.error?.code || '';
       const message = error.response?.error?.message || error.message;
       const ok = options.expectError && code === options.expectError;
       report.push({ name, ok, errorCode: code, error: message });
-      await recordAuditRow([started, sessionId, name, ok ? 'TRUE' : 'FALSE', ok ? `expected ${code}` : '', safeText(error.response?.error || message)]);
       if (!ok) throw error;
       return error.response;
     }
   }
 
-  await step('list_worksheets', () => tool('et.list_worksheets', { sessionId }));
-  await step('read_missing_sheet_structured_error', () => rawTool('et.read_range', { sessionId, sheetName: 'NoSuchSheet', address: 'A1:B2' }).then((json) => {
+  try {
+    await step('list_worksheets', () => tool('et.list_worksheets', { sessionId }));
+    await step('create_isolated_test_sheet', () => tool('et.add_worksheet', { sessionId, name: sheetName, activate: false }));
+    testSheetCreated = true;
+    await step('read_missing_sheet_structured_error', () => rawTool('et.read_range', { sessionId, sheetName: 'NoSuchSheet', address: 'A1:B2' }).then((json) => {
     if (json.ok) return json;
     const error = new Error(json.error?.message || 'raw tool failed');
     error.response = json;
     throw error;
   }), { expectError: 'SHEET_NOT_FOUND' });
-  await step('read_invalid_address_structured_error', () => rawTool('et.read_range', { sessionId, sheetName, address: 'bad address' }).then((json) => {
+    await step('read_invalid_address_structured_error', () => rawTool('et.read_range', { sessionId, sheetName, address: 'bad address' }).then((json) => {
     if (json.ok) return json;
     const error = new Error(json.error?.message || 'raw tool failed');
     error.response = json;
     throw error;
   }), { expectError: 'INVALID_ADDRESS' });
-  await step('delete_protected_sheet_structured_error', () => rawTool('et.delete_worksheet', { sessionId, sheetName }).then((json) => {
-    if (json.ok) return json;
-    const error = new Error(json.error?.message || 'raw tool failed');
-    error.response = json;
-    throw error;
-  }), { expectError: 'LAST_SHEET_DELETE_REFUSED' });
-  await step('add_worksheet', () => tool('et.add_worksheet', { sessionId, name: tempSheet, activate: false }));
-  await step('delete_worksheet', () => tool('et.delete_worksheet', { sessionId, sheetName: tempSheet }));
+    report.push({ name: 'delete_protected_sheet_structured_error', ok: true, skipped: true, reason: 'Skipped to avoid testing destructive last-sheet behavior in a user workbook.' });
+    await step('add_worksheet', () => tool('et.add_worksheet', { sessionId, name: tempSheet, activate: false }));
+    await step('delete_worksheet', () => tool('et.delete_worksheet', { sessionId, sheetName: tempSheet }));
   await step('write_range_values_formulas_formats', () => tool('et.write_range', {
     sessionId, sheetName, address: 'A1:H6',
     values: [
@@ -194,18 +148,67 @@ async function main() {
   } });
   await step('insert_range', () => tool('et.insert_range', { sessionId, sheetName, address: 'A8:H8', shift: 'Down' }));
   await step('delete_range', () => tool('et.delete_range', { sessionId, sheetName, address: 'A8:H8', shift: 'Up' }));
+  const chart = await step('create_chart', () => tool('et.create_chart', {
+    sessionId, sheetName, address: 'J1', chartType: 'column', dataRange: 'A1:H6', title: 'Connector 回归图表', width: 420, height: 260,
+  }), { validate(result) {
+    assert(result.createdChart === true && result.verification?.found === true, 'et.create_chart did not verify the chart overlay.');
+  } });
+  const picture = await step('insert_picture', () => tool('et.insert_picture', {
+    sessionId, sheetName, address: 'J10', imagePath: regressionImagePath, width: 120, height: 90, lockAspectRatio: true,
+  }), { validate(result) {
+    assert(result.insertedPicture === true && result.verification?.found === true, 'et.insert_picture did not verify the picture overlay.');
+  } });
+  const shape = await step('insert_shape', () => tool('et.insert_shape', {
+    sessionId, sheetName, address: 'J16', shapeType: 'textBox', text: 'Connector 文本框', fillColor: '#FFF2CC', lineColor: '#7F6000',
+  }), { validate(result) {
+    assert(result.insertedShape === true && result.verification?.found === true, 'et.insert_shape did not verify the shape overlay.');
+  } });
+  await step('inspect_overlays_after_insert', () => tool('et.inspect_sheet_overlays', { sessionId, sheetName }), { validate(result) {
+    assert(result.shapes?.length >= 3 && result.shapes.some((item) => item.kind === 'chart') && result.shapes.some((item) => item.kind === 'picture'), 'et.inspect_sheet_overlays did not list the created chart/picture/shape.');
+  } });
+  await step('save_workbook_after_overlays', () => tool('et.save_workbook', { sessionId, readback: true }), { validate(result) {
+    assert(result.saved === true && result.readback?.worksheetNames?.length >= 1, 'et.save_workbook did not save after overlay creation.');
+  } });
+  for (const name of [chart.shapeName, picture.shapeName, shape.shapeName]) {
+    if (!name) continue;
+    await step('delete_overlay_' + name, () => tool('et.delete_sheet_overlays', { sessionId, sheetName, query: name }), { validate(result) {
+      assert(result.shapes?.some((item) => item.name === name), `et.delete_sheet_overlays did not delete ${name}.`);
+    } });
+  }
+    await step('inspect_overlays_after_delete', () => tool('et.inspect_sheet_overlays', { sessionId, sheetName }), { validate(result) {
+    assert(result.shapes?.length === 0, 'et.inspect_sheet_overlays still found overlays after deletion.');
+  } });
 
-  console.log(JSON.stringify({
-    ok: true,
-    sessionId,
-    documentName: session.documentName,
-    sheetName,
-    logSheetName,
-    capabilityMatrix: report.map((r) => ({ name: r.name, ok: r.ok, errorCode: r.errorCode || '', error: r.error || '' })),
-  }, null, 2));
+    await step('delete_isolated_test_sheet', () => tool('et.delete_worksheet', { sessionId, sheetName }));
+    testSheetCreated = false;
+    await step('save_workbook_after_cleanup', () => tool('et.save_workbook', { sessionId, readback: true }));
+
+    console.log(JSON.stringify({
+      ok: true,
+      sessionId,
+      documentName: session.documentName,
+      clientBuild: session.clientBuild,
+      sheetName,
+      persistentChanges: false,
+      capabilityMatrix: report.map((r) => ({ name: r.name, ok: r.ok, skipped: Boolean(r.skipped), errorCode: r.errorCode || '', error: r.error || '' })),
+    }, null, 2));
+  } finally {
+    if (testSheetCreated) {
+      try {
+        await tool('et.delete_worksheet', { sessionId, sheetName });
+        await tool('et.save_workbook', { sessionId, readback: true });
+      } catch (error) {
+        console.error(JSON.stringify({ ok: false, cleanupError: error.message, sheetName }, null, 2));
+      }
+    }
+  }
 }
 
 main().catch((error) => {
   console.error(JSON.stringify({ ok: false, error: error.message, response: error.response || null }, null, 2));
   process.exit(1);
+}).finally(() => {
+  if (!userImagePath) {
+    try { unlinkSync(regressionImagePath); } catch {}
+  }
 });
