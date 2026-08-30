@@ -159,6 +159,8 @@ async function main() {
       assert(source.includes("--exclude 'project-bindings.local.json'"), `${deployScript} may delete saved bindings during deployment.`);
       assert(source.includes("--exclude 'codex-catalog.snapshot.json'"), `${deployScript} may delete the local catalog snapshot during deployment.`);
       assert(source.includes("--exclude 'et-wpp-table-syncs.local.json'"), `${deployScript} may delete saved WPS table sync mappings during deployment.`);
+      assert(source.includes("--exclude 'table-format-templates.local.json'"), `${deployScript} may delete saved table format templates during deployment.`);
+      assert(source.includes('table-format-templates.local.json'), `${deployScript} must carry forward saved table format templates.`);
     }
   }
   const paneHtml = readFileSync("apps/wps-addin/pane.html", "utf8");

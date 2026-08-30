@@ -35,3 +35,12 @@
 - 已完成：提交 `928f7b2` 并推送至 `origin/codex/table-format-module-debug-0.2.1`。
 - 远程地址：`https://github.com/zer0-lyz/wps-connector/tree/codex/table-format-module-debug-0.2.1`。
 - 接续方式：Mac mini 从该开发分支拉取并继续开发；未提交 `main`、未创建正式 tag/release、未上传安装包。
+
+## 2026-08-30 继续维护与本机部署
+
+- 从 `origin/codex/table-format-module-debug-0.2.1` 的 `7082516` 创建独立 worktree；原 `/Users/lin/.local/share/wps-connector/source` 工作树未被覆盖。
+- 修复 `scripts/deploy-runtime-mac.sh`、`scripts/sync-plugin-runtime-mac.sh` 及其 runtime 副本：将 `table-format-templates.local.json` 纳入排除和迁移列表，部署时保留已保存模板并支持回滚。
+- 修复 `scripts/regression-et.js` 默认 `clientBuild`，与 `apps/wps-addin/main.js` 当前 `2026.08.29-wps-table-sync-click-feedback.1` 一致。
+- `npm run check`、`npm test`、`git diff --check` 通过；`npm run test:et` 因当前真实 WPS pane 仍报告旧 `clientVersion=1.1.8` 在预检阶段停止，未产生工作簿修改。
+- 正式 runtime 已备份并原子替换到 `/Users/lin/.local/share/wps-connector/runtime`，备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-092423/runtime`；当前 runtime package `0.2.1`，Add-in build `2026.08.29-wps-table-sync-click-feedback.1`。
+- Bridge `40215`、Add-in `3891`、Connector Platform `40315` 健康；WPS Writer/Spreadsheet 自动重载和真实插入绑定因 Mac 锁屏无法执行，继续标记 `PENDING_REAL_HOST_ACCEPTANCE`。

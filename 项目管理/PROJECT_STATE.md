@@ -39,3 +39,13 @@
 - 真实宿主状态：WPS Writer 现场验收仍为 `PENDING_REAL_HOST_ACCEPTANCE`，模拟测试与服务健康不能替代真实 WPS 文档验收。
 - GitHub：已推送提交 `928f7b2` 到 `https://github.com/zer0-lyz/wps-connector/tree/codex/table-format-module-debug-0.2.1`；该分支已设置跟踪 `origin/codex/table-format-module-debug-0.2.1`。
 - Mac mini 接续：克隆 `https://github.com/zer0-lyz/wps-connector.git` 后切换到 `codex/table-format-module-debug-0.2.1`，从该开发分支继续，不要直接改 `main`。
+
+## 2026-08-30 目标分支继续维护
+
+- 状态：`deployed / pending real WPS Writer and Spreadsheet acceptance`。
+- 工作方式：保留原工作树 `/Users/lin/.local/share/wps-connector/source` 的未提交修改，在独立 worktree `/Users/lin/.local/share/wps-connector/worktrees/table-format-module-debug-0.2.1` 基于远端 `7082516` 继续。
+- 修复：macOS 原子部署和插件 runtime 同步脚本现在会保留 `table-format-templates.local.json`，避免表格格式模板因升级丢失；ET 回归脚本默认 build 已与当前 Add-in `2026.08.29-wps-table-sync-click-feedback.1` 对齐。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；`npm run test:et` 在真实 WPS 仍加载旧 `clientVersion=1.1.8` 时按版本预检安全停止，状态为 `PENDING_REAL_HOST_ACCEPTANCE`，未写入用户工作簿。
+- 部署：已原子部署到 `/Users/lin/.local/share/wps-connector/runtime`；本轮备份为 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-092423/runtime`；绑定、目录、同步和表格模板状态均已保留。
+- 真实宿主：Bridge、Add-in、Connector Platform 健康；当前可见 WPS session 仍是旧 `1.1.8` 页面。Mac 自动 GUI 操作因锁屏无法继续，Writer 插入并绑定、Spreadsheet session 新版本回读、格式回读和保存重开均保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+- 推送边界：只提交并推送 `codex/table-format-module-debug-0.2.1`，不修改 `main`，不上传日志、缓存、证书、用户配置或安装包。

@@ -14,6 +14,7 @@ rsync -a --delete \
   --exclude 'project-bindings.local.json' \
   --exclude 'codex-catalog.snapshot.json' \
   --exclude 'et-wpp-table-syncs.local.json' \
+  --exclude 'table-format-templates.local.json' \
   "$SOURCE_DIR/" "$TARGET_DIR/"
 
 printf 'Synchronized WPS plugin runtime: %s\n' "$TARGET_DIR"
