@@ -38,6 +38,21 @@
     "moduleVersion": "0.2.0"
   },
   {
+    "id": "table-format",
+    "label": "表格格式模板",
+    "hosts": [
+      "Office",
+      "WPS"
+    ],
+    "aliases": [
+      "table-format-template",
+      "格式模板",
+      "表格格式"
+    ],
+    "moduleId": "table-format-template",
+    "moduleVersion": "0.2.0"
+  },
+  {
     "id": "update",
     "label": "检查更新",
     "hosts": [

@@ -10,6 +10,10 @@ import {
   mergeTableSyncState,
   normalizeTableSyncState,
 } from "./modules/table-sync/state.js";
+import {
+  mergeTableFormatTemplateState,
+  normalizeTableFormatTemplateState,
+} from "./modules/table-format-template/state.js";
 
 function timestamp(item = {}) {
   const value = Date.parse(item.updatedAt || item.createdAt || "");
@@ -47,14 +51,19 @@ export function normalizeAdapterState(input = {}) {
   );
   const agentChat = normalizeAgentChatState(modules["agent-chat"] || input.agentChat);
   const tableSync = normalizeTableSyncState(modules["table-sync"] || input.tableSyncs);
+  const tableFormatTemplates = normalizeTableFormatTemplateState(
+    modules["table-format-template"] || input.tableFormatTemplates,
+  );
   return {
     bindings: connectionBinding.bindings,
     agentChat,
     tableSyncs: tableSync,
+    tableFormatTemplates,
     modules: {
       "connection-binding": connectionBinding,
       "agent-chat": agentChat,
       "table-sync": tableSync,
+      "table-format-template": tableFormatTemplates,
     },
   };
 }
@@ -74,14 +83,20 @@ export function mergeAdapterState(localInput = {}, sharedInput = {}) {
     local.modules["table-sync"],
     shared.modules["table-sync"],
   );
+  const tableFormatTemplates = mergeTableFormatTemplateState(
+    local.modules["table-format-template"],
+    shared.modules["table-format-template"],
+  );
   return {
     bindings: connectionBinding.bindings,
     agentChat,
     tableSyncs: tableSync,
+    tableFormatTemplates,
     modules: {
       "connection-binding": connectionBinding,
       "agent-chat": agentChat,
       "table-sync": tableSync,
+      "table-format-template": tableFormatTemplates,
     },
   };
 }

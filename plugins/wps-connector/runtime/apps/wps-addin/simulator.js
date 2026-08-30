@@ -28,6 +28,7 @@ const state = {
     insertedText: "",
     format: { font: {}, paragraph: {} },
     paragraphFormats: {},
+    selectedTableIndex: null,
     tables: [],
     comments: [],
     nextCommentId: 1,
@@ -64,6 +65,72 @@ function pickFields(object, fields) {
   }
   return out;
 }
+function simRangeBounds(address) {
+  const text = String(address || "").split("!").pop().replace(/\$/g, "");
+  const match = /^([A-Za-z]{1,3})(\d+)(?::([A-Za-z]{1,3})(\d+))?$/.exec(text);
+  if (!match) return null;
+  const columnNumber = (letters) => [...letters.toUpperCase()].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0);
+  const startRow = Number(match[2]);
+  const startColumn = columnNumber(match[1]);
+  return { startRow, startColumn, endRow: Number(match[4] || match[2]), endColumn: columnNumber(match[3] || match[1]) };
+}
+function simMergeFormat(target, patch) {
+  for (const [key, value] of Object.entries(patch || {})) {
+    if (value !== undefined && value !== null) target[key] = value;
+  }
+  return target;
+}
+function simFormatForCell(sheetName, row, column) {
+  const result = {};
+  for (const [address, format] of Object.entries(state.et.formats)) {
+    const bounds = simRangeBounds(address);
+    if (!bounds || row < bounds.startRow || row > bounds.endRow || column < bounds.startColumn || column > bounds.endColumn) continue;
+    if (format?.sheetName && String(format.sheetName) !== String(sheetName)) continue;
+    const patch = { ...(format || {}) };
+    if (Array.isArray(format?.numberFormat)) {
+      const relativeRow = row - bounds.startRow;
+      const relativeColumn = column - bounds.startColumn;
+      const matrix = Array.isArray(format.numberFormat[0]) ? format.numberFormat : [format.numberFormat];
+      patch.numberFormat = matrix[relativeRow]?.[relativeColumn] ?? matrix[0]?.[relativeColumn] ?? "";
+    }
+    simMergeFormat(result, patch);
+  }
+  return result;
+}
+function simDisplayValue(value, format) {
+  if (value === null || value === undefined) return "";
+  const numberFormat = String(format?.numberFormat || "");
+  const numericValue = typeof value === "number" ? value : (typeof value === "string" && /^[-+]?\d+(?:\.\d+)?$/.test(value.trim()) ? Number(value) : NaN);
+  if (!Number.isFinite(numericValue) || !numberFormat || /^general$/i.test(numberFormat) || numberFormat === "@") return String(value);
+  const dateSection = numberFormat.split(";")[0];
+  if (/[ymdhHs]/i.test(dateSection) && !/[#0]/.test(dateSection)) {
+    const date = new Date(Date.UTC(1899, 11, 30) + numericValue * 86400000);
+    const two = (number) => String(number).padStart(2, "0");
+    const dateMask = dateSection.replace(/(h{1,2}[^a-z]*)(m{1,2})/gi, "$1__MIN__");
+    return dateMask.replace(/yyyy/gi, String(date.getUTCFullYear())).replace(/yy/gi, String(date.getUTCFullYear()).slice(-2))
+      .replace(/hh/gi, two(date.getUTCHours())).replace(/h/gi, String(date.getUTCHours()))
+      .replace(/ss/gi, two(date.getUTCSeconds())).replace(/s/gi, String(date.getUTCSeconds()))
+      .replace(/mm/g, two(date.getUTCMonth() + 1)).replace(/m/g, String(date.getUTCMonth() + 1))
+      .replace(/dd/gi, two(date.getUTCDate())).replace(/d/gi, String(date.getUTCDate()))
+      .replace(/__MIN__/g, two(date.getUTCMinutes()));
+  }
+  const sections = numberFormat.split(";");
+  const section = sections[numericValue < 0 ? 1 : numericValue === 0 ? 2 : 0] || sections[0];
+  const percent = section.includes("%");
+  const cleaned = section.replace(/"([^"]*)"/g, "$1").replace(/_.|\*./g, "");
+  const tokenMatch = cleaned.match(/[0#?][0#?,]*(?:\.[0#?]+)?/);
+  if (!tokenMatch) return String(value);
+  const token = tokenMatch[0];
+  const decimals = token.includes(".") ? token.split(".")[1].replace(/[^0#?]/g, "").length : 0;
+  const scaled = percent ? numericValue * 100 : numericValue;
+  const numericText = Math.abs(scaled).toLocaleString("en-US", { useGrouping: token.split(".")[0].includes(","), minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  const prefix = cleaned.slice(0, tokenMatch.index);
+  const suffix = cleaned.slice(tokenMatch.index + token.length);
+  const wrappedPrefix = prefix.replace(/[()]/g, "");
+  const wrappedSuffix = suffix.replace(/[()]/g, "");
+  if (numericValue < 0 && section.includes("(")) return `(${wrappedPrefix}${numericText}${wrappedSuffix})`;
+  return `${prefix}${numericValue < 0 && !prefix.includes("-") ? "-" : ""}${numericText}${suffix}`;
+}
 
 async function request(path, options = {}) {
   const response = await fetch(`${bridgeUrl}${path}`, {
@@ -87,7 +154,7 @@ function activeContext() {
 }
 
 async function register() {
-  const capabilities = host === "et" ? ["et.read_selection", "et.select_range", "et.inspect_sheet_overlays", "et.delete_sheet_overlays", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.read_format_sample", "et.verify_range", "et.clear_range", "et.find_cells", "et.write_blocks", "et.save_workbook", "et.create_chart", "et.insert_picture", "et.insert_shape"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values", "wpp.ensure_table_sync_anchor", "wpp.resolve_table_sync_anchor", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "wpp.read_table_format", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
+  const capabilities = host === "et" ? ["et.read_selection", "et.select_range", "et.inspect_sheet_overlays", "et.delete_sheet_overlays", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.read_format_sample", "et.verify_range", "et.clear_range", "et.find_cells", "et.write_blocks", "et.save_workbook", "et.create_chart", "et.insert_picture", "et.insert_shape"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values", "wpp.ensure_table_sync_anchor", "wpp.resolve_table_sync_anchor", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "wpp.read_table_format", "wpp.capture_table_format", "wpp.save_table_format_template", "wpp.list_table_format_templates", "wpp.apply_table_format_template", "wpp.delete_table_format_template", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
   await request("/api/sessions/register", {
     method: "POST",
     body: JSON.stringify({
@@ -218,7 +285,32 @@ function execute(command) {
   if (command.toolName === "et.add_worksheet") { const name = command.input.name || command.input.sheetName || `Sheet${state.et.worksheets.length + 1}`; state.et.worksheets.push(name); if (command.input.activate !== false) state.et.sheetName = name; return { host: "et", sheetName: name, added: true }; }
   if (command.toolName === "et.rename_worksheet") { const idx = state.et.worksheets.indexOf(command.input.oldName); if (idx < 0) throw new Error("Sheet not found"); state.et.worksheets[idx] = command.input.newName; if (state.et.sheetName === command.input.oldName || command.input.activate) state.et.sheetName = command.input.newName; return { host: "et", oldName: command.input.oldName, newName: command.input.newName, renamed: true }; }
   if (command.toolName === "et.delete_worksheet") { const sheetName = requireSheet(command.input.sheetName); const userSheets = state.et.worksheets.filter((name) => !isSystemSheet(name)); if (!command.input.force && isProtectedSheet(sheetName)) fail("LAST_SHEET_DELETE_REFUSED", "Refusing to delete a protected worksheet.", { sheetName, sheetCount: state.et.worksheets.length, userSheetCount: userSheets.length, forceSupported: true }); if (state.et.worksheets.length <= 1 || (!isSystemSheet(sheetName) && userSheets.length <= 1)) fail("LAST_SHEET_DELETE_REFUSED", "Refusing to delete the last user worksheet.", { sheetName, sheetCount: state.et.worksheets.length, userSheetCount: userSheets.length }); state.et.worksheets = state.et.worksheets.filter((name) => name !== sheetName); state.et.sheetName = state.et.worksheets[0]; return { host: "et", sheetName, deleted: true }; }
-  if (command.toolName === "et.read_range") { const sheetName = requireSheet(command.input.sheetName); const address = requireAddress(command.input.address); const result = { host: "et", sheetName, address, values: state.et.cells[address] || [], text: JSON.stringify(state.et.cells[address] || []) }; if (command.input.includeFormulas) result.formulas = state.et.formulas[address] || []; if (command.input.includeFormats) result.formats = state.et.formats[address] || {}; return result; }
+  if (command.toolName === "et.read_range") {
+    const sheetName = requireSheet(command.input.sheetName);
+    const address = requireAddress(command.input.address);
+    const values = state.et.cells[address] || [];
+    const result = { host: "et", sheetName, address, values, text: JSON.stringify(values) };
+    if (command.input.includeFormulas) result.formulas = state.et.formulas[address] || [];
+    if (command.input.includeFormats) {
+      const bounds = simRangeBounds(address);
+      const rowCount = values.length;
+      const columnCount = Math.max(0, ...values.map((row) => row.length));
+      const cellFormats = Array.from({ length: rowCount }, (_, row) => Array.from({ length: columnCount }, (_, column) => simFormatForCell(sheetName, (bounds?.startRow || 1) + row, (bounds?.startColumn || 1) + column)));
+      const displayText = values.map((row, rowIndex) => row.map((value, columnIndex) => simDisplayValue(value, cellFormats[rowIndex]?.[columnIndex])));
+      const rowHeights = Array.from({ length: rowCount }, (_, row) => {
+        const height = Number(cellFormats[row]?.find((format) => Number(format?.rowHeight) > 0)?.rowHeight);
+        return height > 0 ? { row: row + 1, height } : null;
+      }).filter(Boolean);
+      const columnWidths = Array.from({ length: columnCount }, (_, column) => {
+        const width = Number(cellFormats.map((row) => row?.[column]).find((format) => Number(format?.columnWidth) > 0)?.columnWidth);
+        return width > 0 ? { column: column + 1, width } : null;
+      }).filter(Boolean);
+      result.formats = cellFormats[0]?.[0] || {};
+      result.formatSnapshot = { version: 2, rowCount, columnCount, cells: cellFormats, displayText, rowHeights, columnWidths, readStrategy: command.input.formatMode === "profile" ? "profile" : "full", exactFields: command.input.formatMode === "profile" ? ["numberFormat", "horizontalAlignment", "verticalAlignment", "wrapText"] : [], sampleRows: command.input.formatMode === "profile" ? [1, ...(rowCount > 1 ? [2] : [])] : [], sampleCount: command.input.formatMode === "profile" ? Math.min(rowCount, 2) * columnCount : rowCount * columnCount };
+      result.formatReadStrategy = result.formatSnapshot.readStrategy;
+    }
+    return result;
+  }
   if (command.toolName === "et.write_range") {
     const sheetName = requireSheet(command.input.sheetName);
     const address = requireAddress(command.input.address);
@@ -512,7 +604,10 @@ function execute(command) {
     const columnCount = Number(command.input.columnCount);
     if (!Number.isInteger(rowCount) || rowCount < 1) fail("INVALID_ARGUMENT", "rowCount must be an integer >= 1.", { field: "rowCount", value: command.input.rowCount });
     if (!Number.isInteger(columnCount) || columnCount < 1) fail("INVALID_ARGUMENT", "columnCount must be an integer >= 1.", { field: "columnCount", value: command.input.columnCount });
-    const values = command.input.values !== undefined ? requireMatrix(command.input.values, "values") : [];
+    const suppliedValues = command.input.values !== undefined ? requireMatrix(command.input.values, "values") : null;
+    const values = suppliedValues
+      ? Array.from({ length: rowCount }, (_, row) => Array.from({ length: columnCount }, (_, column) => String(suppliedValues[row]?.[column] ?? "")))
+      : [];
     const table = { rowCount, columnCount, values, headerRowBold: Boolean(command.input.headerRowBold), border: command.input.border !== false, alignment: command.input.alignment || "" };
     table.format = { table: { alignment: table.alignment, borders: { enable: table.border ? 1 : 0, items: [] } }, rowHeights: Array.from({ length: rowCount }, (_, i) => ({ row: i + 1, height: 18, heightRule: 0 })), columnWidths: Array.from({ length: columnCount }, (_, i) => ({ column: i + 1, width: 72 })), mergedCells: [], cells: Array.from({ length: rowCount }, (_, r) => Array.from({ length: columnCount }, (_, c) => ({ row: r + 1, column: c + 1, font: { bold: table.headerRowBold && r === 0 }, paragraph: { alignment: table.alignment }, shading: {}, borders: { enable: table.border ? 1 : 0, items: [] } }))).flat() };
     if (command.toolName === "wpp.insert_table_with_layout") {
@@ -525,7 +620,28 @@ function execute(command) {
       return { host: "wpp", insertedTable: true, insertedTableWithLayout: true, layoutApplied: true, tableIndex: state.wpp.tables.length, warnings: [], widthResult: { appliedColumns: table.format.columnWidths.map((c) => c.column), verifiedColumns: table.format.columnWidths.map((c) => c.column), warnings: [], results: table.format.columnWidths.map((c) => ({ column: c.column, requestedWidth: c.width, actualWidth: c.width, applied: true, verified: true })) }, formatSummary: { rowHeights: table.format.rowHeights, columnWidths: table.format.columnWidths }, ...table };
     }
     state.wpp.tables.push(table);
-    return { host: "wpp", insertedTable: true, tableIndex: state.wpp.tables.length, release: { released: command.input.releaseSelection !== false, method: "simulated" }, ...table };
+    const points = [[1, 1], [1, columnCount], [rowCount, 1], [rowCount, columnCount]];
+    if (rowCount > 2) points.push([Math.ceil(rowCount / 2), Math.ceil(columnCount / 2)]);
+    const seen = new Set();
+    const samples = points.filter(([row, column]) => {
+      const key = `${row}:${column}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).map(([row, column]) => ({ row, column, expected: values[row - 1]?.[column - 1] ?? "", actual: values[row - 1]?.[column - 1] ?? "", ok: true }));
+    const verification = suppliedValues ? { ok: samples.every((item) => item.ok), samples } : null;
+    // Keep the simulator aligned with the real WPS runtime: the Row.Range.Text
+    // marker path is opt-in because it can block WPS Writer synchronously.
+    const safeForRowBulk = suppliedValues && command.input.fastPath === "row-range-bulk" && values.every((row) => row.every((value) => !/[\t\r\n\x07]/.test(value)));
+    const write = suppliedValues ? {
+      writtenCells: rowCount * columnCount,
+      writePath: safeForRowBulk ? "row-range-bulk" : "per-cell",
+      hostCallsSaved: safeForRowBulk ? Math.max(0, rowCount * columnCount - rowCount) : 0,
+      verification,
+      ...(safeForRowBulk ? {} : { fallbackReason: "cell-content-requires-safe-path" }),
+      elapsedMs: 0,
+    } : null;
+    return { host: "wpp", insertedTable: true, tableIndex: state.wpp.tables.length, release: { released: command.input.releaseSelection !== false, method: "simulated" }, write, verification, ...table };
   }
   if (command.toolName === "wpp.select_table") { const tableIndex = Number(command.input.tableIndex || 0); const table = state.wpp.tables[tableIndex]; if (!table) fail("WPP_TABLE_NOT_FOUND", "Table not found: " + tableIndex, { tableIndex, tableCount: state.wpp.tables.length }); state.wpp.selectedTableIndex = tableIndex; return { host: "wpp", selected: true, tableIndex, oneBasedTableIndex: tableIndex + 1, rowCount: table.rowCount, columnCount: table.columnCount }; }
   if (command.toolName === "wpp.list_tables") {
@@ -679,6 +795,31 @@ function execute(command) {
     if (input.includeResults) out.results = targets.map((target) => ({ ...target, ok: true, applied: [...accepted] }));
     return out;
   }
+  function simTemplateTable(input = {}) {
+    const target = String(input.target || "Selection");
+    const tableIndex = target === "Selection"
+      ? state.wpp.selectedTableIndex
+      : target === "First"
+        ? 0
+        : Number(input.tableIndex);
+    if (!Number.isInteger(tableIndex) || tableIndex < 0) fail("SELECTION_TABLE_NOT_FOUND", "当前 WPS Writer 选区不在表格内，请先选中一个表格。", { target });
+    const table = state.wpp.tables[tableIndex];
+    if (!table) fail("TABLE_NOT_FOUND", `Table not found: ${tableIndex}`, { tableIndex, tableCount: state.wpp.tables.length });
+    return { table, tableIndex, oneBasedTableIndex: tableIndex + 1 };
+  }
+  if (command.toolName === "wpp.capture_table_format") {
+    const { table, tableIndex, oneBasedTableIndex } = simTemplateTable(command.input);
+    const read = execute({ toolName: "wpp.read_table_format", input: { tableIndex: oneBasedTableIndex } });
+    return {
+      ...read,
+      captured: true,
+      tableIndex,
+      oneBasedTableIndex,
+      rowCount: table.rowCount,
+      columnCount: table.columnCount,
+      source: { target: command.input.target || "Selection", tableIndex },
+    };
+  }
   if (command.toolName === "wpp.read_table_format") {
     const { table, tableIndex } = simTable(command.input);
     if (command.input.summaryOnly || Array.isArray(command.input.cells) || Array.isArray(command.input.fields) || command.input.startRow !== undefined || command.input.endRow !== undefined) {
@@ -687,7 +828,23 @@ function execute(command) {
     }
     return { host: "wpp", tableIndex, format: simClone(simFormat(table)) };
   }
-  if (command.toolName === "wpp.apply_table_format") { const { table, tableIndex } = simTable(command.input); table.format = simClone(command.input.format || {}); table.format.rowCount = table.rowCount; table.format.columnCount = table.columnCount; return { host: "wpp", tableIndex, applied: ["table_format"], rowCount: table.rowCount, columnCount: table.columnCount }; }
+  if (command.toolName === "wpp.apply_table_format") {
+    const { table, tableIndex } = simTable(command.input);
+    const nextFormat = simClone(command.input.format || {});
+    table.format = { ...simFormat(table), ...nextFormat, table: { ...(simFormat(table).table || {}), ...(nextFormat.table || {}) } };
+    table.format.rowCount = table.rowCount;
+    table.format.columnCount = table.columnCount;
+    const groups = new Map();
+    for (const cell of table.format.cells || []) {
+      const key = JSON.stringify({ font: cell.font || {}, paragraph: cell.paragraph || {}, shading: cell.shading || {}, borders: cell.borders || {}, verticalAlignment: cell.verticalAlignment });
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(cell);
+    }
+    const verifyCells = Array.isArray(command.input.verifyCells) ? command.input.verifyCells : [];
+    const verification = verifyCells.length ? { host: "wpp", tableIndex, rowCount: table.rowCount, columnCount: table.columnCount, count: verifyCells.length, cells: verifyCells.map((item) => ({ row: item.row, column: item.column, format: simClone(simCellFormat(table, item.row, item.column)) })) } : null;
+    const formatGroups = [...groups.values()].map((targets) => ({ affectedCells: targets.length, fastPath: "table-range", hostCallsSaved: Math.max(0, targets.length - 1) }));
+    return { host: "wpp", tableIndex, applied: ["table_format"], formatGroups, rowCount: table.rowCount, columnCount: table.columnCount, verification };
+  }
   if (command.toolName === "wpp.format_table_range") {
     const { table, tableIndex } = simTable(command.input);
     const startRow = simIndex(command.input.startRow || 1, "startRow");

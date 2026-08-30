@@ -60,7 +60,7 @@ export const tools = [
   {
     name: "wps.create_et_wpp_data_source",
     description: "Create or refresh a local WPS Spreadsheet data source for WPS Writer table synchronization. This does not require Codex project binding.",
-    inputSchema: { type: "object", properties: { etSessionId: { type: "string" }, sessionId: { type: "string" }, sourceId: { type: "string" }, name: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, refreshSelection: { type: "boolean" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { etSessionId: { type: "string" }, sessionId: { type: "string" }, sourceId: { type: "string" }, name: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, refreshSelection: { type: "boolean" }, preserveFormatting: { type: "boolean" } }, additionalProperties: false },
   },
   {
     name: "wps.list_et_wpp_data_sources",
@@ -85,7 +85,7 @@ export const tools = [
   {
     name: "wps.insert_et_wpp_data_source",
     description: "Insert a WPS Spreadsheet data source into the active WPS Writer document as a table and create the sync binding.",
-    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, wppSessionId: { type: "string" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, border: { type: "boolean" } }, required: ["sourceId"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, wppSessionId: { type: "string" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, border: { type: "boolean" }, preserveFormatting: { type: "boolean" } }, required: ["sourceId"], additionalProperties: false },
   },
   {
     name: "wps.list_et_wpp_table_syncs",
@@ -95,7 +95,7 @@ export const tools = [
   {
     name: "wps.sync_et_wpp_table",
     description: "Synchronize one WPS Writer table from its bound WPS Spreadsheet source.",
-    inputSchema: { type: "object", properties: { syncId: { type: "string" }, previewOnly: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, allowStructuralChanges: { type: "boolean" }, config: { type: "object", additionalProperties: true } }, required: ["syncId"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { syncId: { type: "string" }, previewOnly: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, allowStructuralChanges: { type: "boolean" }, preserveFormatting: { type: "boolean" }, config: { type: "object", additionalProperties: true } }, required: ["syncId"], additionalProperties: false },
   },
   {
     name: "et.read_selection",
@@ -160,7 +160,7 @@ export const tools = [
     description: "Read a specific WPS Spreadsheet range.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, includeFormulas: { type: "boolean" }, includeFormats: { type: "boolean" } },
+      properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, includeFormulas: { type: "boolean" }, includeFormats: { type: "boolean" }, includeCellFormats: { type: "boolean" }, includeDisplayText: { type: "boolean" }, formatMode: { type: "string", enum: ["full", "profile"] }, formatProfileHeaderRows: { type: "number" } },
       required: ["address"],
       additionalProperties: false,
     },
@@ -561,6 +561,65 @@ export const tools = [
     inputSchema: {
       type: "object",
       properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.capture_table_format",
+    description: "Capture the structured formatting of a selected or indexed WPS Writer table for reuse as a template. New template APIs use 0-based tableIndex.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        target: { type: "string", enum: ["Selection", "First", "tableIndex"] },
+        tableIndex: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.save_table_format_template",
+    description: "Capture a WPS Writer table format and save it as a reusable named template.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        target: { type: "string", enum: ["Selection", "First", "tableIndex"] },
+        tableIndex: { type: "number" },
+        name: { type: "string" },
+        templateId: { type: "string" },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.list_table_format_templates",
+    description: "List saved WPS Writer table format templates.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_table_format_template",
+    description: "Apply a saved WPS Writer table format template to one or more document tables and verify the result by reading them back. Target indexes are 0-based.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        templateId: { type: "string" },
+        target: { type: "string", enum: ["All", "Selection", "tableIndexes", "ExceptSelection"] },
+        tableIndexes: { type: "array", items: { type: "number" } },
+      },
+      required: ["templateId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.delete_table_format_template",
+    description: "Delete a saved WPS Writer table format template.",
+    inputSchema: {
+      type: "object",
+      properties: { templateId: { type: "string" } },
+      required: ["templateId"],
       additionalProperties: false,
     },
   },

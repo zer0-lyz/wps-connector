@@ -58,6 +58,27 @@ if ! mv "$STAGE_ROOT" "$RUNTIME_ROOT"; then
 fi
 trap - EXIT
 log "Activated runtime: $RUNTIME_ROOT"
+mkdir -p "$RUNTIME_ROOT/logs"
+
+restart_launch_agent() {
+  local label="$1"
+  local domain="gui/$(id -u)"
+  local target="$domain/$label"
+  local plist="$HOME/Library/LaunchAgents/$label.plist"
+  if launchctl print "$target" >/dev/null 2>&1; then
+    launchctl kickstart -k "$target"
+    log "Restarted LaunchAgent: $label"
+    return 0
+  fi
+  if [[ -f "$plist" ]]; then
+    launchctl bootstrap "$domain" "$plist"
+    launchctl kickstart -k "$target"
+    log "Bootstrapped and started LaunchAgent: $label"
+    return 0
+  fi
+  log "LaunchAgent plist not found: $plist"
+  return 1
+}
 
 if [ -f "$PLUGIN_DIR/.codex-plugin/plugin.json" ]; then
   mkdir -p "$PLUGIN_DIR/skills/wps-connector" "$PLUGIN_DIR/assets"
@@ -145,5 +166,8 @@ EOF_SKILL
 else
   printf 'Skipped plugin metadata update: complete plugin source not found at %s\n' "$PLUGIN_DIR"
 fi
+
+restart_launch_agent "com.codex.wps-connector.bridge"
+restart_launch_agent "com.codex.wps-connector.addin"
 
 printf 'Deployed WPS Connector runtime to %s\n' "$RUNTIME_ROOT"

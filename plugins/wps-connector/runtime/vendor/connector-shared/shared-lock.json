@@ -51,6 +51,27 @@
       ]
     },
     {
+      "id": "table-format-template",
+      "version": "0.2.0",
+      "status": "active",
+      "manifestSha256": "53bb5710f328ef8b8c70ddc3171830b5c0aeb08df55f34b0d21933aa24cb2d41",
+      "packageSha256": "fa854801f3e2fe93a9142356790f85c729d37686c1014bdb493d4a4a6b53266f",
+      "files": [
+        {
+          "file": "state.js",
+          "sha256": "afd8b836749364b100f6f71ed173d0241e8f542ee491b6250591874b670af0bb"
+        },
+        {
+          "file": "templateCore.js",
+          "sha256": "1a1581bd40321b8c3d7d1a54f49ea428d78b228d02472ec4ba652bb6d0a9a3ef"
+        },
+        {
+          "file": "tableFormatPanel.js",
+          "sha256": "db4c5e6c125825783a319b26ee7adef2532af3eceb1622ab9f44f5e24b94190c"
+        }
+      ]
+    },
+    {
       "id": "product-updater",
       "version": "0.2.0",
       "status": "active",
@@ -71,7 +92,7 @@
   "files": [
     {
       "file": "browserUiModel.js",
-      "sha256": "027a32039fb1ca4b53fbdbf20b7644cc53a714960a302e18b3b748e8e80fafd8"
+      "sha256": "4e55c1d60d6d6ab0660eb6b97c4a1eb98d1fcb2b27e4a937afb82382831b28ad"
     },
     {
       "file": "connectorStateClient.js",
@@ -83,7 +104,7 @@
     },
     {
       "file": "moduleCatalog.js",
-      "sha256": "564a9667f714baae162ed752b2795ddb7157976ce1b30cb314e7944f4d3f0e24"
+      "sha256": "3f943b9bdb41c10e8c6abf7e479be39daca581d7052c6b5291095720cc25ebdd"
     },
     {
       "file": "sourceMetadata.js",
@@ -95,7 +116,7 @@
     },
     {
       "file": "stateMerge.js",
-      "sha256": "ec162fcf6140f7c80f7a7e6b0094a11df5efd08dd58a5a9db6adc280245cf00b"
+      "sha256": "9a4b47a9c00b97deececb3b65c74cd6c329450588f7db0ef9e3b82442814efed"
     },
     {
       "file": "tableSyncCore.js",
@@ -120,6 +141,18 @@
     {
       "file": "modules/table-sync/tableSyncCore.js",
       "sha256": "6fe3c5c5d53fb8b72f922610890b774f1fef5ae0ce249fe5e7147f391bc1f34c"
+    },
+    {
+      "file": "modules/table-format-template/state.js",
+      "sha256": "afd8b836749364b100f6f71ed173d0241e8f542ee491b6250591874b670af0bb"
+    },
+    {
+      "file": "modules/table-format-template/templateCore.js",
+      "sha256": "1a1581bd40321b8c3d7d1a54f49ea428d78b228d02472ec4ba652bb6d0a9a3ef"
+    },
+    {
+      "file": "modules/table-format-template/tableFormatPanel.js",
+      "sha256": "db4c5e6c125825783a319b26ee7adef2532af3eceb1622ab9f44f5e24b94190c"
     },
     {
       "file": "modules/product-updater/updateCheckCore.js",

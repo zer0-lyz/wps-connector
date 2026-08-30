@@ -49,6 +49,8 @@ async function handle(req, res) {
     if (safeMethod && (pathname === "/" || pathname === "/index.html" || pathname === "/runtime.html")) return sendAsset(res, "runtime.html");
     if (safeMethod && pathname === "/pane.html") return sendAsset(res, "pane.html");
     if (safeMethod && pathname === "/main.js") return sendAsset(res, "main.js");
+    if (safeMethod && pathname === "/connectorSuiteUi.js") return sendAsset(res, "connectorSuiteUi.js");
+    if (safeMethod && pathname === "/tableFormatPanel.js") return sendAsset(res, "tableFormatPanel.js");
     if (safeMethod && pathname === "/ribbon.xml") return sendAsset(res, "ribbon.xml");
     if (safeMethod && pathname === "/icon.png") return sendAsset(res, "icon.png");
     if (safeMethod && pathname === "/images/connector.svg") return sendAsset(res, "images/connector.svg");

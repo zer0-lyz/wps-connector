@@ -160,6 +160,57 @@ export const moduleCatalog = deepFreeze([
     }
   },
   {
+    "id": "table-format-template",
+    "displayName": "表格格式模板",
+    "version": "0.2.0",
+    "status": "active",
+    "description": "抓取 Word 或 WPS Writer 表格格式、保存为可复用模板，并批量应用到文档中的目标表格。",
+    "hosts": [
+      "Office",
+      "WPS"
+    ],
+    "dependencies": [
+      "connector-kernel"
+    ],
+    "state": {
+      "namespace": "table-format-template",
+      "schemaVersion": 1,
+      "legacyPaths": [
+        "tableFormatTemplates"
+      ]
+    },
+    "ui": {
+      "viewId": "table-format",
+      "label": "表格格式模板",
+      "aliases": [
+        "table-format-template",
+        "格式模板",
+        "表格格式"
+      ]
+    },
+    "runtime": {
+      "files": [
+        "state.js",
+        "templateCore.js",
+        "tableFormatPanel.js"
+      ]
+    },
+    "ownership": {
+      "capabilities": [
+        "captureTableFormat",
+        "saveTableFormatTemplate",
+        "applyTableFormatTemplate",
+        "batchTableFormat"
+      ],
+      "httpRoutes": [
+        "/api/table-format-templates"
+      ],
+      "toolFamilies": [
+        "table_format_template"
+      ]
+    }
+  },
+  {
     "id": "product-updater",
     "displayName": "检查更新",
     "version": "0.2.0",

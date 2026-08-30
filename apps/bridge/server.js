@@ -6,7 +6,20 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { tools } from "../shared/toolSchemas.js";
-import { asMatrix, mapSyncRows, mergeRowsByKey, normalizeSyncConfig } from "../../vendor/connector-shared/tableSyncCore.js";
+import { asMatrix, cleanCellValue, mapSyncRows, mergeRowsByKey, normalizeSyncConfig } from "../../vendor/connector-shared/tableSyncCore.js";
+import {
+  applyTableFormatTransactions,
+  compareTableFormat,
+  fitTableFormatToShape,
+  normalizeTableFormatTemplate,
+  summarizeTemplateApplication,
+  tableFormatForApply,
+} from "../../vendor/connector-shared/modules/table-format-template/templateCore.js";
+import {
+  normalizeTableFormatTemplateState,
+  removeTableFormatTemplate,
+  upsertTableFormatTemplate,
+} from "../../vendor/connector-shared/modules/table-format-template/state.js";
 import { CodexAgentClient } from "./codexAgent.js";
 import { connectorPlatformStatus, startConnectorPlatformHeartbeat } from "./connectorPlatform.js";
 import { pushAdapterState, reconcileAdapterState } from "../../vendor/connector-shared/connectorStateClient.js";
@@ -25,6 +38,7 @@ const runtimeRoot = process.env.WPS_CONNECTOR_RUNTIME_ROOT || join(homedir(), ".
 const catalogPath = process.env.WPS_CONNECTOR_CATALOG_PATH || join(runtimeRoot, "codex-catalog.snapshot.json");
 const bindingsPath = process.env.WPS_CONNECTOR_BINDINGS_PATH || join(runtimeRoot, "project-bindings.local.json");
 const tableSyncsPath = process.env.WPS_CONNECTOR_TABLE_SYNCS_PATH || join(runtimeRoot, "et-wpp-table-syncs.local.json");
+const tableFormatTemplatesPath = process.env.WPS_CONNECTOR_TABLE_FORMAT_TEMPLATES_PATH || join(runtimeRoot, "table-format-templates.local.json");
 const connectorPlatformUrl = (process.env.CONNECTOR_PLATFORM_URL || "http://127.0.0.1:40315").replace(/\/$/, "");
 
 process.on("uncaughtException", (error) => {
@@ -45,8 +59,10 @@ const paneViews = new Map();
 const execFileAsync = promisify(execFile);
 let bindingsStore = { bindings: [] };
 let tableSyncsStore = { sources: [], syncs: [] };
+let tableFormatTemplatesStore = { templates: [] };
 let connectorStateStatus = { ok: false, mode: "local", revision: 0, error: "not reconciled" };
 let updateCheckCache = null;
+let catalogRefreshPromise = null;
 const codexAgent = new CodexAgentClient();
 let desktopSyncCache = { checkedAt: 0, value: null };
 codexAgent.on("log", (message) => {
@@ -64,6 +80,9 @@ function warmAgentTransport() {
 }
 
 function nowIso() { return new Date().toISOString(); }
+function logTableSyncEvent(event, details = {}) {
+  console.error(`[table-sync] ${JSON.stringify({ event, at: nowIso(), ...details })}`);
+}
 function sendJson(res, status, payload) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type" });
   res.end(JSON.stringify(payload, null, 2));
@@ -162,19 +181,31 @@ async function loadTableSyncs() {
     tableSyncsStore = { sources: [], syncs: [] };
   }
 }
+async function loadTableFormatTemplates() {
+  try {
+    const raw = await readFile(tableFormatTemplatesPath, "utf8");
+    tableFormatTemplatesStore = normalizeTableFormatTemplateState(JSON.parse(raw));
+  } catch {
+    tableFormatTemplatesStore = { templates: [] };
+  }
+}
 async function writeTableSyncsLocal() { await mkdir(dirname(tableSyncsPath), { recursive: true }); await writeFile(tableSyncsPath, `${JSON.stringify(tableSyncsStore, null, 2)}\n`); }
-function connectorStateSnapshot() { return { bindings: bindingsStore.bindings, tableSyncs: tableSyncsStore }; }
+async function writeTableFormatTemplatesLocal() { await mkdir(dirname(tableFormatTemplatesPath), { recursive: true }); await writeFile(tableFormatTemplatesPath, `${JSON.stringify(tableFormatTemplatesStore, null, 2)}\n`); }
+function connectorStateSnapshot() { return { bindings: bindingsStore.bindings, tableSyncs: tableSyncsStore, tableFormatTemplates: tableFormatTemplatesStore }; }
 async function pushConnectorState() { connectorStateStatus = await pushAdapterState("WPS", connectorStateSnapshot()); return connectorStateStatus; }
 async function saveBindings() { await writeBindingsLocal(); await pushConnectorState(); }
 async function saveTableSyncs() { await writeTableSyncsLocal(); await pushConnectorState(); }
+async function saveTableFormatTemplates() { await writeTableFormatTemplatesLocal(); await pushConnectorState(); }
 async function reconcileConnectorState() {
   const result = await reconcileAdapterState("WPS", connectorStateSnapshot());
   connectorStateStatus = result;
   if (!result.ok) return result;
   bindingsStore = { bindings: result.state.bindings };
   tableSyncsStore = result.state.tableSyncs;
+  tableFormatTemplatesStore = result.state.tableFormatTemplates;
   await writeBindingsLocal();
   await writeTableSyncsLocal();
+  await writeTableFormatTemplatesLocal();
   return result;
 }
 function findBindingForSession(session) {
@@ -229,10 +260,17 @@ async function ensureAgentBinding(session) {
   await saveBindings();
   return binding;
 }
+function normalizePaneView(view) {
+  const requested = String(view || "").trim().toLowerCase();
+  if (requested === "agent") return "agent";
+  if (requested === "sync" || requested === "table-sync") return "sync";
+  if (requested === "table-format" || requested === "table-format-template" || requested === "格式模板" || requested === "表格格式") return "table-format";
+  return "connector";
+}
 function setPaneView(sessionId, view) {
   const session = sessions.get(sessionId);
   if (!session) throw { code: "SESSION_NOT_FOUND", message: `Session not found: ${sessionId}` };
-  const normalizedView = view === "agent" ? "agent" : view === "sync" ? "sync" : "connector";
+  const normalizedView = normalizePaneView(view);
   const state = { view: normalizedView, updatedAt: nowIso() };
   paneViews.set(sessionId, state);
   return state;
@@ -330,23 +368,36 @@ async function assertAgentSyncReady() {
 }
 async function loadCatalog() { try { const raw = await readFile(catalogPath, "utf8"); const json = JSON.parse(raw); return { projects: Array.isArray(json.projects) ? json.projects : [], threads: Array.isArray(json.threads) ? json.threads : [], updatedAt: json.updatedAt || "", source: json.source || "" }; } catch { return { projects: [], threads: [], updatedAt: "", source: "" }; } }
 async function refreshCatalog() {
+  if (catalogRefreshPromise) return catalogRefreshPromise;
+  catalogRefreshPromise = (async () => {
+    try {
+      const response = await fetch(`${connectorPlatformUrl}/api/catalog`);
+      const json = await response.json();
+      if (!response.ok || !json.ok) throw new Error(json.error?.message || `HTTP ${response.status}`);
+      const catalog = {
+        updatedAt: json.updatedAt || nowIso(),
+        source: json.source || "connector-platform",
+        projects: Array.isArray(json.projects) ? json.projects : [],
+        threads: Array.isArray(json.threads) ? json.threads : [],
+      };
+      await mkdir(dirname(catalogPath), { recursive: true });
+      await writeFile(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
+      return catalog;
+    } catch {}
+    const script = join(process.cwd(), "scripts/sync-codex-catalog.js");
+    await execFileAsync(process.execPath, [script, "--output", catalogPath], { env: { ...process.env, WPS_CONNECTOR_CATALOG_PATH: catalogPath }, maxBuffer: 1024 * 1024 * 20 });
+    return loadCatalog();
+  })();
   try {
-    const response = await fetch(`${connectorPlatformUrl}/api/catalog`);
-    const json = await response.json();
-    if (!response.ok || !json.ok) throw new Error(json.error?.message || `HTTP ${response.status}`);
-    const catalog = {
-      updatedAt: json.updatedAt || nowIso(),
-      source: json.source || "connector-platform",
-      projects: Array.isArray(json.projects) ? json.projects : [],
-      threads: Array.isArray(json.threads) ? json.threads : [],
-    };
-    await mkdir(dirname(catalogPath), { recursive: true });
-    await writeFile(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`);
-    return catalog;
-  } catch {}
-  const script = join(process.cwd(), "scripts/sync-codex-catalog.js");
-  await execFileAsync(process.execPath, [script, "--output", catalogPath], { env: { ...process.env, WPS_CONNECTOR_CATALOG_PATH: catalogPath }, maxBuffer: 1024 * 1024 * 20 });
-  return loadCatalog();
+    return await catalogRefreshPromise;
+  } finally {
+    catalogRefreshPromise = null;
+  }
+}
+async function catalogSnapshot() {
+  const catalog = await loadCatalog();
+  if (catalog.updatedAt || catalog.projects.length || catalog.threads.length) return catalog;
+  return refreshCatalog();
 }
 function parseConnectorVersion(source = "") {
   const version = /WPS_CONNECTOR_CLIENT_VERSION\s*=\s*"([^"]+)"/.exec(source)?.[1] || "";
@@ -811,6 +862,324 @@ function normalizeWpsMatrix(value) {
   if (!Array.isArray(value[0])) return [value.map((cell) => cell ?? "")];
   return asMatrix(value);
 }
+function rectangularMatrix(value, rowCount, columnCount, fallback = "") {
+  const source = Array.isArray(value) ? value : [];
+  return Array.from({ length: Math.max(0, rowCount) }, (_, row) => Array.from({ length: Math.max(0, columnCount) }, (_, column) => {
+    const cell = source[row]?.[column];
+    return cell === undefined || cell === null ? fallback : cell;
+  }));
+}
+function normalizeEtDisplayCell(value, display, format = {}) {
+  if (value === null || value === undefined) return "";
+  const hostText = display === undefined || display === null ? "" : String(display);
+  const numericValue = typeof value === "number"
+    ? value
+    : typeof value === "string" && /^[-+]?\d+(?:\.\d+)?$/.test(value.trim())
+      ? Number(value)
+      : NaN;
+  if (!Number.isFinite(numericValue)) return hostText || String(value);
+  const pattern = String(format?.numberFormat || "");
+  if (!pattern || /^general$/i.test(pattern) || pattern === "@") return hostText || String(value);
+  const dateSection = pattern.split(";")[0].replace(/\\./g, "");
+  if (/[ymdhHs]/i.test(dateSection) && !/[#0]/.test(dateSection)) {
+    if (hostText && hostText !== String(value)) return hostText;
+    const serialDate = new Date(Date.UTC(1899, 11, 30) + numericValue * 86400000);
+    if (!Number.isFinite(serialDate.getTime())) return hostText || String(value);
+    const two = (number) => String(number).padStart(2, "0");
+    const yyyy = String(serialDate.getUTCFullYear());
+    const yy = yyyy.slice(-2);
+    const month = serialDate.getUTCMonth() + 1;
+    const day = serialDate.getUTCDate();
+    const hour = serialDate.getUTCHours();
+    const minute = serialDate.getUTCMinutes();
+    const second = serialDate.getUTCSeconds();
+    const dateMask = dateSection.replace(/(h{1,2}[^a-z]*)(m{1,2})/gi, "$1__MIN__");
+    return dateMask
+      .replace(/yyyy/gi, yyyy).replace(/yy/gi, yy)
+      .replace(/hh/gi, two(hour)).replace(/h/gi, String(hour))
+      .replace(/ss/gi, two(second)).replace(/s/gi, String(second))
+      .replace(/mm/g, two(month)).replace(/m/g, String(month))
+      .replace(/dd/gi, two(day)).replace(/d/gi, String(day))
+      .replace(/__MIN__/g, two(minute));
+  }
+  const section = pattern.split(";")[numericValue < 0 ? 1 : numericValue === 0 ? 2 : 0] || pattern.split(";")[0];
+  const percent = section.includes("%");
+  const cleaned = section.replace(/"([^"]*)"/g, "$1").replace(/_.|\*./g, "");
+  const tokenMatch = cleaned.match(/[0#?][0#?,]*(?:\.[0#?]+)?/);
+  const token = tokenMatch?.[0];
+  if (!token) return hostText || String(value);
+  const decimal = token.includes(".") ? token.split(".")[1].replace(/[^0#?]/g, "").length : 0;
+  const grouping = token.split(".")[0].includes(",");
+  const scaled = percent ? numericValue * 100 : numericValue;
+  const formatted = scaled.toLocaleString("en-US", { useGrouping: grouping, minimumFractionDigits: decimal, maximumFractionDigits: decimal });
+  const tokenStart = tokenMatch.index;
+  const tokenEnd = tokenStart + token.length;
+  const prefix = cleaned.slice(0, tokenStart).replace(/[-+]/g, numericValue < 0 ? "-" : "");
+  const suffix = cleaned.slice(tokenEnd);
+  const numberText = formatted.replace(/^-/, "");
+  const wrappedPrefix = prefix.replace(/[()]/g, "");
+  const wrappedSuffix = suffix.replace(/[()]/g, "");
+  if (numericValue < 0 && section.includes("(") && !prefix.includes("-")) return `(${wrappedPrefix}${numberText}${wrappedSuffix})`;
+  return `${prefix}${numericValue < 0 && !prefix.includes("-") && !formatted.startsWith("-") ? "-" : ""}${numberText}${suffix}`;
+}
+function normalizeEtFormatSnapshot(readResult, rows) {
+  const rowCount = Math.max(0, rows.length);
+  const columnCount = Math.max(0, ...rows.map((row) => row.length));
+  const raw = readResult?.formatSnapshot || {};
+  const aggregate = readResult?.formats || {};
+  const fallback = aggregate.topLeft && typeof aggregate.topLeft === "object" ? aggregate.topLeft : aggregate;
+  const cells = rectangularMatrix(raw.cells || readResult?.cellFormats, rowCount, columnCount, null).map((row) => row.map((cell) => (cell && typeof cell === "object" ? cell : fallback && typeof fallback === "object" ? { ...fallback } : {})));
+  const displayText = rectangularMatrix(raw.displayText || readResult?.displayText, rowCount, columnCount, null).map((row, r) => row.map((cell, c) => normalizeEtDisplayCell(rows[r]?.[c], cell, cells[r]?.[c])));
+  const rowHeights = Array.isArray(raw.rowHeights) ? raw.rowHeights.filter((item) => Number(item?.row ?? item?.index) > 0 && Number(item?.height) > 0).map((item) => ({ row: Number(item.row ?? item.index), height: Number(item.height) })) : [];
+  const columnWidths = Array.isArray(raw.columnWidths) ? raw.columnWidths.filter((item) => Number(item?.column ?? item?.index) > 0 && Number(item?.width) > 0).map((item) => ({ column: Number(item.column ?? item.index), width: Number(item.width), columnWidth: item.columnWidth })) : [];
+  const hasCellFormats = cells.some((row) => row.some((cell) => Object.entries(cell || {}).some(([key, value]) => key !== "topLeft" && value !== undefined && value !== null && value !== "")));
+  const formatWarnings = [
+    ...(Array.isArray(raw.formatWarnings) ? raw.formatWarnings : []),
+    ...(readResult?.formatWarning ? [{ code: "FORMAT_READ_FAILED", message: String(readResult.formatWarning) }] : []),
+  ];
+  return {
+    version: Number(raw.version || 1),
+    rowCount,
+    columnCount,
+    cells,
+    displayText,
+    rowHeights,
+    columnWidths,
+    readStrategy: raw.readStrategy || readResult?.formatReadStrategy || "full",
+    exactFields: Array.isArray(raw.exactFields) ? raw.exactFields : [],
+    formatSampleRows: Array.isArray(raw.sampleRows) ? raw.sampleRows : [],
+    formatSampleCount: Number(raw.sampleCount || 0),
+    formatWarnings,
+    formatQuality: raw.formatQuality || (formatWarnings.length ? "partial" : hasCellFormats ? "complete" : "unavailable"),
+    enabled: Boolean(hasCellFormats || rowHeights.length || columnWidths.length || raw.displayText || readResult?.displayText),
+  };
+}
+function sourceFormatAt(snapshot, row, column) {
+  return snapshot?.cells?.[row]?.[column] && typeof snapshot.cells[row][column] === "object" ? snapshot.cells[row][column] : {};
+}
+function sourceDisplayAt(snapshot, rows, row, column) {
+  const value = snapshot?.displayText?.[row]?.[column];
+  return value === undefined || value === null ? String(rows[row]?.[column] ?? "") : String(value);
+}
+function sourceDimension(snapshot, collection, index) {
+  const item = (snapshot?.[collection] || []).find((candidate) => Number(candidate?.[collection === "rowHeights" ? "row" : "column"] ?? candidate?.index) === index + 1);
+  return item && Number(item.height ?? item.width) > 0 ? Number(item.height ?? item.width) : null;
+}
+function wppAlignmentFromEt(value) {
+  const numeric = Number(value);
+  if (numeric === -4108 || numeric === 1) return 1;
+  if (numeric === -4152 || numeric === 2) return 2;
+  if (numeric === -4131 || numeric === 0) return 0;
+  const text = String(value || "").toLowerCase();
+  if (text === "center") return 1;
+  if (text === "right") return 2;
+  if (text === "left") return 0;
+  return undefined;
+}
+function wppVerticalAlignmentFromEt(value) {
+  const numeric = Number(value);
+  if (numeric === -4160 || numeric === 0) return 0;
+  if (numeric === -4108 || numeric === 1) return 1;
+  if (numeric === -4107 || numeric === 3) return 3;
+  const text = String(value || "").toLowerCase();
+  if (text === "top") return 0;
+  if (text === "center" || text === "middle") return 1;
+  if (text === "bottom") return 3;
+  return undefined;
+}
+function etValueIsNumeric(value) {
+  if (typeof value === "number") return Number.isFinite(value);
+  return typeof value === "string" && /^[-+]?\d+(?:\.\d+)?$/.test(value.trim());
+}
+function etCellGeneralAlignment(cell = {}, value) {
+  const raw = cell.horizontalAlignment;
+  const text = String(raw ?? "").trim().toLowerCase();
+  const numeric = Number(raw);
+  const isGeneral = numeric === 9999999 || text === "general" || text === "automatic" || text === "auto";
+  if (!isGeneral) return undefined;
+  return etValueIsNumeric(value) ? 2 : 0;
+}
+function etCellFormatToWpp(cell = {}, value) {
+  const out = {};
+  const font = {};
+  if (cell.fontName) font.name = cell.fontName;
+  if (Number(cell.fontSize) > 0) font.size = Number(cell.fontSize);
+  if (cell.bold !== undefined && cell.bold !== null) font.bold = Boolean(cell.bold);
+  if (cell.fontColor !== undefined && cell.fontColor !== null && cell.fontColor !== "") font.color = cell.fontColor;
+  if (Object.keys(font).length) out.font = font;
+  const paragraph = {};
+  const alignment = wppAlignmentFromEt(cell.horizontalAlignment) ?? etCellGeneralAlignment(cell, value);
+  if (alignment !== undefined) paragraph.alignment = alignment;
+  if (Object.keys(paragraph).length) out.paragraph = paragraph;
+  const verticalAlignment = wppVerticalAlignmentFromEt(cell.verticalAlignment);
+  if (verticalAlignment !== undefined) out.verticalAlignment = verticalAlignment;
+  if (cell.fillColor !== undefined && cell.fillColor !== null && cell.fillColor !== "") out.shading = { backgroundColor: cell.fillColor };
+  if (cell.wrapText !== undefined && cell.wrapText !== null) out.paragraph = { ...(out.paragraph || {}), wordWrap: Boolean(cell.wrapText) };
+  const borderStyle = Number(cell.borderLineStyle);
+  if (cell.border === true || (Number.isFinite(borderStyle) && borderStyle !== 0)) {
+    const item = { index: 1 };
+    if (Number.isFinite(borderStyle) && borderStyle !== 0) item.lineStyle = borderStyle;
+    if (cell.borderColor !== undefined && cell.borderColor !== null && cell.borderColor !== "") item.color = cell.borderColor;
+    out.borders = { enable: true, items: [item, { ...item, index: 2 }, { ...item, index: 3 }, { ...item, index: 4 }] };
+  }
+  return out;
+}
+function mapEtRowsWithFormats(rows, snapshot, config) {
+  const sourceRows = normalizeWpsMatrix(rows);
+  const entryFor = (row, sourceIndex) => ({
+    sourceIndex,
+    values: config.columnMapping.map((sourceColumn) => row[sourceColumn - 1] ?? ""),
+    display: config.columnMapping.map((sourceColumn) => sourceDisplayAt(snapshot, sourceRows, sourceIndex, sourceColumn - 1)),
+    formats: config.columnMapping.map((sourceColumn) => sourceFormatAt(snapshot, sourceIndex, sourceColumn - 1)),
+    height: sourceDimension(snapshot, "rowHeights", sourceIndex),
+  });
+  const headerEntries = sourceRows.slice(0, config.headerRowCount).map((row, index) => entryFor(row, index));
+  let dataEntries = sourceRows.slice(config.headerRowCount).map((row, index) => entryFor(row, index + config.headerRowCount));
+  if (config.sort.enabled) {
+    const sortIndex = config.sort.column - 1;
+    dataEntries = [...dataEntries].sort((left, right) => {
+      const leftValue = cleanCellValue(left.values[sortIndex]);
+      const rightValue = cleanCellValue(right.values[sortIndex]);
+      const leftOther = config.sort.otherItemsBottom && leftValue === "其他";
+      const rightOther = config.sort.otherItemsBottom && rightValue === "其他";
+      if (leftOther !== rightOther) return leftOther ? 1 : -1;
+      const comparison = leftValue.localeCompare(rightValue, "zh-CN", { numeric: true });
+      return config.sort.direction === "asc" ? comparison : -comparison;
+    });
+  }
+  const header = config.syncHeader ? headerEntries : [];
+  const entries = [...header, ...dataEntries];
+  return {
+    sourceRows,
+    headerEntries,
+    dataEntries,
+    entries,
+    values: entries.map((entry) => entry.values),
+    display: entries.map((entry) => entry.display),
+    formats: entries.map((entry) => entry.formats),
+    heights: entries.map((entry) => entry.height),
+  };
+}
+function mergeEtRowsWithFormats(mapped, targetValues, config, targetColumnCount) {
+  if (config.syncHeader) return { values: mapped.values, display: mapped.display, formats: mapped.formats, heights: mapped.heights, matchedCount: 0, preservedCount: 0, appendedCount: 0 };
+  const targetRows = asMatrix(targetValues || []).map((row) => {
+    const next = [...row]; while (next.length < targetColumnCount) next.push(""); return next.slice(0, targetColumnCount);
+  });
+  const keyColumn = Math.max(1, Number(config.rowMatch?.keyColumn || 1));
+  const keyOf = (row) => cleanCellValue(row?.[keyColumn - 1]);
+  const sourceEntries = mapped.dataEntries.map((entry) => ({ ...entry, key: keyOf(entry.values) }));
+  const sourceByKey = new Map();
+  for (const entry of sourceEntries) if (entry.key) { if (!sourceByKey.has(entry.key)) sourceByKey.set(entry.key, []); sourceByKey.get(entry.key).push(entry); }
+  const used = new Set();
+  const values = [];
+  const display = [];
+  const formats = [];
+  const heights = [];
+  let matchedCount = 0;
+  let preservedCount = 0;
+  for (const targetRow of targetRows) {
+    const match = (sourceByKey.get(keyOf(targetRow)) || []).find((entry) => !used.has(entry.sourceIndex));
+    if (match) {
+      used.add(match.sourceIndex); values.push(match.values); display.push(match.display); formats.push(match.formats); heights.push(match.height); matchedCount += 1;
+    } else if (config.rowMatch?.preserveUnmatchedWordRows !== false) {
+      values.push(targetRow); display.push(targetRow.map((cell) => String(cell ?? ""))); formats.push(null); heights.push(null); preservedCount += 1;
+    }
+  }
+  let appendedCount = 0;
+  if (config.rowMatch?.appendNewExcelRows !== false) for (const entry of sourceEntries) {
+    if (used.has(entry.sourceIndex)) continue;
+    values.push(entry.values); display.push(entry.display); formats.push(entry.formats); heights.push(entry.height); appendedCount += 1;
+  }
+  return { values, display, formats, heights, matchedCount, preservedCount, appendedCount };
+}
+function buildWppFormatPayload(snapshot, formatRows, heights, config, targetColumnCount, valueRows = []) {
+  if (!snapshot?.enabled) return null;
+  const cells = [];
+  for (let row = 0; row < formatRows.length; row += 1) {
+    const rowFormats = formatRows[row];
+    if (!Array.isArray(rowFormats)) continue;
+    for (let column = 0; column < Math.min(targetColumnCount, rowFormats.length); column += 1) {
+      const format = etCellFormatToWpp(rowFormats[column], valueRows[row]?.[column]);
+      if (Object.keys(format).length) cells.push({ row: row + 1, column: column + 1, ...format });
+    }
+  }
+  const rowHeights = heights.map((height, index) => height > 0 ? { row: index + 1, height } : null).filter(Boolean);
+  const columnWidths = config.columnMapping.map((sourceColumn, targetIndex) => {
+    const width = sourceDimension(snapshot, "columnWidths", sourceColumn - 1);
+    return width > 0 ? { column: targetIndex + 1, width } : null;
+  }).filter(Boolean);
+  if (!cells.length && !rowHeights.length && !columnWidths.length) return null;
+  return { rowCount: formatRows.length, columnCount: targetColumnCount, cells, rowHeights, columnWidths };
+}
+function compareWppFormatSubset(requested = {}, actual = {}) {
+  const mismatches = [];
+  const actualCells = new Map((actual.cells || []).map((cell) => [`${cell.row}:${cell.column}`, cell.format && typeof cell.format === "object" ? { ...cell, ...cell.format } : cell]));
+  const read = (object, path) => String(path).split(".").reduce((value, key) => value == null ? undefined : value[key], object);
+  for (const cell of requested.cells || []) {
+    const actualCell = actualCells.get(`${cell.row}:${cell.column}`);
+    if (!actualCell) { mismatches.push({ row: cell.row, column: cell.column, field: "cell", expected: "present", actual: "missing" }); continue; }
+    for (const path of ["font.name", "font.size", "font.bold", "font.color", "paragraph.alignment", "paragraph.wordWrap", "shading.backgroundColor", "borders.enable", "verticalAlignment"]) {
+      const expected = read(cell, path);
+      if (expected === undefined) continue;
+      const received = read(actualCell, path);
+      const booleanField = ["font.bold", "paragraph.wordWrap", "borders.enable"].includes(path);
+      const asBool = (value) => value === true || value === -1 || value === 1 || value === "true" || value === "1";
+      const equal = booleanField ? asBool(received) === asBool(expected) : String(received) === String(expected);
+      if (!equal) mismatches.push({ row: cell.row, column: cell.column, field: path, expected, actual: received });
+    }
+  }
+  return { verified: mismatches.length === 0, checkedCells: (requested.cells || []).length, mismatches: mismatches.slice(0, 20) };
+}
+function formatVerificationCells(formatPayload, limit = 8) {
+  const cells = Array.isArray(formatPayload?.cells) ? formatPayload.cells : [];
+  if (!cells.length) return [];
+  const byKey = new Map(cells.map((cell) => [`${cell.row}:${cell.column}`, cell]));
+  const preferred = [
+    [1, 1], [1, formatPayload.columnCount], [formatPayload.rowCount, 1], [formatPayload.rowCount, formatPayload.columnCount],
+    [2, 1], [2, formatPayload.columnCount],
+  ];
+  const selected = [];
+  const seen = new Set();
+  for (const [row, column] of preferred) {
+    const key = `${row}:${column}`;
+    if (byKey.has(key) && !seen.has(key)) { selected.push(byKey.get(key)); seen.add(key); }
+  }
+  for (const cell of cells) {
+    const key = `${cell.row}:${cell.column}`;
+    if (!seen.has(key)) { selected.push(cell); seen.add(key); }
+    if (selected.length >= limit) break;
+  }
+  return selected.slice(0, limit);
+}
+async function applyEtWppFormatSnapshot(wppSession, tableIndex, formatPayload) {
+  if (!formatPayload) return { applied: false, verified: true, skipped: true, reason: "源表没有可迁移的格式快照。" };
+  const verificationCells = formatVerificationCells(formatPayload);
+  const requestedVerification = { ...formatPayload, cells: verificationCells };
+  const apply = await runSessionCommand(wppSession, "wpp.apply_table_format", {
+    tableIndex: tableIndex + 1,
+    format: formatPayload,
+    verifyCells: verificationCells.map((cell) => ({ row: cell.row, column: cell.column })),
+  });
+  const readback = apply.result?.verification || null;
+  const verification = verificationCells.length
+    ? (readback ? compareWppFormatSubset(requestedVerification, readback) : { verified: false, checkedCells: verificationCells.length, mismatches: [{ field: "verification", expected: "sample readback", actual: "missing" }] })
+    : { verified: true, checkedCells: 0, mismatches: [] };
+  return {
+    applied: true,
+    verified: verification.verified,
+    commandId: apply.command.commandId,
+    appliedFields: apply.result?.applied || [],
+    verification,
+    readback: readback ? { rowCount: readback.rowCount, columnCount: readback.columnCount, count: readback.count } : null,
+    performance: {
+      verificationMode: verificationCells.length ? "sample" : "none",
+      checkedCells: verificationCells.length,
+      formatGroups: Array.isArray(apply.result?.formatGroups) ? apply.result.formatGroups.length : 0,
+      hostCallsSaved: (apply.result?.formatGroups || []).reduce((total, group) => total + Number(group.hostCallsSaved || 0), 0),
+      formatFastPaths: (apply.result?.formatGroups || []).map((group) => group.fastPath).filter(Boolean),
+    },
+  };
+}
 function localEtAddress(sheetName, address) {
   const raw = String(address || "").trim();
   if (!raw) return "";
@@ -844,6 +1213,17 @@ function publicEtWppDataSource(source) {
     address: localEtAddress(source.sheetName, source.address),
     rowCount: Number(source.rowCount || 0),
     columnCount: Number(source.columnCount || 0),
+    formatting: source.formatSnapshot ? {
+      enabled: Boolean(source.formatSnapshot.enabled),
+      version: source.formatSnapshot.version || 1,
+      cellCount: Number(source.formatSnapshot.rowCount || 0) * Number(source.formatSnapshot.columnCount || 0),
+      rowHeights: (source.formatSnapshot.rowHeights || []).length,
+      columnWidths: (source.formatSnapshot.columnWidths || []).length,
+      readStrategy: source.formatSnapshot.readStrategy || "full",
+      sampleCount: Number(source.formatSnapshot.formatSampleCount || 0),
+      quality: source.formatSnapshot.formatQuality || "unknown",
+      warnings: Array.isArray(source.formatSnapshot.formatWarnings) ? source.formatSnapshot.formatWarnings.slice(0, 20) : [],
+    } : { enabled: false, version: 0, cellCount: 0, rowHeights: 0, columnWidths: 0, readStrategy: "none", sampleCount: 0 },
     status: boundSyncs.length ? "bound" : "pending",
     boundSyncs,
     createdAt: source.createdAt,
@@ -882,8 +1262,17 @@ async function createEtWppDataSource(input = {}) {
     values = selection.values;
   }
   if (!address) tableSyncError("ET_SELECTION_REQUIRED", "请先在 WPS 表格中选择要同步的数据区域。", { sessionId: etSession.sessionId }, 400);
-  const read = values ? null : await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName, address });
-  const rows = normalizeWpsMatrix(values ?? read?.result?.values);
+  const read = await runSessionCommand(etSession, "et.read_range", {
+    sessionId: etSession.sessionId,
+    sheetName,
+    address,
+    includeFormats: input.preserveFormatting !== false,
+    includeCellFormats: input.preserveFormatting !== false,
+    includeDisplayText: input.preserveFormatting !== false,
+    formatMode: input.preserveFormatting !== false ? "profile" : "full",
+    formatProfileHeaderRows: Number(input.headerRowCount ?? 1),
+  });
+  const rows = normalizeWpsMatrix(read.result?.values ?? values);
   const sourceId = input.sourceId || randomUUID();
   const existingIndex = tableSyncsStore.sources.findIndex((source) => source.sourceId === sourceId);
   const previous = existingIndex >= 0 ? tableSyncsStore.sources[existingIndex] : null;
@@ -897,12 +1286,13 @@ async function createEtWppDataSource(input = {}) {
     address: localEtAddress(sheetName, address),
     rowCount: rows.length,
     columnCount: Math.max(0, ...rows.map((row) => row.length)),
+    formatSnapshot: input.preserveFormatting === false ? null : normalizeEtFormatSnapshot(read.result, rows),
     createdAt: previous?.createdAt || now,
     updatedAt: now,
   };
   if (existingIndex >= 0) tableSyncsStore.sources[existingIndex] = source; else tableSyncsStore.sources.push(source);
   await saveTableSyncs();
-  return { created: existingIndex < 0, source: publicEtWppDataSource(source), selection, preview: { values: rows.slice(0, 5), rowCount: source.rowCount, columnCount: source.columnCount } };
+  return { created: existingIndex < 0, source: publicEtWppDataSource(source), selection, preview: { values: rows.slice(0, 5), rowCount: source.rowCount, columnCount: source.columnCount }, formatting: source.formatSnapshot ? { enabled: source.formatSnapshot.enabled, rowCount: source.formatSnapshot.rowCount, columnCount: source.formatSnapshot.columnCount } : { enabled: false } };
 }
 async function unbindEtWppDataSource(input = {}) {
   const sourceId = String(input.sourceId || "").trim();
@@ -925,7 +1315,7 @@ async function deleteEtWppDataSource(input = {}) {
   await saveTableSyncs();
   return { deleted: true, sourceId };
 }
-async function createEtWppTableSync(input = {}) {
+async function createEtWppTableSync(input = {}, options = {}) {
   const registeredSource = input.sourceId ? tableSyncsStore.sources.find((source) => source.sourceId === input.sourceId) : null;
   if (input.sourceId && !registeredSource) tableSyncError("ET_WPP_DATA_SOURCE_NOT_FOUND", `WPS 表格数据源不存在：${input.sourceId}`, {}, 404);
   const etSession = registeredSource ? findOnlineDocumentSession("et", registeredSource.documentKey) : findOnlineHostSession("et", input.etSessionId);
@@ -933,12 +1323,22 @@ async function createEtWppTableSync(input = {}) {
   const wppSession = findOnlineHostSession("wpp", input.wppSessionId || input.wordSessionId);
   if (!wppSession) tableSyncError("NO_ACTIVE_WPP_SESSION", "目标 WPS 文字文档不在线。", {}, 404);
   const tableIndex = Math.max(0, Math.floor(Number(input.wppTableIndex ?? input.wordTableIndex ?? input.tableIndex ?? 0)));
-  const sourceRead = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: registeredSource?.sheetName || input.sheetName, address: registeredSource?.address || input.address });
-  const sourceRows = normalizeWpsMatrix(sourceRead.result?.values);
-  const tableRead = await runSessionCommand(wppSession, "wpp.list_tables", { sessionId: wppSession.sessionId, includeValues: false, maxTables: 200 });
-  const targetTable = (tableRead.result?.tables || []).find((table) => Number(table.tableIndex ?? table.index) === tableIndex);
-  if (!targetTable) tableSyncError("WPP_TABLE_NOT_FOUND", "目标 WPS 文字表格不存在。", { tableIndex, tableCount: tableRead.result?.count || 0 }, 404);
-  const config = normalizeSyncConfig(input, Math.max(0, ...sourceRows.map((row) => row.length)), Number(targetTable.columnCount || 0));
+  const sourceRead = options.sourceReadResult
+    ? { result: options.sourceReadResult }
+    : await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: registeredSource?.sheetName || input.sheetName, address: registeredSource?.address || input.address, includeFormats: true, includeCellFormats: true, includeDisplayText: true, formatMode: "profile", formatProfileHeaderRows: Number(input.headerRowCount ?? 1) });
+  const sourceRows = Array.isArray(options.sourceRows) ? options.sourceRows : normalizeWpsMatrix(sourceRead.result?.values);
+  if (registeredSource) {
+    registeredSource.formatSnapshot = normalizeEtFormatSnapshot(sourceRead.result, sourceRows);
+    registeredSource.rowCount = sourceRows.length;
+    registeredSource.columnCount = Math.max(0, ...sourceRows.map((row) => row.length));
+    registeredSource.updatedAt = nowIso();
+    if (options.skipRegisteredSourceSave !== true) await saveTableSyncs();
+  }
+  const targetTable = options.targetTable || null;
+  const tableRead = targetTable ? null : await runSessionCommand(wppSession, "wpp.list_tables", { sessionId: wppSession.sessionId, includeValues: false, maxTables: 200 });
+  const resolvedTargetTable = targetTable || (tableRead.result?.tables || []).find((table) => Number(table.tableIndex ?? table.index) === tableIndex);
+  if (!resolvedTargetTable) tableSyncError("WPP_TABLE_NOT_FOUND", "目标 WPS 文字表格不存在。", { tableIndex, tableCount: tableRead?.result?.count || 0 }, 404);
+  const config = normalizeSyncConfig(input, Math.max(0, ...sourceRows.map((row) => row.length)), Number(resolvedTargetTable.columnCount || 0));
   const syncId = input.syncId || randomUUID();
   const existingIndex = tableSyncsStore.syncs.findIndex((item) => item.syncId === syncId);
   const previous = existingIndex >= 0 ? tableSyncsStore.syncs[existingIndex] : null;
@@ -960,7 +1360,7 @@ async function createEtWppTableSync(input = {}) {
   };
   if (existingIndex >= 0) tableSyncsStore.syncs[existingIndex] = sync; else tableSyncsStore.syncs.push(sync);
   await saveTableSyncs();
-  return { created: existingIndex < 0, mapping: publicEtWppTableSync(sync), sourceShape: { rowCount: sourceRows.length, columnCount: Math.max(0, ...sourceRows.map((row) => row.length)) }, targetTable };
+  return { created: existingIndex < 0, mapping: publicEtWppTableSync(sync), sourceShape: { rowCount: sourceRows.length, columnCount: Math.max(0, ...sourceRows.map((row) => row.length)) }, targetTable: resolvedTargetTable };
 }
 async function insertEtWppDataSource(input = {}) {
   const source = tableSyncsStore.sources.find((item) => item.sourceId === input.sourceId);
@@ -969,13 +1369,34 @@ async function insertEtWppDataSource(input = {}) {
   if (!etSession) tableSyncError("NO_ACTIVE_ET_SESSION", "源 WPS 表格文档不在线。", {}, 409);
   const wppSession = findOnlineHostSession("wpp", input.wppSessionId || input.wordSessionId);
   if (!wppSession) tableSyncError("NO_ACTIVE_WPP_SESSION", "目标 WPS 文字文档不在线。", {}, 409);
-  const read = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: source.sheetName, address: source.address });
+  logTableSyncEvent("phase", { phase: "read_source_start", sourceId: source.sourceId, etSessionId: etSession.sessionId, wppSessionId: wppSession.sessionId });
+  const read = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: source.sheetName, address: source.address, includeFormats: input.preserveFormatting !== false, includeCellFormats: input.preserveFormatting !== false, includeDisplayText: input.preserveFormatting !== false, formatMode: input.preserveFormatting !== false ? "profile" : "full", formatProfileHeaderRows: Number(input.headerRowCount ?? 1) });
   const rows = normalizeWpsMatrix(read.result?.values);
   if (!rows.length || !rows[0]?.length) tableSyncError("EMPTY_ET_RANGE", "源 WPS 表格区域为空，无法插入。", { sourceId: source.sourceId });
-  const inserted = await runSessionCommand(wppSession, "wpp.insert_table", { sessionId: wppSession.sessionId, rowCount: rows.length, columnCount: Math.max(1, ...rows.map((row) => row.length)), values: rows, border: input.border === true, headerRowBold: false, releaseSelection: true, ensureTrailingParagraph: true });
+  logTableSyncEvent("phase", { phase: "read_source_complete", sourceId: source.sourceId, rowCount: rows.length, columnCount: Math.max(0, ...rows.map((row) => row.length)) });
+  const snapshot = input.preserveFormatting === false ? null : normalizeEtFormatSnapshot(read.result, rows);
+  source.formatSnapshot = snapshot;
+  source.rowCount = rows.length;
+  source.columnCount = Math.max(0, ...rows.map((row) => row.length));
+  source.updatedAt = nowIso();
+  const sourceConfig = normalizeSyncConfig({ headerRowCount: Number(input.headerRowCount ?? 1), syncHeader: input.syncHeader !== false }, source.columnCount, source.columnCount);
+  const mapped = mapEtRowsWithFormats(rows, snapshot, sourceConfig);
+  const displayRows = input.preserveFormatting === false ? mapped.values : mapped.display;
+  logTableSyncEvent("phase", { phase: "insert_table_start", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, rowCount: displayRows.length, columnCount: Math.max(1, ...displayRows.map((row) => row.length)), preserveFormatting: input.preserveFormatting !== false });
+  const inserted = await runSessionCommand(wppSession, "wpp.insert_table", { sessionId: wppSession.sessionId, rowCount: displayRows.length, columnCount: Math.max(1, ...displayRows.map((row) => row.length)), values: displayRows, border: input.border === true, headerRowBold: false, releaseSelection: false, ensureTrailingParagraph: false });
+  logTableSyncEvent("phase", { phase: "insert_table_complete", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, tableIndex: inserted.result?.tableIndex ?? null, writePath: inserted.result?.write?.writePath || "unknown", durationMs: inserted.result?.write?.durationMs ?? null });
   const oneBased = Number(inserted.result?.tableIndex || 1);
-  const binding = await createEtWppTableSync({ sourceId: source.sourceId, etSessionId: etSession.sessionId, wppSessionId: wppSession.sessionId, wppTableIndex: Math.max(0, oneBased - 1), name: source.name, allowStructuralChanges: true, headerRowCount: Number(input.headerRowCount ?? 1), syncHeader: input.syncHeader !== false });
-  return { inserted: true, insert: inserted.result, binding };
+  const formatPayload = input.preserveFormatting === false ? null : buildWppFormatPayload(snapshot, mapped.formats, mapped.heights, sourceConfig, Math.max(1, ...displayRows.map((row) => row.length)), mapped.values);
+  logTableSyncEvent("phase", { phase: "apply_format_start", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, tableIndex: Math.max(0, oneBased - 1), formatEnabled: Boolean(formatPayload) });
+  const formatting = await applyEtWppFormatSnapshot(wppSession, Math.max(0, oneBased - 1), formatPayload);
+  logTableSyncEvent("phase", { phase: "apply_format_complete", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, tableIndex: Math.max(0, oneBased - 1), verified: formatting.verified, checkedCells: formatting.verification?.checkedCells || 0 });
+  // Reuse both the source read and the insertion result; this avoids a second
+  // cross-document round trip merely to discover the table we just created.
+  const targetTable = { host: "wpp", tableIndex: Math.max(0, oneBased - 1), index: Math.max(0, oneBased - 1), oneBasedTableIndex: oneBased, rowCount: displayRows.length, columnCount: Math.max(1, ...displayRows.map((row) => row.length)), verifiedByInsert: inserted.result?.verification?.ok !== false };
+  logTableSyncEvent("phase", { phase: "binding_start", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, tableIndex: Math.max(0, oneBased - 1) });
+  const binding = await createEtWppTableSync({ sourceId: source.sourceId, etSessionId: etSession.sessionId, wppSessionId: wppSession.sessionId, wppTableIndex: Math.max(0, oneBased - 1), name: source.name, allowStructuralChanges: true, headerRowCount: Number(input.headerRowCount ?? 1), syncHeader: input.syncHeader !== false }, { sourceReadResult: read.result, sourceRows: rows, skipRegisteredSourceSave: true, targetTable });
+  logTableSyncEvent("phase", { phase: "binding_complete", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, syncId: binding.mapping?.syncId || null });
+  return { inserted: true, insert: inserted.result, formatting, binding, performance: { sourceReadCommands: 1, targetDiscoveryCommands: 0, persistedStateWrites: 1, insertionWritePath: inserted.result?.write?.writePath || "unknown" } };
 }
 async function syncEtWppTable(input = {}) {
   const sync = tableSyncsStore.syncs.find((item) => item.syncId === input.syncId);
@@ -983,32 +1404,189 @@ async function syncEtWppTable(input = {}) {
   const etSession = findOnlineDocumentSession("et", sync.source?.documentKey);
   const wppSession = findOnlineDocumentSession("wpp", sync.target?.documentKey);
   if (!etSession || !wppSession) tableSyncError("ET_WPP_SYNC_SESSION_OFFLINE", "请同时打开源 WPS 表格和目标 WPS 文字文档，再同步。", { etOnline: Boolean(etSession), wppOnline: Boolean(wppSession), source: sync.source, target: sync.target }, 409);
-  const read = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: sync.source?.sheetName, address: sync.source?.address });
+  const preserveFormatting = input.preserveFormatting !== false;
+  const read = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: sync.source?.sheetName, address: sync.source?.address, includeFormats: preserveFormatting, includeCellFormats: preserveFormatting, includeDisplayText: preserveFormatting, formatMode: preserveFormatting ? "profile" : "full", formatProfileHeaderRows: Number(input.headerRowCount ?? sync.config?.headerRowCount ?? 1) });
   const rawSourceRows = normalizeWpsMatrix(read.result?.values);
   if (!rawSourceRows.length || !rawSourceRows[0]?.length) tableSyncError("EMPTY_ET_RANGE", "映射的 WPS 表格区域为空。", { syncId: sync.syncId });
   const tableRead = await runSessionCommand(wppSession, "wpp.list_tables", { sessionId: wppSession.sessionId, includeValues: true, maxTables: 200, maxRows: 500, maxColumns: 200 });
   const targetTable = (tableRead.result?.tables || []).find((table) => Number(table.tableIndex ?? table.index) === Number(sync.target?.fallbackTableIndex ?? 0));
   if (!targetTable) tableSyncError("WPP_SYNC_TARGET_MISSING", "映射的 WPS 文字表格不存在。", { syncId: sync.syncId, tableCount: tableRead.result?.count || 0 }, 409);
+  const source = tableSyncsStore.sources.find((item) => item.sourceId === sync.sourceId);
+  const snapshot = preserveFormatting ? normalizeEtFormatSnapshot(read.result, rawSourceRows) : null;
+  if (source && preserveFormatting) {
+    source.formatSnapshot = snapshot;
+    source.rowCount = rawSourceRows.length;
+    source.columnCount = Math.max(0, ...rawSourceRows.map((row) => row.length));
+    source.updatedAt = nowIso();
+    await saveTableSyncs();
+  }
   const config = normalizeSyncConfig({ ...(sync.config || {}), ...(input.config || {}), ...input }, Math.max(0, ...rawSourceRows.map((row) => row.length)), Number(targetTable.columnCount || 0));
   const mapped = mapSyncRows(rawSourceRows, config);
+  const mappedWithFormats = mapEtRowsWithFormats(rawSourceRows, snapshot, config);
   const targetColumnCount = Number(targetTable.columnCount || config.columnMapping.length || Math.max(0, ...rawSourceRows.map((row) => row.length)));
   let finalRows = mapped.valuesForTarget;
+  let finalDisplayRows = preserveFormatting ? mappedWithFormats.display : finalRows;
+  let finalFormatRows = mappedWithFormats.formats;
+  let finalHeights = mappedWithFormats.heights;
   let rowMerge = { enabled: false, reason: "header only or disabled" };
   if (!config.syncHeader) {
     rowMerge = mergeRowsByKey(mapped.mappedDataRows, targetTable.values || [], config, targetColumnCount);
     finalRows = rowMerge.rows;
+    const formatMerge = mergeEtRowsWithFormats(mappedWithFormats, targetTable.values || [], config, targetColumnCount);
+    finalDisplayRows = preserveFormatting ? formatMerge.display : finalRows;
+    finalFormatRows = formatMerge.formats;
+    finalHeights = formatMerge.heights;
   }
+  const formatPayload = preserveFormatting ? buildWppFormatPayload(snapshot, finalFormatRows, finalHeights, config, targetColumnCount, finalRows) : null;
   if (input.previewOnly) {
-    return { previewOnly: true, syncId: sync.syncId, sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: targetTable.rowCount, columnCount: targetTable.columnCount }, rowMerge, values: finalRows.slice(0, 20), valueCount: finalRows.length };
+    return { previewOnly: true, syncId: sync.syncId, sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: targetTable.rowCount, columnCount: targetTable.columnCount }, rowMerge, values: finalRows.slice(0, 20), valueCount: finalRows.length, formatting: formatPayload ? { enabled: true, cells: formatPayload.cells.length, rowHeights: formatPayload.rowHeights.length, columnWidths: formatPayload.columnWidths.length } : { enabled: false } };
   }
-  const replace = await runSessionCommand(wppSession, "wpp.replace_table_values", { sessionId: wppSession.sessionId, tableIndex: sync.target?.fallbackTableIndex || 0, values: finalRows, allowStructuralChanges: sync.allowStructuralChanges !== false, headerRowCount: config.headerRowCount, syncHeader: config.syncHeader });
+  const replace = await runSessionCommand(wppSession, "wpp.replace_table_values", { sessionId: wppSession.sessionId, tableIndex: sync.target?.fallbackTableIndex || 0, values: finalDisplayRows, allowStructuralChanges: sync.allowStructuralChanges !== false, headerRowCount: config.headerRowCount, syncHeader: config.syncHeader });
+  const targetIndex = Number(sync.target?.fallbackTableIndex || 0);
+  const valuesReadback = await runSessionCommand(wppSession, "wpp.read_table", { sessionId: wppSession.sessionId, tableIndex: targetIndex + 1 });
+  const readbackValues = normalizeWpsMatrix(valuesReadback.result?.values);
+  const expectedValues = finalDisplayRows.map((row) => row.map((cell) => String(cell ?? "")));
+  const actualValues = readbackValues.map((row) => row.map((cell) => String(cell ?? "")));
+  const valuesVerified = JSON.stringify(actualValues) === JSON.stringify(expectedValues);
+  if (!valuesVerified) tableSyncError("TABLE_REPLACE_READBACK_MISMATCH", "WPS 文字表格写入后读回内容与预期不一致。", { syncId: sync.syncId, expectedPreview: expectedValues.slice(0, 3), actualPreview: actualValues.slice(0, 3) }, 409);
+  const formatting = await applyEtWppFormatSnapshot(wppSession, targetIndex, formatPayload);
   const now = nowIso();
   sync.config = config;
   sync.lastSyncedAt = now;
   sync.updatedAt = now;
-  sync.lastSyncSummary = { rowCount: finalRows.length, columnCount: targetColumnCount, rowMerge, replaced: replace.result };
+  sync.lastSyncSummary = { rowCount: finalRows.length, columnCount: targetColumnCount, rowMerge, replaced: replace.result, valuesVerified, formatting: { applied: formatting.applied, verified: formatting.verified, checkedCells: formatting.verification?.checkedCells || 0 } };
   await saveTableSyncs();
-  return { synced: true, syncId: sync.syncId, mapping: publicEtWppTableSync(sync), sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: replace.result?.rowCount, columnCount: replace.result?.columnCount }, rowMerge, replace: replace.result };
+  return { synced: true, syncId: sync.syncId, mapping: publicEtWppTableSync(sync), sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: replace.result?.rowCount, columnCount: replace.result?.columnCount }, rowMerge, replace: replace.result, valuesReadback: { verified: valuesVerified, rowCount: actualValues.length, columnCount: Math.max(0, ...actualValues.map((row) => row.length)) }, formatting };
+}
+
+function wpsTemplateOrThrow(templateId) {
+  const id = String(templateId || "").trim();
+  const candidates = tableFormatTemplatesStore.templates.filter((item) => String(item.templateId || "") === id);
+  const template = candidates.find((item) => !item.host || item.host === "WPS");
+  if (template) return template;
+  if (!candidates.length) throw { code: "TABLE_FORMAT_TEMPLATE_NOT_FOUND", message: `未找到表格格式模板：${id}`, details: { templateId: id } };
+  throw { code: "TABLE_FORMAT_TEMPLATE_HOST_MISMATCH", message: "该模板属于 Office Word，不能直接应用到 WPS Writer。请在 WPS Writer 中重新抓取模板。", details: { templateId: id, templateHost: candidates[0].host, requestedHost: "WPS" } };
+}
+
+function wpsTemplatePublic(template) {
+  return { ...template, formatSummary: { rowCount: template.shape?.rowCount ?? template.format?.rowCount ?? null, columnCount: template.shape?.columnCount ?? template.format?.columnCount ?? null, fields: Object.keys(template.format || {}) } };
+}
+
+function wpsTemplateInputForCapture(input = {}) {
+  return { target: input.target || "Selection", ...(input.tableIndex === undefined ? {} : { tableIndex: input.tableIndex }) };
+}
+
+async function wpsCaptureTableFormatTemplate(input = {}, save = false) {
+  const session = selectSession(input, "wpp", save ? "wpp.save_table_format_template" : "wpp.capture_table_format");
+  const command = await runSessionCommand(session, "wpp.capture_table_format", wpsTemplateInputForCapture(input));
+  const captured = command.result || {};
+  if (!captured.format || !captured.tableIndex && captured.tableIndex !== 0) throw { code: "TABLE_FORMAT_CAPTURE_UNVERIFIED", message: "WPS Writer 未返回可验证的表格格式快照。", details: captured };
+  if (!save) {
+    const capturedTemplate = normalizeTableFormatTemplate({
+      templateId: `capture-${session.sessionId}-${captured.tableIndex}`,
+      name: "当前抓取格式",
+      host: "WPS",
+      source: { documentKey: session.documentKey, documentName: session.documentName, tableIndex: captured.tableIndex },
+      shape: { rowCount: captured.rowCount, columnCount: captured.columnCount },
+      format: captured.format,
+      warnings: captured.warnings || [],
+      unsupportedFields: captured.unsupportedFields || [],
+    });
+    return { captured: true, sessionId: session.sessionId, commandId: command.command.commandId, template: { ...capturedTemplate, templateId: undefined, name: undefined }, result: captured };
+  }
+  const now = nowIso();
+  const existing = tableFormatTemplatesStore.templates.find((item) => String(item.templateId || "") === String(input.templateId || ""));
+  const template = normalizeTableFormatTemplate({
+    templateId: input.templateId || randomUUID(),
+    name: input.name,
+    host: "WPS",
+    source: { documentKey: session.documentKey, documentName: session.documentName, tableIndex: captured.tableIndex },
+    shape: { rowCount: captured.rowCount, columnCount: captured.columnCount },
+    format: captured.format,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+  });
+  tableFormatTemplatesStore = upsertTableFormatTemplate(tableFormatTemplatesStore, template);
+  await saveTableFormatTemplates();
+  return { saved: true, created: !existing, sessionId: session.sessionId, commandId: command.command.commandId, template: wpsTemplatePublic(template), capture: captured };
+}
+
+async function wpsApplyTableFormatTemplate(input = {}) {
+  const session = selectSession(input, "wpp", "wpp.apply_table_format_template");
+  const template = wpsTemplateOrThrow(input.templateId);
+  const target = input.target || "All";
+  let targetIndexes;
+  let selectionIndex = null;
+  const tablesCommand = await runSessionCommand(session, "wpp.list_tables", { includeValues: false, maxTables: 500 });
+  const tables = tablesCommand.result?.tables || [];
+  const tableByIndex = new Map(tables.map((item) => [Number(item.tableIndex ?? item.index), item]));
+  if (target === "Selection" || target === "ExceptSelection") {
+    const selected = await runSessionCommand(session, "wpp.capture_table_format", { target: "Selection" });
+    selectionIndex = Number(selected.result?.tableIndex);
+    if (!Number.isInteger(selectionIndex)) throw { code: "SELECTION_TABLE_NOT_FOUND", message: "当前 WPS Writer 选区不在表格内，请先选中一个表格。" };
+  }
+  if (target === "tableIndexes") {
+    targetIndexes = [...new Set((Array.isArray(input.tableIndexes) ? input.tableIndexes : []).map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 0))];
+  } else if (target === "tableIndex" || target === "TableIndex") {
+    targetIndexes = [Number(input.tableIndex)].filter((value) => Number.isInteger(value) && value >= 0);
+  } else {
+    const all = tables.map((item) => Number(item.tableIndex ?? item.index)).filter((value) => Number.isInteger(value) && value >= 0);
+    targetIndexes = target === "Selection" ? [selectionIndex] : target === "ExceptSelection" ? all.filter((index) => index !== selectionIndex) : target === "First" ? [0] : all;
+  }
+  targetIndexes = [...new Set(targetIndexes)].filter((value) => value >= 0);
+  if (!targetIndexes.length) return { applied: false, verified: false, template: wpsTemplatePublic(template), target, targetIndexes, summary: summarizeTemplateApplication([]), performance: { fastPath: "none", hostCallsSaved: 0, affectedCells: 0, fallbackCellCount: 0, durationMs: 0 }, warnings: ["没有可应用的目标表格。"] };
+  const targets = targetIndexes.map((tableIndex) => ({ tableIndex, shape: { rowCount: Number(tableByIndex.get(tableIndex)?.rowCount || 0), columnCount: Number(tableByIndex.get(tableIndex)?.columnCount || 0) } }));
+  const requestedFormat = tableFormatForApply(template, { host: "WPS" });
+  const applied = await applyTableFormatTransactions({
+    targets,
+    format: requestedFormat,
+    host: "WPS",
+    read: async (tableIndex) => {
+      const result = await runSessionCommand(session, "wpp.read_table_format", { tableIndex: tableIndex + 1 });
+      return result.result || {};
+    },
+    apply: async (tableIndex, format, plan) => {
+      const result = await runSessionCommand(session, "wpp.apply_table_format", {
+        tableIndex: tableIndex + 1,
+        format: fitTableFormatToShape(format, targets.find((item) => item.tableIndex === tableIndex)?.shape || {}),
+        verifyCells: plan.verifyCells,
+      });
+      return { ...(result.result || {}), commandId: result.command.commandId };
+    },
+    restore: async (tableIndex, beforeFormat) => {
+      const result = await runSessionCommand(session, "wpp.apply_table_format", { tableIndex: tableIndex + 1, format: beforeFormat, verify: false });
+      return { ok: true, commandId: result.command.commandId };
+    },
+    options: { verifyRestore: true },
+  });
+  return {
+    applied: applied.verified,
+    verified: applied.verified,
+    template: wpsTemplatePublic(template),
+    target,
+    targetIndexes,
+    summary: applied.summary,
+    performance: applied.performance,
+    warnings: applied.summary.results.map((item) => item.warning).filter(Boolean),
+  };
+}
+
+async function wpsTableFormatTemplateTool(toolName, input = {}) {
+  if (toolName === "wpp.capture_table_format") return wpsCaptureTableFormatTemplate(input, false);
+  if (toolName === "wpp.save_table_format_template") return wpsCaptureTableFormatTemplate(input, true);
+  if (toolName === "wpp.list_table_format_templates") {
+    const templates = tableFormatTemplatesStore.templates.filter((item) => !item.host || item.host === "WPS").map(wpsTemplatePublic);
+    return { templates, count: templates.length };
+  }
+  if (toolName === "wpp.apply_table_format_template") return wpsApplyTableFormatTemplate(input);
+  if (toolName === "wpp.delete_table_format_template") {
+    const template = wpsTemplateOrThrow(input.templateId);
+    const removed = removeTableFormatTemplate(tableFormatTemplatesStore, template.templateId, "WPS");
+    tableFormatTemplatesStore = removed.state;
+    await saveTableFormatTemplates();
+    return { deleted: removed.removed, templateId: template.templateId };
+  }
+  return null;
 }
 
 async function runTool(toolName, input) {
@@ -1029,6 +1607,7 @@ async function runTool(toolName, input) {
     return { syncs, count: syncs.length };
   }
   if (toolName === "wps.sync_et_wpp_table") return syncEtWppTable(input || {});
+  if (["wpp.capture_table_format", "wpp.save_table_format_template", "wpp.list_table_format_templates", "wpp.apply_table_format_template", "wpp.delete_table_format_template"].includes(toolName)) return wpsTableFormatTemplateTool(toolName, input || {});
   const localSyncPrimitiveTools = new Set(["et.select_range", "et.inspect_sheet_overlays", "et.delete_sheet_overlays", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values", "wpp.ensure_table_sync_anchor", "wpp.resolve_table_sync_anchor"]);
   if (localSyncPrimitiveTools.has(toolName)) {
     const expectedHost = expectedHostForTool(toolName);
@@ -1073,10 +1652,10 @@ async function handle(req, res) {
     if (req.method === "POST" && pathname === "/api/update/apply") { return sendJson(res, 202, { ok: true, ...applyUpdate() }); }
     if (req.method === "GET" && pathname === "/api/tools/schema") return sendJson(res, 200, { ok: true, tools });
     if (req.method === "GET" && pathname === "/api/debug/commands") return sendJson(res, 200, { ok: true, ...commandDebugSummary() });
-    if (req.method === "POST" && pathname === "/api/catalog/refresh") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
-    if (req.method === "GET" && pathname === "/api/catalog") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
-    if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source }); }
-    if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source }); }
+    if (req.method === "POST" && pathname === "/api/catalog/refresh") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source, refreshed: true }); }
+    if (req.method === "GET" && pathname === "/api/catalog") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
+    if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
+    if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
     const agentHistory = /^\/api\/agent\/([^/]+)\/history$/.exec(pathname);
     if (req.method === "GET" && agentHistory) {
       assertAgentOrigin(req);
@@ -1183,12 +1762,13 @@ async function handle(req, res) {
     const commandResult = /^\/api\/commands\/([^/]+)\/result$/.exec(pathname);
     if (req.method === "POST" && commandResult) { const command = commands.get(commandResult[1]); if (!command) return sendError(res, 404, "COMMAND_NOT_FOUND", `Command not found: ${commandResult[1]}`); const body = await readJson(req); command.completedAt = nowIso(); if (body.ok === false) { command.status = "failed"; command.error = body.error || { code: "COMMAND_FAILED", message: "Command failed." }; command.reject?.(command.error); } else { command.status = "completed"; command.result = body.result || {}; command.resolve?.(command.result); } return sendJson(res, 200, { ok: true, commandId: command.commandId, status: command.status }); }
     const toolCall = /^\/api\/tools\/([^/]+)\/([^/]+)$/.exec(pathname);
-    if (req.method === "POST" && toolCall) { const toolName = `${toolCall[1]}.${toolCall[2]}`; if (!tools.some((tool) => tool.name === toolName)) return sendError(res, 404, "TOOL_NOT_FOUND", `Unknown tool: ${toolName}`); const input = await readJson(req); try { const result = await runTool(toolName, input); return sendJson(res, 200, { ok: true, ...result }); } catch (error) { return sendError(res, statusForError(error), error.code || "TOOL_FAILED", error.message || String(error), error.details || {}); } }
+    if (req.method === "POST" && toolCall) { const toolName = `${toolCall[1]}.${toolCall[2]}`; if (!tools.some((tool) => tool.name === toolName)) return sendError(res, 404, "TOOL_NOT_FOUND", `Unknown tool: ${toolName}`); const input = await readJson(req); const isTableSync = ["wps.insert_et_wpp_data_source", "wps.create_et_wpp_table_sync", "wps.sync_et_wpp_table"].includes(toolName); if (isTableSync) logTableSyncEvent("request", { toolName, sourceId: input?.sourceId || "", syncId: input?.syncId || "", wppSessionId: input?.wppSessionId || input?.wordSessionId || "" }); try { const result = await runTool(toolName, input); if (isTableSync) logTableSyncEvent("completed", { toolName, sourceId: input?.sourceId || "", syncId: result?.binding?.mapping?.syncId || result?.mapping?.syncId || input?.syncId || "", wppSessionId: input?.wppSessionId || input?.wordSessionId || "" }); return sendJson(res, 200, { ok: true, ...result }); } catch (error) { if (isTableSync) logTableSyncEvent("failed", { toolName, sourceId: input?.sourceId || "", syncId: input?.syncId || "", code: error?.code || "TOOL_FAILED", message: error?.message || String(error) }); return sendError(res, statusForError(error), error.code || "TOOL_FAILED", error.message || String(error), error.details || {}); } }
     return sendError(res, 404, "NOT_FOUND", `Route not found: ${req.method} ${pathname}`);
   } catch (error) { return sendError(res, statusForError(error), error.code || "INTERNAL_ERROR", error.message || String(error), error.details || {}); }
 }
 await loadBindings();
 await loadTableSyncs();
+await loadTableFormatTemplates();
 await reconcileConnectorState();
 process.on("exit", () => codexAgent.close());
 startConnectorPlatformHeartbeat({ version: "0.2.1" });
