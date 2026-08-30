@@ -41,7 +41,8 @@ try {
   foreach ($relative in @(
     "project-bindings.local.json",
     "codex-catalog.snapshot.json",
-    "et-wpp-table-syncs.local.json"
+    "et-wpp-table-syncs.local.json",
+    "et-wpp-source-cache.local.json"
   )) {
     $current = Join-Path $RuntimeDir $relative
     if (Test-Path -LiteralPath $current) {

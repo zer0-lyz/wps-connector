@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { existsSync, copyFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { homedir } from "node:os";
 
 const jsaddonsDir = process.env.WPS_JSADDONS_DIR || join(
@@ -12,6 +12,10 @@ const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 12);
 const connectorUrl = "http://127.0.0.1:3891";
 const connectorNamePrefix = "wps_connector_";
 const connectorIconUrl = `${connectorUrl}/images/connector.svg`;
+const backupDir = join(
+  process.env.WPS_JSADDONS_BACKUP_ROOT || join(homedir(), "Library/Application Support/Connector Suite/backups/wps-jsaddons"),
+  stamp,
+);
 const connectorDefinitions = {
   wps: { name: "wps_connector_wps_binding_v7", type: "wps" },
   et: { name: "wps_connector_et_binding_v7", type: "et" },
@@ -19,8 +23,24 @@ const connectorDefinitions = {
 
 function backup(path) {
   if (!existsSync(path)) return;
-  const backupPath = `${path}.bak-${stamp}-no-js-debug`;
+  mkdirSync(backupDir, { recursive: true });
+  const backupPath = join(backupDir, basename(path));
   if (!existsSync(backupPath)) copyFileSync(path, backupPath);
+}
+
+function moveLegacyBackups() {
+  if (!existsSync(jsaddonsDir)) return 0;
+  mkdirSync(backupDir, { recursive: true });
+  let moved = 0;
+  for (const name of readdirSync(jsaddonsDir)) {
+    if (!/^(publish\.xml|authaddin\.json|jsaddinblockhost\.ini)\.bak-/.test(name) && !name.startsWith("wps-connector-disabled-")) continue;
+    const source = join(jsaddonsDir, name);
+    const target = join(backupDir, name);
+    if (existsSync(target)) continue;
+    renameSync(source, target);
+    moved += 1;
+  }
+  return moved;
 }
 
 function normalizeUrl(value) {
@@ -28,7 +48,7 @@ function normalizeUrl(value) {
 }
 
 function isConnectorItem(item) {
-  return item && typeof item === "object" && String(item.name || "").startsWith(connectorNamePrefix) && normalizeUrl(item.path || item.url) === connectorUrl;
+  return item && typeof item === "object" && String(item.name || "").startsWith(connectorNamePrefix);
 }
 
 function normalizePublishXml() {
@@ -105,6 +125,7 @@ function normalizeAuthAddin() {
 }
 
 mkdirSync(jsaddonsDir, { recursive: true });
+const legacyBackupsMoved = moveLegacyBackups();
 const publishChanged = normalizePublishXml();
 const authChanged = normalizeAuthAddin();
-console.log(JSON.stringify({ ok: true, jsaddonsDir, connectorIconUrl, publishChanged, authChanged }, null, 2));
+console.log(JSON.stringify({ ok: true, jsaddonsDir, backupDir, legacyBackupsMoved, connectorIconUrl, publishChanged, authChanged }, null, 2));

@@ -306,7 +306,7 @@ function execute(command) {
         return width > 0 ? { column: column + 1, width } : null;
       }).filter(Boolean);
       result.formats = cellFormats[0]?.[0] || {};
-      result.formatSnapshot = { version: 2, rowCount, columnCount, cells: cellFormats, displayText, rowHeights, columnWidths, readStrategy: command.input.formatMode === "profile" ? "profile" : "full", exactFields: command.input.formatMode === "profile" ? ["numberFormat", "horizontalAlignment", "verticalAlignment", "wrapText"] : [], sampleRows: command.input.formatMode === "profile" ? [1, ...(rowCount > 1 ? [2] : [])] : [], sampleCount: command.input.formatMode === "profile" ? Math.min(rowCount, 2) * columnCount : rowCount * columnCount };
+      result.formatSnapshot = { version: 2, rowCount, columnCount, cells: cellFormats, displayText, rowHeights, columnWidths, readStrategy: command.input.formatMode === "profile" ? "profile" : "full", exactFields: command.input.formatMode === "profile" ? ["numberFormat", "horizontalAlignment", "verticalAlignment", "wrapText", "italic", "underline", "indentLevel", "leftIndent", "firstLineIndent", "rightIndent"] : [], sampleRows: command.input.formatMode === "profile" ? [1, ...(rowCount > 1 ? [2] : [])] : [], sampleCount: command.input.formatMode === "profile" ? Math.min(rowCount, 2) * columnCount : rowCount * columnCount };
       result.formatReadStrategy = result.formatSnapshot.readStrategy;
     }
     return result;
@@ -329,7 +329,7 @@ function execute(command) {
       numberFormatsApplied: Boolean(command.input.numberFormats),
     };
   }
-  if (command.toolName === "et.format_range") { requireSheet(command.input.sheetName); const address = requireAddress(command.input.address); state.et.formats[address] = command.input; return { host: "et", address, formatted: true }; }
+  if (command.toolName === "et.format_range") { requireSheet(command.input.sheetName); const address = requireAddress(command.input.address); state.et.formats[address] = { ...(state.et.formats[address] || {}), ...command.input }; return { host: "et", address, formatted: true }; }
   if (command.toolName === "et.read_format_sample") {
     requireSheet(command.input.sheetName);
     const cells = Array.isArray(command.input.cells) && command.input.cells.length ? command.input.cells : [{ address: command.input.address }];

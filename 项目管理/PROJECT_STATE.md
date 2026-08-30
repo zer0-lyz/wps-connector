@@ -1,5 +1,55 @@
 # 当前状态
 
+## 2026-08-30 ET 数据源加入清单性能优化
+
+- 根因：WPS 表格面板的“加入清单”强制使用 `formatReadMode:"full"`，逐单元读取完整格式；同时重复读取选区并完整刷新同步视图。
+- 修复：默认改为 `formatReadMode:"profile"`，创建数据源时复用已读取的地址，避免重复 `et.read_selection`；完成后只刷新数据源/绑定清单，不再次刷新选区。
+- 边界：轻量 profile 仍保留字体、字号、加粗、斜体、下划线、对齐、换行和缩进等代表性格式；需要逐单元精确快照时仍可显式传 `formatReadMode:"full"`。
+- 版本：WPS Add-in `clientVersion=0.2.1`，`clientBuild=2026.08.30-wps-table-sync-text-format.6`。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；Bridge 健康，源码/插件 runtime/正式 runtime 关键文件一致。
+- 部署：正式 runtime `/Users/lin/.local/share/wps-connector/runtime`；备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-154130/runtime`；未推送 GitHub。
+- 真实 WPS：等待用户重启 WPS 后验证“加入清单”耗时和格式效果，状态为 `PENDING_REAL_HOST_ACCEPTANCE`。
+
+## 2026-08-30 ET→WPS Writer 文本格式刷新性能修复
+
+- 状态：`deployed / pending real WPS reload and acceptance`。
+- 修复：profile 格式刷新改为表头及各数据列代表单元格的有界采样，不再对整块区域逐字段逐单元读取；保留 `bold`、`italic`、`underline`、字体、字号、颜色、对齐、换行和缩进迁移。
+- 校验：WPP 颜色比较统一 OLE 数值与 RGB 文本；旧格式快照按需刷新；进度摘要保留 `formatting.verified` 和抽样差异。
+- 版本：WPS Add-in `clientVersion=0.2.1`，`clientBuild=2026.08.30-wps-table-sync-text-format.2`，页面 cache key 为 `20260830-wps-table-sync-text-format-0.2.1.2`。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；真实 WPS 当前仍显示旧 `.1`，重启并重新加载 WPS 后再执行真实插入回读。
+- 部署：正式 runtime `/Users/lin/.local/share/wps-connector/runtime`；本轮备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-130645/runtime`；未推送 GitHub。
+
+## 2026-08-30 ET→WPS Writer 文字格式同步补齐
+
+- 状态：`deployed / pending real WPS acceptance`。
+- 同步字段：数据源单元格的 `bold`、`italic`、`underline`、`fontName`、`fontSize`、`fontColor`、水平/垂直对齐、自动换行、`indentLevel`、`leftIndent`、`firstLineIndent`、`rightIndent` 现在会进入 Writer 表格格式 payload，并在插入后的抽样回读中校验。
+- 主动设置：`et.format_range` 的公开 schema 和 Add-in 执行层补齐斜体、下划线及缩进字段，避免只能读取不能设置。
+- 稳定性：修复 WPP `read_table_cell`/`write_table_cell` 合并区域判断引用未定义 `format` 的运行时异常；合并信息读取可复用已提供的快照。
+- 版本：WPS Add-in `clientVersion=0.2.1`，`clientBuild=2026.08.30-wps-table-sync-text-format.1`。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；模拟 ET→WPP 插入、字体强调、缩进、对齐、换行和格式回读通过。
+- 部署：已同步插件 runtime，并准备原子部署到 `/Users/lin/.local/share/wps-connector/runtime`；正式 runtime 备份路径以本轮部署输出为准；未推送 GitHub。
+- 真实验收：需重启 WPS 并重新打开 Connector 面板加载新 build，再用真实 ET 源表和 WPP 目标表验证斜体、下划线、缩进及保存重开，当前保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+
+## 2026-08-30 WPS Writer 表格插入批量格式与实时进度
+
+- 状态：`deployed / pending real WPS acceptance`。
+- 修复：Writer 表格格式应用按格式签名分组，并将连续目标拆为矩形区域后批量设置；同一批次只读取一次合并单元格信息；无法使用区域快路径时保留逐单元格回退并返回 `fallbackCellCount`。
+- 新增：`wps.insert_et_wpp_data_source` 支持 `operationId`；Bridge 提供 `GET /api/operations/:operationId` 轻量进度查询，阶段覆盖检查、读取源表、创建表格、写入内容、批量格式化、建立绑定和完成。
+- 面板：插入期间轮询任务状态，显示百分比、当前阶段、已用秒数和已处理单元格数；完成保留 100% 状态，失败清理进度提示。
+- 版本：WPS Add-in `clientVersion=0.2.1`，`clientBuild=2026.08.30-wps-table-sync-progress.1`；pane/runtime cache key 为 `20260830-wps-table-sync-progress-0.2.1.1`。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；模拟同步、格式批量应用、回读、保存和进度查询通过。
+- 部署：已备份并原子部署到 `/Users/lin/.local/share/wps-connector/runtime`；备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-111820/runtime`；未推送 GitHub。
+- 真实验收：当前在线 WPS 文字会话可见，但本轮未向业务文档执行插入；真实大表插入耗时、WPS 视觉格式和面板进度展示保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+
+## 2026-08-30 WPS Writer 插入数字千分位兼容修复
+
+- 状态：`deployed / pending real WPS readback`。
+- 根因：历史数据源格式快照中的 `numberFormat` 为空，Writer 不具备 Excel 原生数字格式，插入时只能写入未分组的原始数字文本。
+- 修复：Bridge 在格式字段为空且宿主显示值仍是普通数字时，按原始小数位数补充千分位；显式格式、日期文本、百分比和带前导零字符串保持原样。
+- 验证：模拟 ET→WPP 插入读回 `108139.15` 为 `108,139.15`、`282510` 为 `282,510`；`npm run check`、`npm test`、`git diff --check` 通过。
+- 部署：已原子部署到 `/Users/lin/.local/share/wps-connector/runtime`，备份位于 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-105517/runtime`；未推送 GitHub。
+- 真实验收：`npm run test:et` 在真实表格会话变为 `SESSION_WAITING_FOR_DOCUMENT` 后超时，未完成真实 Writer 千分位回读，状态保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+
 ## 2026-08-29 WPS 文字“插入并绑定”无响应反馈修复
 
 - 状态：`deployed / pending real source-document acceptance`。
@@ -49,3 +99,11 @@
 - 部署：已原子部署到 `/Users/lin/.local/share/wps-connector/runtime`；本轮备份为 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-092423/runtime`；绑定、目录、同步和表格模板状态均已保留。
 - 真实宿主：Bridge、Add-in、Connector Platform 健康；当前可见 WPS session 仍是旧 `1.1.8` 页面。Mac 自动 GUI 操作因锁屏无法继续，Writer 插入并绑定、Spreadsheet session 新版本回读、格式回读和保存重开均保持 `PENDING_REAL_HOST_ACCEPTANCE`。
 - 推送边界：只提交并推送 `codex/table-format-module-debug-0.2.1`，不修改 `main`，不上传日志、缓存、证书、用户配置或安装包。
+
+## 2026-08-30 表格同步执行层快照修复
+
+- 根因：数据源清单只持久化文档、Sheet、地址和格式元数据；插入前端又强制要求源 ET session 在线，导致“清单可见”但执行链路无法进入。快照只存在 Bridge 内存时，重启后也无法后备读取。
+- 修复：新增本机 `et-wpp-source-cache.local.json` 快照；Bridge 启动时恢复快照，插入和已有表绑定可在源表暂时离线时复用；面板在有快照时不再错误拦截，并按文档/Sheet/地址复用数据源 ID 刷新快照。
+- 边界：旧数据源若创建于本修复前且没有快照，仍需打开源 Excel 后在表格同步面板刷新一次；当前真实 WPS 无在线 session，真实插入和保存重开保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；源码、插件 runtime、正式 runtime 的 Bridge 和 pane 文件 SHA-256 一致。
+- 部署：正式 runtime `/Users/lin/.local/share/wps-connector/runtime`；备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-102130/runtime`、`20260830-102323/runtime`；未推送 GitHub。

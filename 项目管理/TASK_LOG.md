@@ -1,5 +1,42 @@
 # 操作日志
 
+## 2026-08-30
+
+- 修复 WPS 表格“加入清单”慢：面板不再强制全量格式扫描，改用轻量 `profile` 采样；避免创建数据源时重复读取选区，并避免成功后再次完整刷新同步视图。
+- 保留显式 `formatReadMode:"full"` 作为需要逐单元精确格式快照时的路径；普通加入清单优先保证响应速度。
+- Add-in build/cache 更新为 `2026.08.30-wps-table-sync-text-format.6`；已同步插件 runtime 并部署到 `/Users/lin/.local/share/wps-connector/runtime`，备份为 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-154130/runtime`。
+- `npm run check`、`npm test`、`git diff --check` 通过；真实 WPS 现场耗时和格式肉眼回读待用户验证。
+
+## 2026-08-30
+
+- 修复 ET→WPP 文本格式刷新对大范围逐字段读取导致的 WPS 宿主阻塞；profile 现在只使用已读取的代表单元格生成 exactFields，避免刷新失败后继续使用缺少斜体、下划线和缩进的旧快照。
+- 统一 WPP 颜色和布尔值比较，避免 OLE 颜色值被误报为格式不一致；递增 Add-in build/cache 到 `2026.08.30-wps-table-sync-text-format.2` / `20260830-wps-table-sync-text-format-0.2.1.2`。
+- `npm run check`、`npm test`、`git diff --check` 通过；`npm run test:et` 仍需真实 WPS 重启并绑定项目后执行，当前未写入业务工作簿。
+- 已部署并备份正式 runtime：`/Users/lin/.local/share/wps-connector/runtime`，备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-130645/runtime`；未推送 GitHub。
+
+## 2026-08-30
+
+- 补齐 ET→WPS Writer 文字格式同步：读取并迁移 `bold/italic/underline/fontName/fontSize/fontColor/alignment/wrapText/indentLevel/leftIndent/firstLineIndent/rightIndent`。
+- `et.format_range` 新增公开 schema 和宿主写入支持，可直接设置斜体、下划线及缩进字段；数值 0 也会被作为明确设置处理。
+- 修复 `wpsConnectorWppCellMergeInfo` 对未定义 `format` 的引用，恢复 WPP 单元格读写接口在合并判断下的正常执行。
+- `npm run check`、`npm test`、`git diff --check` 通过；真实 WPS 文字格式与保存重开回读仍标记 `PENDING_REAL_HOST_ACCEPTANCE`。
+- Add-in build 为 `2026.08.30-wps-table-sync-text-format.1`；不推送 GitHub。
+
+## 2026-08-30
+
+- 优化 WPS Writer 表格格式批处理：按格式签名分组，连续目标区域使用矩形 Range 批量设置；合并单元格信息在整次表格格式应用中只读取一次，无法使用快路径时逐单元格回退。
+- 新增表格插入任务进度：Bridge 记录 `operationId`、阶段、百分比、耗时和单元格计数，提供 `GET /api/operations/:operationId`；面板显示实时进度和当前阶段。
+- `wpp.insert_table` 的 WPS 安全 `per-cell` 内容写入保护保持不变，危险 `row-range-bulk` 仍未改为默认路径。
+- Add-in build 更新为 `2026.08.30-wps-table-sync-progress.1`，已备份并部署到 `/Users/lin/.local/share/wps-connector/runtime`，备份为 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-111820/runtime`。
+- `npm run check`、`npm test`、`git diff --check` 通过；真实 WPS 业务文档插入未执行，保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+
+## 2026-08-30
+
+- 修复历史格式快照缺少 `numberFormat` 时的 Writer 显示：普通数字在插入前按原始小数位补充千分位，避免 `108139.15` 直接写入文档；显式数字格式和非普通数字文本不走兜底。
+- 新增端到端回归：空数字格式快照插入 Writer 后读回 `108,139.15`、`282,510`；`npm run check`、`npm test`、`git diff --check` 通过。
+- 已原子部署并备份正式 runtime：`/Users/lin/.local/share/wps-connector/runtime`，备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-105517/runtime`。
+- 真实 `npm run test:et` 因 WPS 会话等待切回文档导致 `COMMAND_TIMEOUT`，测试创建的临时回归工作表未能自动清理；真实宿主验收保持 `PENDING_REAL_HOST_ACCEPTANCE`，未继续写入业务文档。
+
 ## 2026-08-29
 
 - 创建专项分支 `codex/table-format-module-debug-0.2.1`，基线为 `ed1e44d`。
@@ -44,3 +81,10 @@
 - `npm run check`、`npm test`、`git diff --check` 通过；`npm run test:et` 因当前真实 WPS pane 仍报告旧 `clientVersion=1.1.8` 在预检阶段停止，未产生工作簿修改。
 - 正式 runtime 已备份并原子替换到 `/Users/lin/.local/share/wps-connector/runtime`，备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-092423/runtime`；当前 runtime package `0.2.1`，Add-in build `2026.08.29-wps-table-sync-click-feedback.1`。
 - Bridge `40215`、Add-in `3891`、Connector Platform `40315` 健康；WPS Writer/Spreadsheet 自动重载和真实插入绑定因 Mac 锁屏无法执行，继续标记 `PENDING_REAL_HOST_ACCEPTANCE`。
+
+## 2026-08-30 表格同步“清单可见但插入不执行”
+
+- 现场确认：`/api/tools/wps/list_et_wpp_data_sources` 能返回数据源的文档、Sheet、地址、行列和格式信息，但 `/api/sessions` 无在线 ET/WPP session；这只能证明配置读取成功。
+- 修改：新增本机源表值快照加载/保存；`insert_et_wpp_data_source` 和 `create_et_wpp_table_sync` 支持快照执行路径；面板不再把快照可用的数据源拦截为“源表离线”，并在刷新同一范围时复用 sourceId。
+- 测试：`npm run check` PASS；`npm test` PASS；模拟表格插入、格式应用、回读、绑定 PASS；真实 WPS 插入 PENDING_REAL_HOST_ACCEPTANCE。
+- 部署：已部署到 `/Users/lin/.local/share/wps-connector/runtime`，备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-102323/runtime`；未推送。

@@ -60,7 +60,7 @@ export const tools = [
   {
     name: "wps.create_et_wpp_data_source",
     description: "Create or refresh a local WPS Spreadsheet data source for WPS Writer table synchronization. This does not require Codex project binding.",
-    inputSchema: { type: "object", properties: { etSessionId: { type: "string" }, sessionId: { type: "string" }, sourceId: { type: "string" }, name: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, refreshSelection: { type: "boolean" }, preserveFormatting: { type: "boolean" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { etSessionId: { type: "string" }, sessionId: { type: "string" }, sourceId: { type: "string" }, name: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, refreshSelection: { type: "boolean" }, headerRowCount: { type: "number" }, preserveFormatting: { type: "boolean" }, formatReadMode: { type: "string", enum: ["full", "profile"] } }, additionalProperties: false },
   },
   {
     name: "wps.list_et_wpp_data_sources",
@@ -80,12 +80,12 @@ export const tools = [
   {
     name: "wps.create_et_wpp_table_sync",
     description: "Bind a WPS Spreadsheet range/source to an existing WPS Writer table for repeatable synchronization.",
-    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" }, name: { type: "string" }, etSessionId: { type: "string" }, wppSessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, wppTableIndex: { type: "number" }, tableIndex: { type: "number" }, allowStructuralChanges: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, columnMapping: { type: "array", items: { type: "number" } } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" }, name: { type: "string" }, etSessionId: { type: "string" }, wppSessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, wppTableIndex: { type: "number" }, tableIndex: { type: "number" }, allowStructuralChanges: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, columnMapping: { type: "array", items: { type: "number" } }, refreshFormatting: { type: "boolean" } }, additionalProperties: false },
   },
   {
     name: "wps.insert_et_wpp_data_source",
     description: "Insert a WPS Spreadsheet data source into the active WPS Writer document as a table and create the sync binding.",
-    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, wppSessionId: { type: "string" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, border: { type: "boolean" }, preserveFormatting: { type: "boolean" } }, required: ["sourceId"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, wppSessionId: { type: "string" }, operationId: { type: "string" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, border: { type: "boolean" }, preserveFormatting: { type: "boolean" }, formatReadMode: { type: "string", enum: ["full", "profile"] }, refreshFormatting: { type: "boolean" }, allowCachedSource: { type: "boolean" } }, required: ["sourceId"], additionalProperties: false },
   },
   {
     name: "wps.list_et_wpp_table_syncs",
@@ -95,7 +95,7 @@ export const tools = [
   {
     name: "wps.sync_et_wpp_table",
     description: "Synchronize one WPS Writer table from its bound WPS Spreadsheet source.",
-    inputSchema: { type: "object", properties: { syncId: { type: "string" }, previewOnly: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, allowStructuralChanges: { type: "boolean" }, preserveFormatting: { type: "boolean" }, config: { type: "object", additionalProperties: true } }, required: ["syncId"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { syncId: { type: "string" }, previewOnly: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, allowStructuralChanges: { type: "boolean" }, preserveFormatting: { type: "boolean" }, refreshFormatting: { type: "boolean" }, config: { type: "object", additionalProperties: true } }, required: ["syncId"], additionalProperties: false },
   },
   {
     name: "et.read_selection",
@@ -196,6 +196,12 @@ export const tools = [
         fontName: { type: "string" },
         fontSize: { type: "number" },
         bold: { type: "boolean" },
+        italic: { type: "boolean" },
+        underline: { type: ["boolean", "number", "string"] },
+        indentLevel: { type: "number" },
+        leftIndent: { type: "number" },
+        firstLineIndent: { type: "number" },
+        rightIndent: { type: "number" },
         fontColor: { type: "string" },
         fillColor: { type: "string" },
         numberFormat: { type: "string" },
