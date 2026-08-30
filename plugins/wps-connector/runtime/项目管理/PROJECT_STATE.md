@@ -37,3 +37,5 @@
 - 发布边界：仅推送当前开发分支 `codex/table-format-module-debug-0.2.1`；不修改 `main`，不创建正式 tag/release，不上传安装包。
 - 发布前验证：`npm run check`、`npm test`、`git diff --check` 通过；模拟 ET/WPP 会话、表格同步、格式回读、绑定路由回归通过。
 - 真实宿主状态：WPS Writer 现场验收仍为 `PENDING_REAL_HOST_ACCEPTANCE`，模拟测试与服务健康不能替代真实 WPS 文档验收。
+- GitHub：已推送提交 `928f7b2` 到 `https://github.com/zer0-lyz/wps-connector/tree/codex/table-format-module-debug-0.2.1`；该分支已设置跟踪 `origin/codex/table-format-module-debug-0.2.1`。
+- Mac mini 接续：克隆 `https://github.com/zer0-lyz/wps-connector.git` 后切换到 `codex/table-format-module-debug-0.2.1`，从该开发分支继续，不要直接改 `main`。
