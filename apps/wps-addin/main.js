@@ -1,7 +1,12 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
 const WPS_CONNECTOR_CLIENT_VERSION = "0.2.1";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.08.30-wps-table-sync-text-format.6";
-const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 1000;
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.09.01-table-sync-cleanup-status.1";
+const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 256;
+const WPS_CONNECTOR_ET_DISPLAY_TEXT_CELL_LIMIT = 256;
+const WPS_CONNECTOR_ET_SOURCE_MAX_CELLS = 100000;
+const WPS_CONNECTOR_ET_SOURCE_CHUNK_ROWS = 250;
+const WPS_CONNECTOR_ET_PROFILE_COLUMN_SAMPLE_LIMIT = 64;
+const WPS_CONNECTOR_ET_DIMENSION_COLUMN_LIMIT = 256;
 const WPS_CONNECTOR_POLL_INTERVAL_MS = 750;
 const WPS_CONNECTOR_WPP_IDLE_POLL_INTERVAL_MS = 15000;
 const WPS_CONNECTOR_WPP_ACTIVE_POLL_INTERVAL_MS = 500;
@@ -196,12 +201,53 @@ function wpsConnectorRange(input = {}, field = "address") {
 }
 function wpsConnectorRangeShape(range, values) {
   const normalized = wpsConnectorNormalizeValues(values);
+  const rowCount = Number(wpsConnectorMember(wpsConnectorMember(range, "Rows"), "Count") || normalized.length || 1);
+  const columnCount = Number(wpsConnectorMember(wpsConnectorMember(range, "Columns"), "Count") || normalized[0]?.length || 1);
   return {
     row: Number(wpsConnectorMember(range, "Row") || 1),
     column: Number(wpsConnectorMember(range, "Column") || 1),
-    rowCount: Number(wpsConnectorMember(wpsConnectorMember(range, "Rows"), "Count") || normalized.length || 1),
-    columnCount: Number(wpsConnectorMember(wpsConnectorMember(range, "Columns"), "Count") || normalized[0]?.length || 1),
+    rowCount,
+    columnCount,
+    cellCount: Math.max(0, rowCount * columnCount),
   };
+}
+function wpsConnectorEtAssertReadLimit(shape, input = {}) {
+  const requested = Number(input.maxCellCount);
+  const limit = Number.isFinite(requested) && requested > 0 ? requested : 0;
+  if (!limit || shape.cellCount <= limit) return;
+  wpsConnectorFail(
+    "ET_RANGE_TOO_LARGE",
+    `当前选区有 ${shape.cellCount} 个单元格，超过安全上限 ${limit}，为避免 WPS 卡死已停止读取。请缩小选区后重试。`,
+    { address: input.address || "", rowCount: shape.rowCount, columnCount: shape.columnCount, cellCount: shape.cellCount, maxCellCount: limit },
+  );
+}
+function wpsConnectorEtReadChunkAddress(shape, rowStart, rowEnd) {
+  const start = wpsConnectorA1(shape.row + rowStart, shape.column);
+  const end = wpsConnectorA1(shape.row + rowEnd, shape.column + shape.columnCount - 1);
+  return `${start}:${end}`;
+}
+async function wpsConnectorEtReadValues(sheet, range, shape, input = {}) {
+  const requestedChunkRows = Number(input.chunkRows);
+  const chunkRows = Number.isFinite(requestedChunkRows) && requestedChunkRows > 0
+    ? Math.max(1, Math.floor(requestedChunkRows))
+    : 0;
+  if (!chunkRows || shape.rowCount <= chunkRows) return wpsConnectorNormalizeValues(wpsConnectorMember(range, "Value2"));
+  const values = [];
+  for (let rowStart = 0; rowStart < shape.rowCount; rowStart += chunkRows) {
+    const rowEnd = Math.min(shape.rowCount - 1, rowStart + chunkRows - 1);
+    const chunkAddress = wpsConnectorEtReadChunkAddress(shape, rowStart, rowEnd);
+    const chunkRange = sheet.Range(chunkAddress);
+    const chunk = wpsConnectorNormalizeValues(wpsConnectorMember(chunkRange, "Value2"));
+    for (let index = 0; index <= rowEnd - rowStart; index += 1) {
+      values.push(Array.isArray(chunk[index]) ? chunk[index].slice(0, shape.columnCount) : []);
+    }
+    if (rowEnd < shape.rowCount - 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return values;
+}
+function wpsConnectorCanReadEtDisplayText(shape) {
+  const cellCount = Math.max(0, Number(shape?.rowCount || 0) * Number(shape?.columnCount || 0));
+  return cellCount > 0 && cellCount <= WPS_CONNECTOR_ET_DISPLAY_TEXT_CELL_LIMIT;
 }
 function wpsConnectorErrorDetails(error, phase = "host") {
   if (error?.code) return { code: error.code, phase, message: error.message || String(error), details: error.details || {} };
@@ -497,7 +543,10 @@ function wpsConnectorEtReadFormatProfile(range, shape, values, input = {}, works
   // profile without turning a normal table read into hundreds of COM calls.
   const sampleCells = [];
   for (const row of sampleRows) {
-    const columns = row < headerRows && shape.rowCount > headerRows ? [0] : Array.from({ length: shape.columnCount }, (_, index) => index);
+    const columnLimit = Math.min(shape.columnCount, WPS_CONNECTOR_ET_PROFILE_COLUMN_SAMPLE_LIMIT);
+    const columns = row < headerRows && shape.rowCount > headerRows
+      ? [0]
+      : Array.from({ length: columnLimit }, (_, index) => index);
     for (const column of columns) sampleCells.push({ row, column });
   }
   for (const { row, column } of sampleCells) {
@@ -521,13 +570,14 @@ function wpsConnectorEtReadFormatProfile(range, shape, values, input = {}, works
     }
     return profile;
   }));
-  const bulkText = input.includeDisplayText ? wpsConnectorEtTryMatrix(wpsConnectorMember(range, "Text"), shape) : null;
+  const includeDisplayText = input.includeDisplayText === true && wpsConnectorCanReadEtDisplayText(shape);
+  const bulkText = includeDisplayText ? wpsConnectorEtTryMatrix(wpsConnectorMember(range, "Text"), shape) : null;
   const displayText = bulkText
     ? bulkText.map((row, rowIndex) => row.map((value, columnIndex) => wpsConnectorEtDisplayValue(values?.[rowIndex]?.[columnIndex], cells[rowIndex]?.[columnIndex], value)))
-    : input.includeDisplayText
+    : includeDisplayText
       ? values.map((row, rowIndex) => row.map((value, columnIndex) => wpsConnectorEtDisplayValue(value, cells[rowIndex]?.[columnIndex], undefined)))
       : undefined;
-  return { version: 2, rowCount: shape.rowCount, columnCount: shape.columnCount, cells, displayText, readStrategy: "profile", exactFields: Object.keys(exactFields), sampleRows: sampleRows.map((row) => row + 1), sampleCount: samples.size, sampledCells: sampleCells.map(({ row, column }) => ({ row: row + 1, column: column + 1 })), formatWarnings, formatQuality: formatWarnings.length ? "partial" : "profile" };
+  return { version: 2, rowCount: shape.rowCount, columnCount: shape.columnCount, cells, displayText, displayTextSkipped: input.includeDisplayText === true && !includeDisplayText, readStrategy: "profile", exactFields: Object.keys(exactFields), sampleRows: sampleRows.map((row) => row + 1), sampleCount: samples.size, sampledCells: sampleCells.map(({ row, column }) => ({ row: row + 1, column: column + 1 })), formatWarnings, formatQuality: formatWarnings.length ? "partial" : "profile" };
 }
 function wpsConnectorEtReadDimensions(range, shape, options = {}) {
   const rowHeights = [];
@@ -537,9 +587,10 @@ function wpsConnectorEtReadDimensions(range, shape, options = {}) {
   const rowIndexes = Array.isArray(options.rowIndexes) && options.rowIndexes.length
     ? options.rowIndexes
     : Array.from({ length: shape.rowCount }, (_, index) => index + 1);
-  const columnIndexes = Array.isArray(options.columnIndexes) && options.columnIndexes.length
+  const requestedColumnIndexes = Array.isArray(options.columnIndexes) && options.columnIndexes.length
     ? options.columnIndexes
     : Array.from({ length: shape.columnCount }, (_, index) => index + 1);
+  const columnIndexes = requestedColumnIndexes.slice(0, Math.min(WPS_CONNECTOR_ET_DIMENSION_COLUMN_LIMIT, requestedColumnIndexes.length));
   for (const row of rowIndexes) {
     const item = wpsConnectorSafeGet(rows, "Item", row);
     const height = Number(wpsConnectorSafeGet(item, "Height"));
@@ -553,7 +604,7 @@ function wpsConnectorEtReadDimensions(range, shape, options = {}) {
       columnWidths.push({ column, width: Number.isFinite(width) && width > 0 ? width : columnWidth, columnWidth });
     }
   }
-  return { rowHeights, columnWidths };
+  return { rowHeights, columnWidths, columnWidthsSkipped: Math.max(0, requestedColumnIndexes.length - columnIndexes.length) };
 }
 function wpsConnectorSetMatrixProperty(range, prop, matrix) {
   if (matrix === undefined || matrix === null) return false;
@@ -1566,18 +1617,46 @@ function wpsConnectorEtDeleteWorksheet(input = {}) {
   try { app.DisplayAlerts = true; } catch {}
   return { host: "et", sheetName: input.sheetName, deleted: true };
 }
-function wpsConnectorEtReadRange(input = {}) {
+async function wpsConnectorEtReadRange(input = {}) {
   const { sheet, range, address } = wpsConnectorRange(input);
-  const values = wpsConnectorMember(range, "Value2");
-  const includeDisplayText = input.includeDisplayText === true;
-  const result = { host: "et", sheetName: String(wpsConnectorMember(sheet, "Name") || input.sheetName || ""), address, values, text: includeDisplayText ? String(wpsConnectorMember(range, "Text") || wpsConnectorPreviewValues(values)) : wpsConnectorPreviewValues(values) };
+  const shape = wpsConnectorRangeShape(range);
+  wpsConnectorEtAssertReadLimit(shape, input);
+  const values = await wpsConnectorEtReadValues(sheet, range, shape, input);
+  const requestedDisplayText = input.includeDisplayText === true;
+  const allowDisplayTextCellFallback = requestedDisplayText && wpsConnectorCanReadEtDisplayText(shape);
+  const bulkDisplayText = requestedDisplayText ? wpsConnectorEtTryMatrix(wpsConnectorMember(range, "Text"), shape) : null;
+  let displayTextMatrix = bulkDisplayText;
+  if (requestedDisplayText && !displayTextMatrix) {
+    const numberFormats = wpsConnectorEtReadPropertyMatrix(
+      range,
+      shape,
+      ["NumberFormatLocal", "NumberFormat"],
+      { fillScalar: true, cellFallback: allowDisplayTextCellFallback, emptyValue: "" },
+      sheet,
+    );
+    if (numberFormats) {
+      displayTextMatrix = allowDisplayTextCellFallback
+        ? wpsConnectorEtRangeMatrix(range, shape, (cell, row, column) => wpsConnectorEtDisplayValue(
+          values?.[row - 1]?.[column - 1],
+          { numberFormat: numberFormats?.[row - 1]?.[column - 1] || "" },
+          cell ? wpsConnectorMember(cell, "Text") : undefined,
+        ), sheet)
+        : values.map((row, rowIndex) => row.map((value, columnIndex) => wpsConnectorEtDisplayValue(
+          value,
+          { numberFormat: numberFormats?.[rowIndex]?.[columnIndex] || "" },
+        )));
+    }
+  }
+  const includeDisplayText = Array.isArray(displayTextMatrix);
+  const result = { host: "et", sheetName: String(wpsConnectorMember(sheet, "Name") || input.sheetName || ""), address, values, text: includeDisplayText ? wpsConnectorPreviewValues(displayTextMatrix) : wpsConnectorPreviewValues(values) };
+  if (includeDisplayText) result.displayText = displayTextMatrix;
+  if (requestedDisplayText && !includeDisplayText) result.displayTextSkipped = true;
   if (input.includeFormulas) {
     try { result.formulas = wpsConnectorMember(range, "Formula") || wpsConnectorMember(range, "FormulaLocal"); } catch (error) { result.formulaWarning = error.message; }
   }
   if (input.includeFormats) {
     try {
       result.formats = wpsConnectorReadFormats(range, input.formatMode !== "profile", input.formatMode === "profile" ? { includeBorderItems: false } : {});
-      const shape = wpsConnectorRangeShape(range, values);
       const dimensions = input.formatMode === "profile"
         ? wpsConnectorEtReadDimensions(range, shape, {
           rowIndexes: [...new Set([1, Math.min(shape.rowCount, Number(input.formatProfileHeaderRows ?? 1) + 1), shape.rowCount])],
@@ -1586,18 +1665,15 @@ function wpsConnectorEtReadRange(input = {}) {
         : wpsConnectorEtReadDimensions(range, shape);
       if (input.formatMode === "profile") {
         result.formatSnapshot = {
-          ...wpsConnectorEtReadFormatProfile(range, shape, values, input, sheet),
+          ...wpsConnectorEtReadFormatProfile(range, shape, values, { ...input, includeDisplayText }, sheet),
           rowHeights: dimensions.rowHeights,
           columnWidths: dimensions.columnWidths,
+          columnWidthsSkipped: dimensions.columnWidthsSkipped || 0,
         };
         result.formatReadStrategy = "profile";
       } else if (input.includeCellFormats || input.includeDisplayText) {
         const cellFormats = input.includeCellFormats ? wpsConnectorEtRangeMatrix(range, shape, (cell) => cell ? wpsConnectorReadFormats(cell, false) : {}, sheet) : undefined;
-        const displayText = input.includeDisplayText ? wpsConnectorEtRangeMatrix(range, shape, (cell, row, column) => {
-          if (!cell) return "";
-          const value = wpsConnectorMember(cell, "Text");
-          return wpsConnectorEtDisplayValue(values?.[row - 1]?.[column - 1], cellFormats?.[row - 1]?.[column - 1] || {}, value);
-        }, sheet) : undefined;
+        const displayText = includeDisplayText ? displayTextMatrix : undefined;
         result.formatSnapshot = { version: 2, rowCount: shape.rowCount, columnCount: shape.columnCount, cells: cellFormats, displayText, rowHeights: dimensions.rowHeights, columnWidths: dimensions.columnWidths, readStrategy: "full", exactFields: ["numberFormat", "fontName", "fontNameFarEast", "fontNameAscii", "fontSize", "bold", "fontColor", "fillColor", "horizontalAlignment", "verticalAlignment", "wrapText", "italic", "underline", "indentLevel", "leftIndent", "firstLineIndent", "rightIndent"], sampleCount: shape.rowCount * shape.columnCount };
         result.formatReadStrategy = "full";
       }
@@ -3104,6 +3180,17 @@ function wpsConnectorWppFormatTable(input = {}) {
 }
 function wpsConnectorSafeGet(object, name) { try { return object ? wpsConnectorMember(object, name) : null; } catch { return null; } }
 function wpsConnectorSafeSet(object, name, value) { if (!object || value === undefined || value === null) return false; try { object[name] = /Color$/i.test(name) ? wpsConnectorColorValue(value) : value; return true; } catch { return false; } }
+function wpsConnectorWppRecordSet(diagnostics, field, ok) {
+  if (!diagnostics || !field) return ok;
+  diagnostics.attempted?.add(field);
+  if (!ok) diagnostics.unsupported?.add(field);
+  return ok;
+}
+function wpsConnectorWppTrySet(diagnostics, prefix, object, property, value, field) {
+  if (value === undefined || value === null) return false;
+  const path = prefix ? `${prefix}.${field}` : field;
+  return wpsConnectorWppRecordSet(diagnostics, path, wpsConnectorSafeSet(object, property, value));
+}
 function wpsConnectorBoolFormat(value) { return value === -1 || value === 1 || value === true; }
 function wpsConnectorWppColorText(value) {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -3147,21 +3234,33 @@ function wpsConnectorBorderFormat(borders) {
   }
   return out;
 }
-function wpsConnectorApplyBorderFormat(borders, format = {}) {
+function wpsConnectorApplyBorderFormat(borders, format = {}, diagnostics = null, prefix = "borders") {
   const applied = [];
-  if (!borders || !format) return applied;
-  if (format.enable !== undefined && wpsConnectorSafeSet(borders, "Enable", format.enable)) applied.push("borders.enable");
+  if (!format) return applied;
+  if (!borders) {
+    if (format.enable !== undefined && format.enable !== null) wpsConnectorWppRecordSet(diagnostics, `${prefix}.enable`, false);
+    for (const item of format.items || []) for (const [field, value] of [["lineStyle", item.lineStyle], ["lineWidth", item.lineWidth ?? item.width], ["color", item.color]]) if (value !== undefined && value !== null) wpsConnectorWppRecordSet(diagnostics, `${prefix}.items.${field}`, false);
+    for (const [edge, item] of Object.entries(format.edges || {})) for (const [field, value] of [["lineStyle", item?.lineStyle ?? item?.type], ["lineWidth", item?.lineWidth ?? item?.width], ["color", item?.color]]) if (value !== undefined && value !== null) wpsConnectorWppRecordSet(diagnostics, `${prefix}.${edge}.${field}`, false);
+    return applied;
+  }
+  if (format.enable !== undefined && wpsConnectorWppTrySet(diagnostics, prefix, borders, "Enable", format.enable, "enable")) applied.push("borders.enable");
   for (const item of format.items || []) {
     let border = null;
     const edgeIndex = { top: -1, left: -2, bottom: -3, right: -4, insideH: -5, insideV: -6, horizontal: -5, vertical: -6 }[item.edge];
     try { border = typeof borders.Item === "function" ? borders.Item(item.index ?? edgeIndex) : null; } catch {}
     if (!border && edgeIndex !== undefined) { try { border = typeof borders.Item === "function" ? borders.Item(edgeIndex) : null; } catch {} }
     if (!border && edgeIndex !== undefined) { try { border = typeof borders.Item === "function" ? borders.Item(Math.abs(edgeIndex)) : null; } catch {} }
-    if (!border) continue;
-    if (wpsConnectorSafeSet(border, "LineStyle", item.lineStyle)) applied.push(`border:${item.index}:lineStyle`);
-    if (wpsConnectorSafeSet(border, "LineWidth", item.lineWidth ?? item.width)) applied.push(`border:${item.index}:lineWidth`);
-    if (!item.lineWidth && item.weight !== undefined && wpsConnectorSafeSet(border, "Weight", item.weight)) applied.push(`border:${item.index}:weight`);
-    if (wpsConnectorSafeSet(border, "Color", item.color)) applied.push(`border:${item.index}:color`);
+    const itemPrefix = item.edge ? `${prefix}.${item.edge}` : `${prefix}.items`;
+    if (!border) {
+      for (const [field, value] of [["lineStyle", item.lineStyle], ["lineWidth", item.lineWidth ?? item.width], ["weight", !item.lineWidth ? item.weight : undefined], ["color", item.color]]) {
+        if (value !== undefined && value !== null) wpsConnectorWppRecordSet(diagnostics, `${itemPrefix}.${field}`, false);
+      }
+      continue;
+    }
+    if (item.lineStyle !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "LineStyle", item.lineStyle, "lineStyle")) applied.push(`border:${item.index}:lineStyle`);
+    if ((item.lineWidth ?? item.width) !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "LineWidth", item.lineWidth ?? item.width, "lineWidth")) applied.push(`border:${item.index}:lineWidth`);
+    if (!item.lineWidth && item.weight !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "Weight", item.weight, "weight")) applied.push(`border:${item.index}:weight`);
+    if (item.color !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "Color", item.color, "color")) applied.push(`border:${item.index}:color`);
   }
   for (const [edge, item] of Object.entries(format.edges || {})) {
     const index = { top: -1, left: -2, bottom: -3, right: -4, insideH: -5, insideV: -6, horizontal: -5, vertical: -6 }[edge];
@@ -3169,10 +3268,16 @@ function wpsConnectorApplyBorderFormat(borders, format = {}) {
     let border = null;
     try { border = typeof borders.Item === "function" ? borders.Item(index) : null; } catch {}
     if (!border) { try { border = typeof borders.Item === "function" ? borders.Item(Math.abs(index)) : null; } catch {} }
-    if (!border) continue;
-    if (wpsConnectorSafeSet(border, "LineStyle", item.lineStyle ?? item.type)) applied.push(`border:${edge}:lineStyle`);
-    if (wpsConnectorSafeSet(border, "LineWidth", item.lineWidth ?? item.width)) applied.push(`border:${edge}:lineWidth`);
-    if (wpsConnectorSafeSet(border, "Color", item.color)) applied.push(`border:${edge}:color`);
+    const edgePrefix = `${prefix}.${edge}`;
+    if (!border) {
+      for (const [field, value] of [["lineStyle", item.lineStyle ?? item.type], ["lineWidth", item.lineWidth ?? item.width], ["color", item.color]]) {
+        if (value !== undefined && value !== null) wpsConnectorWppRecordSet(diagnostics, `${edgePrefix}.${field}`, false);
+      }
+      continue;
+    }
+    if ((item.lineStyle ?? item.type) !== undefined && wpsConnectorWppTrySet(diagnostics, edgePrefix, border, "LineStyle", item.lineStyle ?? item.type, "lineStyle")) applied.push(`border:${edge}:lineStyle`);
+    if ((item.lineWidth ?? item.width) !== undefined && wpsConnectorWppTrySet(diagnostics, edgePrefix, border, "LineWidth", item.lineWidth ?? item.width, "lineWidth")) applied.push(`border:${edge}:lineWidth`);
+    if (item.color !== undefined && wpsConnectorWppTrySet(diagnostics, edgePrefix, border, "Color", item.color, "color")) applied.push(`border:${edge}:color`);
   }
   return applied;
 }
@@ -3186,18 +3291,24 @@ function wpsConnectorWppRangeFormat(range) {
     shading: { backgroundColor: wpsConnectorWppColorText(wpsConnectorSafeGet(shading, "BackgroundPatternColor")), foregroundColor: wpsConnectorWppColorText(wpsConnectorSafeGet(shading, "ForegroundPatternColor")), texture: wpsConnectorSafeGet(shading, "Texture") },
   };
 }
-function wpsConnectorApplyWppRangeCellFormat(range, format = {}) {
-  const applied = wpsConnectorApplyWppRangeFormat(range, format);
-  applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(range, "Borders"), format.borders));
+function wpsConnectorApplyWppRangeCellFormat(range, format = {}, diagnostics = null) {
+  const applied = wpsConnectorApplyWppRangeFormat(range, format, diagnostics, "cells");
+  applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(range, "Borders"), format.borders, diagnostics, "cells.borders"));
   const cells = wpsConnectorSafeGet(range, "Cells");
-  if (wpsConnectorSafeSet(cells, "VerticalAlignment", format.verticalAlignment) || wpsConnectorSafeSet(range, "VerticalAlignment", format.verticalAlignment)) applied.push("cells.verticalAlignment");
+  if (format.verticalAlignment !== undefined && format.verticalAlignment !== null) {
+    const ok = wpsConnectorWppRecordSet(diagnostics, "cells.verticalAlignment", wpsConnectorSafeSet(cells, "VerticalAlignment", format.verticalAlignment) || wpsConnectorSafeSet(range, "VerticalAlignment", format.verticalAlignment));
+    if (ok) applied.push("cells.verticalAlignment");
+  }
   const padding = format.padding || {};
   for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"]]) {
-    if (wpsConnectorSafeSet(cells, prop, padding[key]) || wpsConnectorSafeSet(range, prop, padding[key])) applied.push(`cells.padding.${key}`);
+    if (padding[key] !== undefined && padding[key] !== null) {
+      const ok = wpsConnectorWppRecordSet(diagnostics, `cells.padding.${key}`, wpsConnectorSafeSet(cells, prop, padding[key]) || wpsConnectorSafeSet(range, prop, padding[key]));
+      if (ok) applied.push(`cells.padding.${key}`);
+    }
   }
   return applied;
 }
-function wpsConnectorApplyWppRangeFormat(range, format = {}) {
+function wpsConnectorApplyWppRangeFormat(range, format = {}, diagnostics = null, diagnosticPrefix = "") {
   const applied = [];
   const font = wpsConnectorSafeGet(range, "Font");
   const paragraph = wpsConnectorSafeGet(range, "ParagraphFormat");
@@ -3208,47 +3319,60 @@ function wpsConnectorApplyWppRangeFormat(range, format = {}) {
     const farEastNameApplied = wpsConnectorSafeSet(font, "NameFarEast", f.name);
     const asciiNameApplied = wpsConnectorSafeSet(font, "NameAscii", f.name);
     const otherNameApplied = wpsConnectorSafeSet(font, "NameOther", f.name);
+    wpsConnectorWppRecordSet(diagnostics, diagnosticPrefix ? `${diagnosticPrefix}.font.name` : "font.name", nameApplied || farEastNameApplied || asciiNameApplied || otherNameApplied);
     if (nameApplied || farEastNameApplied || asciiNameApplied || otherNameApplied) applied.push("font.name");
   }
-  if (f.nameFarEast !== undefined && f.nameFarEast !== null && wpsConnectorSafeSet(font, "NameFarEast", f.nameFarEast)) applied.push("font.nameFarEast");
-  if (f.nameAscii !== undefined && f.nameAscii !== null && wpsConnectorSafeSet(font, "NameAscii", f.nameAscii)) applied.push("font.nameAscii");
-  if (wpsConnectorSafeSet(font, "Size", f.size)) applied.push("font.size");
-  if (typeof f.bold === "boolean" && wpsConnectorSafeSet(font, "Bold", f.bold ? -1 : 0)) applied.push("font.bold");
-  if (typeof f.italic === "boolean" && wpsConnectorSafeSet(font, "Italic", f.italic ? -1 : 0)) applied.push("font.italic");
-  if (wpsConnectorSafeSet(font, "Color", f.color)) applied.push("font.color");
-  if (wpsConnectorSafeSet(font, "Underline", f.underline === true ? 1 : f.underline === false ? 0 : f.underline)) applied.push("font.underline");
-  if (wpsConnectorSafeSet(font, "HighlightColor", f.highlightColor)) applied.push("font.highlightColor");
+  if (f.nameFarEast !== undefined && f.nameFarEast !== null && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, font, "NameFarEast", f.nameFarEast, "font.nameFarEast")) applied.push("font.nameFarEast");
+  if (f.nameAscii !== undefined && f.nameAscii !== null && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, font, "NameAscii", f.nameAscii, "font.nameAscii")) applied.push("font.nameAscii");
+  if (f.size !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, font, "Size", f.size, "font.size")) applied.push("font.size");
+  if (typeof f.bold === "boolean" && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, font, "Bold", f.bold ? -1 : 0, "font.bold")) applied.push("font.bold");
+  if (typeof f.italic === "boolean" && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, font, "Italic", f.italic ? -1 : 0, "font.italic")) applied.push("font.italic");
+  if (f.color !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, font, "Color", f.color, "font.color")) applied.push("font.color");
+  if (f.underline !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, font, "Underline", f.underline === true ? 1 : f.underline === false ? 0 : f.underline, "font.underline")) applied.push("font.underline");
+  if (f.highlightColor !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, font, "HighlightColor", f.highlightColor, "font.highlightColor")) applied.push("font.highlightColor");
   const p = format.paragraph || {};
-  if (wpsConnectorSafeSet(paragraph, "Alignment", p.alignment)) applied.push("paragraph.alignment");
-  if (wpsConnectorSafeSet(paragraph, "SpaceBefore", p.spaceBefore)) applied.push("paragraph.spaceBefore");
-  if (wpsConnectorSafeSet(paragraph, "SpaceAfter", p.spaceAfter)) applied.push("paragraph.spaceAfter");
+  const paragraphAlignment = p.alignment ?? format.horizontalAlignment;
+  if (paragraphAlignment !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "Alignment", paragraphAlignment, "paragraph.alignment")) applied.push("paragraph.alignment");
+  if (p.spaceBefore !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "SpaceBefore", p.spaceBefore, "paragraph.spaceBefore")) applied.push("paragraph.spaceBefore");
+  if (p.spaceAfter !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "SpaceAfter", p.spaceAfter, "paragraph.spaceAfter")) applied.push("paragraph.spaceAfter");
   const lineSpacingValue = p.lineSpacing !== undefined ? p.lineSpacing : p.lineSpacingValue;
-  if (wpsConnectorSafeSet(paragraph, "LineSpacing", lineSpacingValue)) applied.push("paragraph.lineSpacing");
-  if (wpsConnectorSafeSet(paragraph, "LineSpacingRule", p.lineSpacingRule)) applied.push("paragraph.lineSpacingRule");
-  if (wpsConnectorSafeSet(paragraph, "LeftIndent", p.leftIndent)) applied.push("paragraph.leftIndent");
-  if (wpsConnectorSafeSet(paragraph, "FirstLineIndent", p.firstLineIndent)) applied.push("paragraph.firstLineIndent");
-  if (wpsConnectorSafeSet(paragraph, "RightIndent", p.rightIndent)) applied.push("paragraph.rightIndent");
-  if (typeof p.wordWrap === "boolean" && wpsConnectorSafeSet(paragraph, "WordWrap", p.wordWrap ? -1 : 0)) applied.push("paragraph.wordWrap");
-  if (typeof p.keepWithNext === "boolean" && wpsConnectorSafeSet(paragraph, "KeepWithNext", p.keepWithNext ? -1 : 0)) applied.push("paragraph.keepWithNext");
-  if (typeof p.keepTogether === "boolean" && wpsConnectorSafeSet(paragraph, "KeepTogether", p.keepTogether ? -1 : 0)) applied.push("paragraph.keepTogether");
-  if (typeof p.pageBreakBefore === "boolean" && wpsConnectorSafeSet(paragraph, "PageBreakBefore", p.pageBreakBefore ? -1 : 0)) applied.push("paragraph.pageBreakBefore");
+  if (lineSpacingValue !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "LineSpacing", lineSpacingValue, "paragraph.lineSpacing")) applied.push("paragraph.lineSpacing");
+  if (p.lineSpacingRule !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "LineSpacingRule", p.lineSpacingRule, "paragraph.lineSpacingRule")) applied.push("paragraph.lineSpacingRule");
+  if (p.leftIndent !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "LeftIndent", p.leftIndent, "paragraph.leftIndent")) applied.push("paragraph.leftIndent");
+  if (p.firstLineIndent !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "FirstLineIndent", p.firstLineIndent, "paragraph.firstLineIndent")) applied.push("paragraph.firstLineIndent");
+  if (p.rightIndent !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "RightIndent", p.rightIndent, "paragraph.rightIndent")) applied.push("paragraph.rightIndent");
+  if (typeof p.wordWrap === "boolean" && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "WordWrap", p.wordWrap ? -1 : 0, "paragraph.wordWrap")) applied.push("paragraph.wordWrap");
+  if (typeof p.keepWithNext === "boolean" && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "KeepWithNext", p.keepWithNext ? -1 : 0, "paragraph.keepWithNext")) applied.push("paragraph.keepWithNext");
+  if (typeof p.keepTogether === "boolean" && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "KeepTogether", p.keepTogether ? -1 : 0, "paragraph.keepTogether")) applied.push("paragraph.keepTogether");
+  if (typeof p.pageBreakBefore === "boolean" && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "PageBreakBefore", p.pageBreakBefore ? -1 : 0, "paragraph.pageBreakBefore")) applied.push("paragraph.pageBreakBefore");
   const s = format.shading || {};
-  if (wpsConnectorSafeSet(shading, "BackgroundPatternColor", s.backgroundColor)) applied.push("shading.backgroundColor");
-  if (wpsConnectorSafeSet(shading, "ForegroundPatternColor", s.foregroundColor)) applied.push("shading.foregroundColor");
-  if (wpsConnectorSafeSet(shading, "Texture", s.texture ?? s.pattern)) applied.push("shading.texture");
+  if (s.backgroundColor !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, shading, "BackgroundPatternColor", s.backgroundColor, "shading.backgroundColor")) applied.push("shading.backgroundColor");
+  if (s.foregroundColor !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, shading, "ForegroundPatternColor", s.foregroundColor, "shading.foregroundColor")) applied.push("shading.foregroundColor");
+  const texture = s.texture ?? s.pattern;
+  if (texture !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, shading, "Texture", texture, "shading.texture")) applied.push("shading.texture");
   return applied;
 }
 function wpsConnectorWppCellFormat(cell, row, column) {
   const range = wpsConnectorSafeGet(cell, "Range");
   return { row, column, width: wpsConnectorSafeGet(cell, "Width"), height: wpsConnectorSafeGet(cell, "Height"), verticalAlignment: wpsConnectorSafeGet(cell, "VerticalAlignment"), padding: { top: wpsConnectorSafeGet(cell, "TopPadding"), bottom: wpsConnectorSafeGet(cell, "BottomPadding"), left: wpsConnectorSafeGet(cell, "LeftPadding"), right: wpsConnectorSafeGet(cell, "RightPadding") }, borders: wpsConnectorBorderFormat(wpsConnectorSafeGet(cell, "Borders")), ...wpsConnectorWppRangeFormat(range) };
 }
-function wpsConnectorApplyWppCellFormat(cell, format = {}) {
+function wpsConnectorApplyWppCellFormat(cell, format = {}, diagnostics = null) {
   const applied = [];
-  applied.push(...wpsConnectorApplyWppRangeFormat(wpsConnectorSafeGet(cell, "Range"), format));
-  applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(cell, "Borders"), format.borders));
-  if (wpsConnectorSafeSet(cell, "VerticalAlignment", format.verticalAlignment)) applied.push("cell.verticalAlignment");
+  const rangeFormat = format.wrapText === undefined || format.paragraph?.wordWrap !== undefined
+    ? format
+    : { ...format, paragraph: { ...(format.paragraph || {}), wordWrap: format.wrapText } };
+  applied.push(...wpsConnectorApplyWppRangeFormat(wpsConnectorSafeGet(cell, "Range"), rangeFormat, diagnostics, "cells"));
+  applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(cell, "Borders"), format.borders, diagnostics, "cells.borders"));
+  if (format.verticalAlignment !== undefined && wpsConnectorWppTrySet(diagnostics, "cells", cell, "VerticalAlignment", format.verticalAlignment, "verticalAlignment")) applied.push("cell.verticalAlignment");
   const p = format.padding || {};
-  for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"]]) if (wpsConnectorSafeSet(cell, prop, p[key])) applied.push(`cell.padding.${key}`);
+  for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"]]) {
+    if (p[key] !== undefined && wpsConnectorWppTrySet(diagnostics, "cells.padding", cell, prop, p[key], key)) applied.push(`cell.padding.${key}`);
+  }
+  if (format.width !== undefined && wpsConnectorWppTrySet(diagnostics, "cells", cell, "Width", format.width, "width")) applied.push("cell.width");
+  if (format.height !== undefined && wpsConnectorWppTrySet(diagnostics, "cells", cell, "Height", format.height, "height")) applied.push("cell.height");
+  for (const [key, value] of [["numberFormat", format.numberFormat], ["numberFormatLocal", format.numberFormatLocal]]) {
+    if (value !== undefined && value !== null) wpsConnectorWppRecordSet(diagnostics, `cells.${key}`, false);
+  }
   return applied;
 }
 function wpsConnectorWppApplyTablePadding(table, padding = {}) {
@@ -3295,6 +3419,30 @@ function wpsConnectorWppNormalizeReadWidth(value) {
   const n = Number(value);
   return Number.isFinite(n) ? Math.round(n * 10) / 10 : null;
 }
+function wpsConnectorWppTableWidthTypeName(value) {
+  const numeric = Number(value);
+  if (numeric === 1) return "auto";
+  if (numeric === 2) return "percent";
+  if (numeric === 3) return "points";
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) return undefined;
+  if (/auto|automatic/.test(text)) return "auto";
+  if (/percent|pct|percentage/.test(text)) return "percent";
+  if (/point|points|dxa/.test(text)) return "points";
+  return text;
+}
+function wpsConnectorWppTableWidthTypeValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const text = String(value ?? "").trim().toLowerCase();
+  if (/auto|automatic/.test(text)) return 1;
+  if (/percent|pct|percentage/.test(text)) return 2;
+  if (/point|points|dxa/.test(text)) return 3;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : value;
+}
+function wpsConnectorWppFirstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null);
+}
 function wpsConnectorWppResetTableLayout(input = {}) {
   const { table, tableIndex } = wpsConnectorWppTable(input);
   const applied = [];
@@ -3311,9 +3459,22 @@ function wpsConnectorWppReadRowHeights(input = {}) {
   for (let r = 1; r <= rowCount; r += 1) { const row = wpsConnectorSafeGet(table.Rows, "Item", r); rows.push({ row: r, height: wpsConnectorSafeGet(row, "Height"), heightRule: wpsConnectorSafeGet(row, "HeightRule") }); }
   return { host: "wpp", tableIndex, rowHeights: rows };
 }
-function wpsConnectorWppSetRowHeights(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const items = input.rowHeights || input.rows || []; const applied = []; for (const item of items) { const rowIndex = wpsConnectorInteger(item.row ?? item.index, "row", 1); wpsConnectorWppAssertCell(table, rowIndex, 1); const row = table.Rows.Item(rowIndex); if (wpsConnectorSafeSet(row, "Height", item.height)) applied.push(rowIndex); wpsConnectorSafeSet(row, "HeightRule", item.heightRule); } return { host: "wpp", tableIndex, appliedRows: applied }; }
+function wpsConnectorWppSetRowHeights(input = {}, diagnostics = null) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const items = input.rowHeights || input.rows || [];
+  const applied = [];
+  for (const item of items) {
+    const rowIndex = wpsConnectorInteger(item.row ?? item.index, "row", 1);
+    wpsConnectorWppAssertCell(table, rowIndex, 1);
+    const row = table.Rows.Item(rowIndex);
+    const heightOk = item.height !== undefined && wpsConnectorWppTrySet(diagnostics, "rowHeights", row, "Height", item.height, "height");
+    const ruleOk = item.heightRule !== undefined && wpsConnectorWppTrySet(diagnostics, "rowHeights", row, "HeightRule", item.heightRule, "heightRule");
+    if (heightOk || ruleOk) applied.push(rowIndex);
+  }
+  return { host: "wpp", tableIndex, appliedRows: applied, unsupportedFields: [...(diagnostics?.unsupported || [])], attemptedButUnverified: [...(diagnostics?.attemptedButUnverified || [])] };
+}
 function wpsConnectorWppReadColumnWidths(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const { columnCount } = wpsConnectorWppTableSize(table); const columns = []; for (let c = 1; c <= columnCount; c += 1) { const column = wpsConnectorSafeGet(table.Columns, "Item", c); columns.push({ column: c, width: wpsConnectorSafeGet(column, "Width") }); } return { host: "wpp", tableIndex, columnWidths: columns }; }
-function wpsConnectorWppSetColumnWidths(input = {}) {
+function wpsConnectorWppSetColumnWidths(input = {}, diagnostics = null) {
   const { table, tableIndex } = wpsConnectorWppTable(input);
   const items = input.columnWidths || input.columns || [];
   const applied = [];
@@ -3328,14 +3489,18 @@ function wpsConnectorWppSetColumnWidths(input = {}) {
     let setOk = false;
     try { const column = table.Columns.Item(columnIndex); setOk = wpsConnectorSafeSet(column, "Width", width); } catch {}
     if (!setOk) { try { table.Columns.Item(columnIndex).SetWidth?.(width, 0); setOk = true; } catch {} }
+    wpsConnectorWppRecordSet(diagnostics, "columnWidths.width", setOk);
     if (setOk) applied.push(columnIndex);
     const actual = (() => { try { return wpsConnectorWppNormalizeReadWidth(table.Columns.Item(columnIndex).Width); } catch { return null; } })();
     const expected = wpsConnectorWppNormalizeReadWidth(width);
     const verified = actual !== null && expected !== null && Math.abs(actual - expected) <= Number(input.tolerance || 1.5);
-    if (setOk && !verified) warnings.push({ code: "COLUMN_WIDTH_READBACK_MISMATCH", column: columnIndex, expected, actual });
+    if (setOk && !verified) {
+      warnings.push({ code: "COLUMN_WIDTH_READBACK_MISMATCH", column: columnIndex, expected, actual });
+      diagnostics?.attemptedButUnverified?.add("columnWidths.width");
+    }
     results.push({ column: columnIndex, requestedWidth: width, actualWidth: actual, applied: setOk, verified });
   }
-  return { host: "wpp", tableIndex, appliedColumns: applied, verifiedColumns: results.filter((r) => r.verified).map((r) => r.column), warnings, results };
+  return { host: "wpp", tableIndex, appliedColumns: applied, verifiedColumns: results.filter((r) => r.verified).map((r) => r.column), warnings, results, unsupportedFields: [...(diagnostics?.unsupported || [])], attemptedButUnverified: [...(diagnostics?.attemptedButUnverified || [])] };
 }
 function wpsConnectorWppReadMergedCells(input = {}) {
   const { table, tableIndex } = wpsConnectorWppTable(input); const { rowCount, columnCount } = wpsConnectorWppTableSize(table); const mergedCells = [];
@@ -3349,7 +3514,15 @@ function wpsConnectorWppReadMergedCells(input = {}) {
 }
 function wpsConnectorWppApplyMergedCells(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const mergedCells = input.mergedCells || []; const results = []; for (const item of mergedCells) { try { const startRow = wpsConnectorInteger(item.startRow, "startRow", 1); const startColumn = wpsConnectorInteger(item.startColumn, "startColumn", 1); const endRow = wpsConnectorInteger(item.endRow, "endRow", 1); const endColumn = wpsConnectorInteger(item.endColumn, "endColumn", 1); wpsConnectorWppAssertCell(table, startRow, startColumn); wpsConnectorWppAssertCell(table, endRow, endColumn); table.Cell(startRow, startColumn).Merge(table.Cell(endRow, endColumn)); results.push({ ...item, ok: true }); } catch (error) { results.push({ ...item, ok: false, error: error.code || "MERGE_FAILED" }); } } return { host: "wpp", tableIndex, appliedMergedCells: results.filter((r) => r.ok).length, results }; }
 function wpsConnectorWppReadCellFormat(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const row = wpsConnectorInteger(input.row, "row", 1); const column = wpsConnectorInteger(input.col ?? input.column, "col", 1); wpsConnectorWppAssertCell(table, row, column); return { host: "wpp", tableIndex, row, column, format: wpsConnectorWppCellFormat(table.Cell(row, column), row, column) }; }
-function wpsConnectorWppApplyCellFormat(input = {}) { const { table, tableIndex } = wpsConnectorWppTable(input); const row = wpsConnectorInteger(input.row, "row", 1); const column = wpsConnectorInteger(input.col ?? input.column, "col", 1); wpsConnectorWppAssertCell(table, row, column); const applied = wpsConnectorApplyWppCellFormat(table.Cell(row, column), input.format || {}); return { host: "wpp", tableIndex, row, column, applied }; }
+function wpsConnectorWppApplyCellFormat(input = {}) {
+  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const row = wpsConnectorInteger(input.row, "row", 1);
+  const column = wpsConnectorInteger(input.col ?? input.column, "col", 1);
+  wpsConnectorWppAssertCell(table, row, column);
+  const diagnostics = { attempted: new Set(), unsupported: new Set(), attemptedButUnverified: new Set() };
+  const applied = wpsConnectorApplyWppCellFormat(table.Cell(row, column), input.format || {}, diagnostics);
+  return { host: "wpp", tableIndex, row, column, applied, unsupportedFields: [...diagnostics.unsupported], attemptedButUnverified: [...diagnostics.attemptedButUnverified], attemptedFields: [...diagnostics.attempted] };
+}
 function wpsConnectorWppReadTableFormat(input = {}) {
   if (input.summaryOnly === true || Array.isArray(input.cells) || Array.isArray(input.fields) || input.startRow !== undefined || input.endRow !== undefined || input.startCol !== undefined || input.endCol !== undefined || input.startColumn !== undefined || input.endColumn !== undefined) {
     if (Array.isArray(input.cells) && input.cells.length) return wpsConnectorWppReadTableFormatSample(input);
@@ -3359,7 +3532,40 @@ function wpsConnectorWppReadTableFormat(input = {}) {
   }
   const { table, tableIndex } = wpsConnectorWppTable(input); const size = wpsConnectorWppTableSize(table); const cells = [];
   for (let r = 1; r <= size.rowCount; r += 1) for (let c = 1; c <= size.columnCount; c += 1) { try { cells.push(wpsConnectorWppCellFormat(table.Cell(r, c), r, c)); } catch {} }
-  return { host: "wpp", tableIndex, format: { table: { style: String(wpsConnectorSafeGet(table, "Style") || ""), alignment: wpsConnectorSafeGet(wpsConnectorSafeGet(table, "Range")?.ParagraphFormat, "Alignment"), allowAutoFit: wpsConnectorSafeGet(table, "AllowAutoFit"), preferredWidth: wpsConnectorSafeGet(table, "PreferredWidth"), padding: { top: wpsConnectorSafeGet(table, "TopPadding"), bottom: wpsConnectorSafeGet(table, "BottomPadding"), left: wpsConnectorSafeGet(table, "LeftPadding"), right: wpsConnectorSafeGet(table, "RightPadding"), spacing: wpsConnectorSafeGet(table, "Spacing") }, borders: wpsConnectorBorderFormat(wpsConnectorSafeGet(table, "Borders")) }, rowHeights: wpsConnectorWppReadRowHeights(input).rowHeights, columnWidths: wpsConnectorWppReadColumnWidths(input).columnWidths, mergedCells: wpsConnectorWppReadMergedCells(input).mergedCells, cells, ...size } };
+  const tableRange = wpsConnectorSafeGet(table, "Range");
+  const rangeFormat = wpsConnectorWppRangeFormat(tableRange);
+  const preferredWidthType = wpsConnectorSafeGet(table, "PreferredWidthType");
+  const allowAutoFit = wpsConnectorSafeGet(table, "AllowAutoFit");
+  const preferredWidth = wpsConnectorSafeGet(table, "PreferredWidth");
+  const tableWidth = wpsConnectorWppFirstDefined(wpsConnectorSafeGet(table, "Width"), preferredWidth);
+  const format = {
+    table: {
+      style: String(wpsConnectorSafeGet(table, "Style") || ""),
+      styleBuiltIn: wpsConnectorSafeGet(table, "StyleBuiltIn"),
+      alignment: wpsConnectorSafeGet(wpsConnectorSafeGet(tableRange, "ParagraphFormat"), "Alignment"),
+      width: tableWidth,
+      tableWidth: tableWidth,
+      tableWidthType: wpsConnectorWppTableWidthTypeName(preferredWidthType),
+      allowAutoFit,
+      autoFit: wpsConnectorSafeGet(table, "AutoFit") ?? allowAutoFit,
+      preferredWidth,
+      preferredWidthType,
+      fontName: rangeFormat.font?.name,
+      fontSize: rangeFormat.font?.size,
+      fontColor: rangeFormat.font?.color,
+      bold: rangeFormat.font?.bold,
+      italic: rangeFormat.font?.italic,
+      shadingColor: rangeFormat.shading?.backgroundColor,
+      padding: { top: wpsConnectorSafeGet(table, "TopPadding"), bottom: wpsConnectorSafeGet(table, "BottomPadding"), left: wpsConnectorSafeGet(table, "LeftPadding"), right: wpsConnectorSafeGet(table, "RightPadding"), spacing: wpsConnectorSafeGet(table, "Spacing") },
+      borders: wpsConnectorBorderFormat(wpsConnectorSafeGet(table, "Borders")),
+    },
+    rowHeights: wpsConnectorWppReadRowHeights(input).rowHeights,
+    columnWidths: wpsConnectorWppReadColumnWidths(input).columnWidths,
+    mergedCells: wpsConnectorWppReadMergedCells(input).mergedCells,
+    cells,
+    ...size,
+  };
+  return { host: "wpp", tableIndex, format };
 }
 
 function wpsConnectorWppSelectedTableIndex() {
@@ -3439,6 +3645,12 @@ function wpsConnectorWppFormatSignature(format = {}) {
     borders: format.borders || {},
     verticalAlignment: format.verticalAlignment,
     padding: format.padding || {},
+    width: format.width,
+    height: format.height,
+    numberFormat: format.numberFormat,
+    numberFormatLocal: format.numberFormatLocal,
+    wrapText: format.wrapText,
+    horizontalAlignment: format.horizontalAlignment,
   });
 }
 function wpsConnectorWppApplyCellFormatGroups(table, tableIndex, cells, options = {}) {
@@ -3451,35 +3663,94 @@ function wpsConnectorWppApplyCellFormatGroups(table, tableIndex, cells, options 
   const applied = [];
   const summaries = [];
   for (const group of groups.values()) {
-    const result = wpsConnectorWppFormatTableCells(table, tableIndex, group.targets, group.format, { fastPath: true, mergedCells: options.mergedCells });
+    const result = wpsConnectorWppFormatTableCells(table, tableIndex, group.targets, group.format, { fastPath: true, mergedCells: options.mergedCells, diagnostics: options.diagnostics });
     applied.push(...(result.acceptedFields || []).map((field) => `cells:${field}`));
-    summaries.push({ affectedCells: result.affectedCells, fastPath: result.fastPath, hostCallsSaved: result.hostCallsSaved, fallbackCellCount: result.fallbackCellCount, acceptedFields: result.acceptedFields });
+    summaries.push({ affectedCells: result.affectedCells, fastPath: result.fastPath, hostCallsSaved: result.hostCallsSaved, fallbackCellCount: result.fallbackCellCount, acceptedFields: result.acceptedFields, unsupportedFields: result.unsupportedFields, attemptedButUnverified: result.attemptedButUnverified });
   }
   return { applied, summaries };
 }
 function wpsConnectorWppApplyTableFormat(input = {}) {
   const { table, tableIndex } = wpsConnectorWppTable(input); const format = input.format || {}; const applied = [];
+  const diagnostics = { attempted: new Set(), unsupported: new Set(), attemptedButUnverified: new Set() };
   const tf = format.table || {};
-  if (wpsConnectorSafeSet(table, "Style", tf.style)) applied.push("table.style");
-  if (wpsConnectorSafeSet(table, "StyleBuiltIn", tf.styleBuiltIn)) applied.push("table.styleBuiltIn");
-  if (wpsConnectorSafeSet(table, "AllowAutoFit", tf.allowAutoFit)) applied.push("table.allowAutoFit");
-  if (wpsConnectorSafeSet(table, "AutoFit", tf.autoFit)) applied.push("table.autoFit");
-  if (wpsConnectorSafeSet(table, "PreferredWidthType", tf.preferredWidthType)) applied.push("table.preferredWidthType");
-  if (wpsConnectorSafeSet(table, "PreferredWidth", tf.preferredWidth)) applied.push("table.preferredWidth");
-  applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(table, "Borders"), tf.borders));
-  const padding = tf.padding || {};
-  for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"], ["spacing", "Spacing"]]) if (wpsConnectorSafeSet(table, prop, padding[key])) applied.push(`table.padding.${key}`);
-  if (tf.alignment !== undefined || tf.horizontalAlignment !== undefined) {
-    const range = wpsConnectorSafeGet(table, "Range");
-    const paragraph = wpsConnectorSafeGet(range, "ParagraphFormat");
-    if (wpsConnectorSafeSet(paragraph, "Alignment", tf.alignment ?? tf.horizontalAlignment)) applied.push("table.alignment");
+  const tryTableSet = (field, property, value) => {
+    if (value === undefined || value === null) return false;
+    const ok = wpsConnectorWppTrySet(diagnostics, "table", table, property, value, field);
+    if (ok) applied.push(`table.${field}`);
+    return ok;
+  };
+  tryTableSet("style", "Style", tf.style);
+  tryTableSet("styleBuiltIn", "StyleBuiltIn", tf.styleBuiltIn);
+  tryTableSet("allowAutoFit", "AllowAutoFit", tf.allowAutoFit);
+  if (tf.autoFit !== undefined && tf.autoFit !== null) {
+    let autoFitApplied = wpsConnectorSafeSet(table, "AutoFit", tf.autoFit);
+    if (!autoFitApplied) {
+      try { wpsConnectorMember(table, "AutoFitBehavior", tf.autoFit ? 1 : 0); autoFitApplied = true; } catch {}
+    }
+    wpsConnectorWppRecordSet(diagnostics, "table.autoFit", autoFitApplied);
+    if (autoFitApplied) applied.push("table.autoFit");
   }
-  if (format.rowHeights) applied.push(...wpsConnectorWppSetRowHeights({ tableIndex, rowHeights: format.rowHeights }).appliedRows.map((r) => `row:${r}:height`));
-  if (format.columnWidths) applied.push(...wpsConnectorWppSetColumnWidths({ tableIndex, columnWidths: format.columnWidths }).appliedColumns.map((c) => `column:${c}:width`));
-  const mergedCells = (() => { try { return wpsConnectorWppReadMergedCells({ tableIndex }).mergedCells || []; } catch { return []; } })();
-  const grouped = wpsConnectorWppApplyCellFormatGroups(table, tableIndex, format.cells || [], { mergedCells });
+  const preferredWidthType = tf.preferredWidthType !== undefined ? tf.preferredWidthType : wpsConnectorWppTableWidthTypeValue(tf.tableWidthType);
+  tryTableSet("preferredWidthType", "PreferredWidthType", preferredWidthType);
+  const requestedWidth = wpsConnectorWppFirstDefined(tf.preferredWidth, tf.tableWidth, tf.width);
+  if (requestedWidth !== undefined) {
+    const widthField = tf.preferredWidth !== undefined ? "preferredWidth" : tf.tableWidth !== undefined ? "tableWidth" : "width";
+    tryTableSet(widthField, "PreferredWidth", requestedWidth);
+  }
+  if (tf.tableWidthType !== undefined && preferredWidthType === undefined) {
+    wpsConnectorWppRecordSet(diagnostics, "table.tableWidthType", false);
+  } else if (tf.tableWidthType !== undefined) {
+    diagnostics.attempted.add("table.tableWidthType");
+  }
+  const tableRange = wpsConnectorSafeGet(table, "Range");
+  const tableRangeFormat = {
+    font: {
+      name: tf.fontName,
+      size: tf.fontSize,
+      color: tf.fontColor,
+      bold: tf.bold,
+      italic: tf.italic,
+      underline: tf.underline,
+      highlightColor: tf.highlightColor,
+    },
+    shading: { backgroundColor: tf.shadingColor },
+  };
+  const tableRangeApplied = wpsConnectorApplyWppRangeFormat(tableRange, tableRangeFormat, diagnostics, "table");
+  tableRangeApplied.forEach((field) => applied.push(`table.${field}`));
+  for (const [field, rangeField, value] of [
+    ["fontName", "font.name", tf.fontName],
+    ["fontSize", "font.size", tf.fontSize],
+    ["fontColor", "font.color", tf.fontColor],
+    ["bold", "font.bold", tf.bold],
+    ["italic", "font.italic", tf.italic],
+    ["shadingColor", "shading.backgroundColor", tf.shadingColor],
+  ]) {
+    if (value !== undefined && value !== null) wpsConnectorWppRecordSet(diagnostics, `table.${field}`, tableRangeApplied.includes(rangeField));
+  }
+  applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(table, "Borders"), tf.borders, diagnostics, "table.borders"));
+  const padding = tf.padding || {};
+  for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"], ["spacing", "Spacing"]]) if (wpsConnectorWppTrySet(diagnostics, "table.padding", table, prop, padding[key], key)) applied.push(`table.padding.${key}`);
+  if (tf.alignment !== undefined || tf.horizontalAlignment !== undefined) {
+    const paragraph = wpsConnectorSafeGet(tableRange, "ParagraphFormat");
+    if (wpsConnectorWppTrySet(diagnostics, "table", paragraph, "Alignment", tf.alignment ?? tf.horizontalAlignment, "alignment")) applied.push("table.alignment");
+  }
+  if (format.rowHeights) applied.push(...wpsConnectorWppSetRowHeights({ tableIndex, rowHeights: format.rowHeights }, diagnostics).appliedRows.map((r) => `row:${r}:height`));
+  if (format.columnWidths) applied.push(...wpsConnectorWppSetColumnWidths({ tableIndex, columnWidths: format.columnWidths }, diagnostics).appliedColumns.map((c) => `column:${c}:width`));
+  // A newly inserted table is known to be unmerged. Avoid the expensive
+  // table.Cell(row, column) probe on WPS Writer; callers may provide the
+  // target table's known merge map when one is available.
+  const mergedCells = Array.isArray(input.mergedCells)
+    ? input.mergedCells
+    : input.skipMergedCellScan === true
+      ? []
+      : (() => { try { return wpsConnectorWppReadMergedCells({ tableIndex }).mergedCells || []; } catch { return []; } })();
+  const grouped = wpsConnectorWppApplyCellFormatGroups(table, tableIndex, format.cells || [], { mergedCells, diagnostics });
   applied.push(...grouped.applied);
-  if (format.mergedCells) applied.push(`merged:${wpsConnectorWppApplyMergedCells({ tableIndex, mergedCells: format.mergedCells }).appliedMergedCells}`);
+  if (format.mergedCells) {
+    const mergeResult = wpsConnectorWppApplyMergedCells({ tableIndex, mergedCells: format.mergedCells });
+    applied.push(`merged:${mergeResult.appliedMergedCells}`);
+    for (const item of mergeResult.results || []) if (!item.ok) wpsConnectorWppRecordSet(diagnostics, "mergedCells", false);
+  }
   let verification = null;
   let verificationRetry = null;
   const verifyCells = Array.isArray(input.verifyCells) ? input.verifyCells : [];
@@ -3498,7 +3769,7 @@ function wpsConnectorWppApplyTableFormat(input = {}) {
       }
       const fallbackSummaries = [];
       for (const group of fallbackGroups.values()) {
-        const fallback = wpsConnectorWppFormatTableCells(table, tableIndex, group.targets, group.format, { fastPath: false, mergedCells, continueOnError: true });
+        const fallback = wpsConnectorWppFormatTableCells(table, tableIndex, group.targets, group.format, { fastPath: false, mergedCells, continueOnError: true, diagnostics });
         applied.push(...(fallback.acceptedFields || []).map((field) => `cells:fallback:${field}`));
         fallbackSummaries.push({ ...fallback, fastPath: "per-cell-fallback" });
       }
@@ -3506,7 +3777,7 @@ function wpsConnectorWppApplyTableFormat(input = {}) {
       verificationRetry = { attempted: true, mismatchCountBefore: mismatches.length, retryCellCount: retryCells.length, fallbackCellCount: fallbackSummaries.reduce((sum, item) => sum + Number(item.affectedCells || 0), 0), formatGroups: fallbackSummaries, mismatchesAfter: wpsConnectorWppFormatReadbackMismatches(retryCells, verification.cells || []) };
     }
   }
-  return { host: "wpp", tableIndex, applied, formatGroups: [...grouped.summaries, ...(verificationRetry?.formatGroups || [])], verification, verificationRetry, ...wpsConnectorWppTableSize(table) };
+  return { host: "wpp", tableIndex, applied, mergedCellScan: input.skipMergedCellScan === true ? "skipped" : Array.isArray(input.mergedCells) ? "provided" : "performed", formatGroups: [...grouped.summaries, ...(verificationRetry?.formatGroups || [])], verification, verificationRetry, unsupportedFields: [...diagnostics.unsupported], attemptedButUnverified: [...diagnostics.attemptedButUnverified], attemptedFields: [...diagnostics.attempted], ...wpsConnectorWppTableSize(table) };
 }
 
 function wpsConnectorWppExpectedRangeFields(format = {}) {
@@ -3611,6 +3882,7 @@ function wpsConnectorWppFormatTableCells(table, tableIndex, targets, format = {}
   const results = [];
   let affectedCells = 0;
   const accepted = new Set();
+  const diagnostics = options.diagnostics || { attempted: new Set(), unsupported: new Set(), attemptedButUnverified: new Set() };
   const rectangles = wpsConnectorWppTargetRectangles(targets);
   const rangeFormat = { font: format.font, paragraph: format.paragraph, shading: format.shading, borders: format.borders, verticalAlignment: format.verticalAlignment, padding: format.padding };
   const hasRangeFormat = Object.values(rangeFormat).some((value) => value && Object.keys(value).length);
@@ -3623,11 +3895,11 @@ function wpsConnectorWppFormatTableCells(table, tableIndex, targets, format = {}
   const expectedRangeFields = wpsConnectorWppExpectedRangeFields(format);
   for (const segment of ranges) {
     const segmentTargets = targets.filter((target) => target.row >= segment.startRow && target.row <= segment.endRow && target.column >= segment.startCol && target.column <= segment.endCol);
-    const segmentApplied = wpsConnectorApplyWppRangeCellFormat(segment.range, rangeFormat);
+    const segmentApplied = wpsConnectorApplyWppRangeCellFormat(segment.range, rangeFormat, diagnostics);
     segmentApplied.forEach((item) => accepted.add(item));
     for (const target of segmentTargets) targetRanges.set(`${target.row}:${target.column}`, segmentApplied);
   }
-  const cellOnlyFormat = { verticalAlignment: format.verticalAlignment, padding: format.padding };
+  const cellOnlyFormat = { verticalAlignment: format.verticalAlignment, padding: format.padding, width: format.width, height: format.height };
   const hasCellOnlyFormat = Object.values(cellOnlyFormat).some((value) => value && Object.keys(value).length);
   let fallbackCellCount = 0;
   for (const target of targets) {
@@ -3643,10 +3915,10 @@ function wpsConnectorWppFormatTableCells(table, tableIndex, targets, format = {}
       // Some WPS builds expose a range object but silently ignore one or more
       // setters. Retry the complete cell format when the fast range path is
       // incomplete so a reported success always has a real host write behind it.
-      const applied = options.dryRun ? [] : (rangeComplete ? (hasCellOnlyFormat ? wpsConnectorApplyWppCellFormat(table.Cell(target.row, target.column), cellOnlyFormat) : []) : wpsConnectorApplyWppCellFormat(table.Cell(target.row, target.column), format));
+      const applied = options.dryRun ? [] : (rangeComplete ? (hasCellOnlyFormat ? wpsConnectorApplyWppCellFormat(table.Cell(target.row, target.column), cellOnlyFormat, diagnostics) : []) : wpsConnectorApplyWppCellFormat(table.Cell(target.row, target.column), format, diagnostics));
       if (!options.dryRun && rangeApplied && !rangeComplete) fallbackCellCount += 1;
       if (rangeApplied) rangeApplied.forEach((item) => applied.push(item));
-      if (!options.dryRun && Object.keys(format).length > 0 && applied.length === 0) wpsConnectorFail("TABLE_FORMAT_NOT_APPLIED", "WPS Writer 未接受表格格式设置。", { row: target.row, column: target.column, format });
+      if (!options.dryRun && Object.keys(format).length > 0 && applied.length === 0 && diagnostics.unsupported.size === 0) wpsConnectorFail("TABLE_FORMAT_NOT_APPLIED", "WPS Writer 未接受表格格式设置。", { row: target.row, column: target.column, format });
       applied.forEach((item) => accepted.add(item));
       affectedCells += 1;
       if (options.includeResults) results.push({ row: target.row, column: target.column, ok: true, applied });
@@ -3657,7 +3929,10 @@ function wpsConnectorWppFormatTableCells(table, tableIndex, targets, format = {}
     }
   }
   const fastPath = ranges.length ? (ranges.length === 1 ? "table-range" : "segmented-range") : "per-cell";
-  const out = { host: "wpp", applied: !options.dryRun, dryRun: Boolean(options.dryRun), fastPath, hostCallsSaved: ranges.length ? Math.max(0, targets.length - ranges.length - fallbackCellCount) : 0, fallbackCellCount, affectedCells, acceptedFields: [...accepted], durationMs: Date.now() - started };
+  for (const [key, value] of [["numberFormat", format.numberFormat], ["numberFormatLocal", format.numberFormatLocal]]) {
+    if (value !== undefined && value !== null) wpsConnectorWppRecordSet(diagnostics, `cells.${key}`, false);
+  }
+  const out = { host: "wpp", applied: !options.dryRun && accepted.size > 0, dryRun: Boolean(options.dryRun), fastPath, hostCallsSaved: ranges.length ? Math.max(0, targets.length - ranges.length - fallbackCellCount) : 0, fallbackCellCount, affectedCells, acceptedFields: [...accepted], unsupportedFields: [...diagnostics.unsupported], attemptedButUnverified: [...diagnostics.attemptedButUnverified], durationMs: Date.now() - started };
   if (targetTouchesMerged) out.fallbackReason = "mergedCells";
   else if (!ranges.length && options.fastPath !== false && rectangles.length && hasRangeFormat) out.fallbackReason = "range-unavailable";
   if (options.includeResults) out.results = results;

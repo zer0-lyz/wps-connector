@@ -19,7 +19,7 @@ const TABLE_KEYS = new Set([
   "bandedRows", "bandedColumns", "firstColumn", "lastColumn", "totalRow",
   "styleBandedRows", "styleBandedColumns", "styleFirstColumn", "styleLastColumn", "styleTotalRow",
   "alignment", "tableAlignment", "horizontalAlignment", "verticalAlignment", "width", "tableWidth",
-  "preferredWidth", "preferredWidthType", "allowAutoFit", "autoFit", "autoFitBehavior", "shadingColor",
+  "preferredWidth", "preferredWidthType", "allowAutoFit", "autoFit", "autoFitBehavior", "shadingColor", "tableWidthType",
   "fontName", "fontSize", "fontColor", "bold", "italic", "cellPadding", "padding",
   "borderColor", "borderType", "borderWidth", "borders", "headerRowStyle", "bodyRowStyle",
   "headerRowFontName", "headerRowFontSize", "headerRowFontColor", "headerRowBold",
@@ -300,6 +300,7 @@ export function buildTableFormatApplyPlan(format = {}, options = {}) {
     fastPath: mergedCells.length ? "per-cell" : rangeCount ? "grouped-range" : "per-cell",
     hostCallsSaved: mergedCells.length ? 0 : Math.max(0, affectedCells - rangeCount),
     fallbackCellCount: 0,
+    durationMs: 0,
     fallbackReason: mergedCells.length ? "mergedCells" : "",
   };
 }
@@ -317,12 +318,32 @@ export function summarizeTemplateApplication(results = []) {
   return {
     targetCount: normalized.length,
     successCount: normalized.filter((item) => item?.ok === true).length,
-    verifiedCount: normalized.filter((item) => item?.verification?.matched === true).length,
+    verifiedCount: normalized.filter((item) => item?.ok === true && item?.verification?.matched === true).length,
     failedCount: normalized.filter((item) => item?.ok !== true).length,
     unsupportedCount: normalized.reduce((count, item) => count + (item?.unsupported?.length || 0), 0),
     attemptedButUnverifiedCount: normalized.reduce((count, item) => count + (item?.attemptedButUnverified?.length || 0), 0),
     results: normalized,
   };
+}
+
+function statusPath(value) {
+  return String(value || "")
+    .replace(/^format\./, "")
+    .replace(/\[\d+(?::\d+)?\]/g, "[]")
+    .replace(/\[\]/g, "")
+    .replace(/\.+/g, ".")
+    .replace(/^\.|\.$/g, "");
+}
+
+function fieldMatchesStatus(field, status) {
+  const left = statusPath(field);
+  const right = statusPath(status);
+  if (!left || !right) return false;
+  return left === right || left.startsWith(`${right}.`) || right.startsWith(`${left}.`);
+}
+
+function filterAppliedFields(fields, excluded) {
+  return [...new Set(fields || [])].filter((field) => !(excluded || []).some((status) => fieldMatchesStatus(field, status)));
 }
 
 /** Shared transaction runner. Only callback implementations touch host APIs. */
@@ -341,19 +362,21 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
       const after = await read(tableIndex, { phase: "after", plan });
       const verification = compareTableFormat(plan.format, after?.format || after || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
       const attemptedFields = collectTableFormatFields(plan.format);
-      const unsupported = [...new Set([
+      const statusFields = (values) => [...new Set(values || [])].filter((field) => attemptedFields.some((attempted) => fieldMatchesStatus(attempted, field)));
+      const unsupported = statusFields([
         ...(writeResult?.unsupported || []),
+        ...(writeResult?.unsupportedFields || []),
         ...(writeResult?.hostRejectedFields || []),
         ...(after?.unsupported || []),
         ...(after?.unsupportedFields || []),
-      ])];
+      ]);
       const mismatchedFields = verification.mismatches.map((item) => item.path);
-      const attemptedButUnverified = [...new Set([
+      const attemptedButUnverified = statusFields([
         ...(writeResult?.attemptedButUnverified || []),
         ...(writeResult?.attemptedFields || []),
         ...(after?.attemptedButUnverified || []),
         ...(verification.matched ? [] : mismatchedFields),
-      ])].filter((field) => !unsupported.includes(field));
+      ]).filter((field) => !unsupported.includes(field));
       // A host adapter may need to use an API that cannot acknowledge a
       // setter synchronously (for example Word repeat-header or OOXML
       // insertion).  The post-write snapshot is the authoritative result:
@@ -361,6 +384,9 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
       // promoted to applied instead of making an actually verified operation
       // fail.  Explicit unsupported fields remain a hard boundary.
       const unresolvedAttemptedButUnverified = verification.matched ? [] : attemptedButUnverified;
+      const appliedFields = verification.matched
+        ? filterAppliedFields(attemptedFields, [...unsupported, ...unresolvedAttemptedButUnverified])
+        : [];
       let rollback = null;
       if (!verification.matched) {
         try { rollback = await restore?.(tableIndex, before?.format || before || {}); } catch (error) { rollback = { ok: false, error: { code: error.code || "ROLLBACK_FAILED", message: error.message || String(error) } }; }
@@ -378,7 +404,7 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
       results.push({
         tableIndex,
         ok: verification.matched && unsupported.length === 0 && unresolvedAttemptedButUnverified.length === 0,
-        applied: verification.matched ? attemptedFields : [],
+        applied: appliedFields,
         unsupported,
         attemptedButUnverified: unresolvedAttemptedButUnverified,
         warning: verification.matched && unsupported.length === 0 && unresolvedAttemptedButUnverified.length === 0

@@ -291,12 +291,13 @@ function execute(command) {
     const values = state.et.cells[address] || [];
     const result = { host: "et", sheetName, address, values, text: JSON.stringify(values) };
     if (command.input.includeFormulas) result.formulas = state.et.formulas[address] || [];
+    const bounds = simRangeBounds(address);
+    const rowCount = values.length;
+    const columnCount = Math.max(0, ...values.map((row) => row.length));
+    const cellFormats = Array.from({ length: rowCount }, (_, row) => Array.from({ length: columnCount }, (_, column) => simFormatForCell(sheetName, (bounds?.startRow || 1) + row, (bounds?.startColumn || 1) + column)));
+    const displayText = values.map((row, rowIndex) => row.map((value, columnIndex) => simDisplayValue(value, cellFormats[rowIndex]?.[columnIndex])));
+    if (command.input.includeDisplayText) result.displayText = displayText;
     if (command.input.includeFormats) {
-      const bounds = simRangeBounds(address);
-      const rowCount = values.length;
-      const columnCount = Math.max(0, ...values.map((row) => row.length));
-      const cellFormats = Array.from({ length: rowCount }, (_, row) => Array.from({ length: columnCount }, (_, column) => simFormatForCell(sheetName, (bounds?.startRow || 1) + row, (bounds?.startColumn || 1) + column)));
-      const displayText = values.map((row, rowIndex) => row.map((value, columnIndex) => simDisplayValue(value, cellFormats[rowIndex]?.[columnIndex])));
       const rowHeights = Array.from({ length: rowCount }, (_, row) => {
         const height = Number(cellFormats[row]?.find((format) => Number(format?.rowHeight) > 0)?.rowHeight);
         return height > 0 ? { row: row + 1, height } : null;
@@ -608,8 +609,9 @@ function execute(command) {
     const values = suppliedValues
       ? Array.from({ length: rowCount }, (_, row) => Array.from({ length: columnCount }, (_, column) => String(suppliedValues[row]?.[column] ?? "")))
       : [];
+    const tableWidth = columnCount * 72;
     const table = { rowCount, columnCount, values, headerRowBold: Boolean(command.input.headerRowBold), border: command.input.border !== false, alignment: command.input.alignment || "" };
-    table.format = { table: { alignment: table.alignment, borders: { enable: table.border ? 1 : 0, items: [] } }, rowHeights: Array.from({ length: rowCount }, (_, i) => ({ row: i + 1, height: 18, heightRule: 0 })), columnWidths: Array.from({ length: columnCount }, (_, i) => ({ column: i + 1, width: 72 })), mergedCells: [], cells: Array.from({ length: rowCount }, (_, r) => Array.from({ length: columnCount }, (_, c) => ({ row: r + 1, column: c + 1, font: { bold: table.headerRowBold && r === 0 }, paragraph: { alignment: table.alignment }, shading: {}, borders: { enable: table.border ? 1 : 0, items: [] } }))).flat() };
+    table.format = { table: { alignment: table.alignment, width: tableWidth, tableWidth: tableWidth, tableWidthType: "points", preferredWidth: tableWidth, preferredWidthType: 3, allowAutoFit: true, autoFit: true, borders: { enable: table.border ? 1 : 0, items: [] } }, rowHeights: Array.from({ length: rowCount }, (_, i) => ({ row: i + 1, height: 18, heightRule: 0 })), columnWidths: Array.from({ length: columnCount }, (_, i) => ({ column: i + 1, width: 72 })), mergedCells: [], cells: Array.from({ length: rowCount }, (_, r) => Array.from({ length: columnCount }, (_, c) => ({ row: r + 1, column: c + 1, font: { bold: table.headerRowBold && r === 0 }, paragraph: { alignment: table.alignment }, shading: {}, borders: { enable: table.border ? 1 : 0, items: [] } }))).flat() };
     if (command.toolName === "wpp.insert_table_with_layout") {
       table.format.table = { ...(table.format.table || {}), fitToPageWidth: command.input.fitToPageWidth !== false, preferredWidthPercent: command.input.preferredWidthPercent || 100, border: command.input.border !== false };
       table.format.rowHeights = Array.from({ length: rowCount }, (_, i) => ({ row: i + 1, height: 0, heightRule: 0 }));
@@ -785,13 +787,21 @@ function execute(command) {
   function simFormatTargets(table, tableIndex, targets, input) {
     const started = Date.now();
     const accepted = new Set();
+    const unsupportedFields = [];
     for (const target of targets) {
       if (target.row > table.rowCount || target.column > table.columnCount) fail("INVALID_ARGUMENT", "cell index is outside table bounds.", { row: target.row, column: target.column, rowCount: table.rowCount, columnCount: table.columnCount });
-      if (!input.dryRun) simMergeFormat(simCellFormat(table, target.row, target.column), { ...(input.format || {}), row: target.row, column: target.column });
-      Object.keys(input.format || {}).forEach((key) => accepted.add(key));
+      const patch = { ...(input.format || {}) };
+      for (const key of ["numberFormat", "numberFormatLocal"]) {
+        if (patch[key] !== undefined && patch[key] !== null) {
+          unsupportedFields.push(`cells.${key}`);
+          delete patch[key];
+        }
+      }
+      if (!input.dryRun && Object.keys(patch).length) simMergeFormat(simCellFormat(table, target.row, target.column), { ...patch, row: target.row, column: target.column });
+      Object.keys(patch).forEach((key) => accepted.add(key));
     }
     const rangeSafe = Object.keys(input.format || {}).some((key) => ["font", "paragraph", "shading"].includes(key));
-    const out = { host: "wpp", tableIndex, applied: !input.dryRun, dryRun: Boolean(input.dryRun), fastPath: !input.dryRun && input.fastPath !== false && rangeSafe ? "table-range" : "per-cell", hostCallsSaved: !input.dryRun && input.fastPath !== false && rangeSafe ? Math.max(0, targets.length - 1) : 0, affectedCells: targets.length, acceptedFields: [...accepted], durationMs: Date.now() - started };
+    const out = { host: "wpp", tableIndex, applied: !input.dryRun && accepted.size > 0, dryRun: Boolean(input.dryRun), fastPath: !input.dryRun && input.fastPath !== false && rangeSafe ? "table-range" : "per-cell", hostCallsSaved: !input.dryRun && input.fastPath !== false && rangeSafe ? Math.max(0, targets.length - 1) : 0, affectedCells: targets.length, acceptedFields: [...accepted], unsupportedFields: [...new Set(unsupportedFields)], durationMs: Date.now() - started };
     if (input.includeResults) out.results = targets.map((target) => ({ ...target, ok: true, applied: [...accepted] }));
     return out;
   }
@@ -831,7 +841,19 @@ function execute(command) {
   if (command.toolName === "wpp.apply_table_format") {
     const { table, tableIndex } = simTable(command.input);
     const nextFormat = simClone(command.input.format || {});
-    table.format = { ...simFormat(table), ...nextFormat, table: { ...(simFormat(table).table || {}), ...(nextFormat.table || {}) } };
+    const unsupportedFields = [];
+    const sanitizedCells = Array.isArray(nextFormat.cells) ? nextFormat.cells.map((cell) => {
+      const next = { ...(cell || {}) };
+      for (const key of ["numberFormat", "numberFormatLocal"]) {
+        if (next[key] !== undefined && next[key] !== null) {
+          unsupportedFields.push(`cells.${key}`);
+          delete next[key];
+        }
+      }
+      return next;
+    }) : nextFormat.cells;
+    const beforeFormat = simClone(simFormat(table));
+    table.format = { ...beforeFormat, ...nextFormat, table: { ...(beforeFormat.table || {}), ...(nextFormat.table || {}) }, ...(sanitizedCells ? { cells: sanitizedCells } : {}) };
     table.format.rowCount = table.rowCount;
     table.format.columnCount = table.columnCount;
     const groups = new Map();
@@ -843,7 +865,7 @@ function execute(command) {
     const verifyCells = Array.isArray(command.input.verifyCells) ? command.input.verifyCells : [];
     const verification = verifyCells.length ? { host: "wpp", tableIndex, rowCount: table.rowCount, columnCount: table.columnCount, count: verifyCells.length, cells: verifyCells.map((item) => ({ row: item.row, column: item.column, format: simClone(simCellFormat(table, item.row, item.column)) })) } : null;
     const formatGroups = [...groups.values()].map((targets) => ({ affectedCells: targets.length, fastPath: "table-range", hostCallsSaved: Math.max(0, targets.length - 1) }));
-    return { host: "wpp", tableIndex, applied: ["table_format"], formatGroups, rowCount: table.rowCount, columnCount: table.columnCount, verification };
+    return { host: "wpp", tableIndex, applied: ["table_format"], unsupportedFields, formatGroups, rowCount: table.rowCount, columnCount: table.columnCount, verification };
   }
   if (command.toolName === "wpp.format_table_range") {
     const { table, tableIndex } = simTable(command.input);

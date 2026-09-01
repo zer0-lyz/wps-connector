@@ -5,7 +5,7 @@ import { join } from 'node:path';
 const bridgeUrl = process.env.WPS_CONNECTOR_BRIDGE_URL || 'http://127.0.0.1:40215';
 const requestedSessionId = process.env.WPS_SESSION_ID || '';
 const expectedClientVersion = process.env.WPS_EXPECTED_CLIENT_VERSION || '0.2.1';
-const expectedClientBuild = process.env.WPS_EXPECTED_CLIENT_BUILD || '2026.08.30-wps-table-sync-text-format.5';
+const expectedClientBuild = process.env.WPS_EXPECTED_CLIENT_BUILD || '2026.08.30-wps-table-sync-text-format.9';
 const userImagePath = process.env.WPS_ET_IMAGE_PATH || '';
 const regressionImagePath = userImagePath || join(tmpdir(), `connector-suite-regression-${Date.now()}.png`);
 let toolBinding = {};

@@ -1,5 +1,41 @@
 # 操作日志
 
+## 2026-09-01 表格同步显示值与目标样式保留
+
+- 将表格同步从“复制完整格式”收敛为“显示值传输、目标样式保留”，并统一返回 `transferPolicy`、`bindingCount` 和 `targetStylesPreserved`。
+- 修复 WPS add-in 在 `includeFormats:false` 时未返回逐单元格显示值的问题；优先整块 `Range.Text`，再走数字格式矩阵和受限单元格回退。
+- 面板允许同一数据源多次插入并绑定不同 Writer 表格，移除一次性“待绑定”语义；刷新 build/cache。
+- 更新 E2E：验证 `1,234.50` 显示值、禁止空格式时猜测千分位、一源两目标、后续同步不改 Writer 样式、取消不建立绑定。
+- 将功能更完整的表格格式模板 v2 核心提升为 Platform 正式共享源，修复共享同步覆盖 WPS 事务接口的漂移。
+- WPS `npm run check`、`npm test`、`git diff --check` 通过；已同步插件 runtime 并原子部署正式 runtime，保留回滚备份。
+- 当前无在线 WPS session，未改动真实文档；保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+
+## 2026-08-31 表格格式模块专项收尾核验
+
+- 复核分支 `codex/table-format-module-debug-0.2.1`、基线 `ed1e44d`、HEAD `9df5c2b` 和 dirty state；未 reset、未覆盖已有修改。
+- 完成 Office HTTPS 运行态核验：`40116` 直接返回 `protocol=https`；`40115` 明确为 HTTP fallback。Office Word `onlyOnline` session 为 0；WPS ET/WPP 在线但未绑定本任务，未写入任何真实文档。
+- 发现 `/Users/zer0y/plugins/office-connector` 的 4 个 Office 运行文件落后正式 runtime；先备份到 `/Users/zer0y/Library/Application Support/Connector Suite/backups/office-plugin/20260831-table-format-module-office`，再同步 `templateCore.js`、`taskpane.js`、Office Bridge 和 `tests/e2e.js`，同步后逐文件 SHA-256 一致。
+- 首次运行安装插件 runtime 测试发现缺少 `sql.js` 依赖；在已备份的插件 runtime 内执行生产依赖安装，随后 `npm test` 通过，未改动插件配置、证书或用户数据。
+- 复核源码/WPS 插件/WPS 正式 runtime 的共享核心和 Add-in 文件 SHA-256 一致；WPS 正式 runtime 备份为 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260831-table-format-module-wps/runtime`，Office 正式 runtime 备份为 `/Users/zer0y/Library/Application Support/Connector Suite/backups/office-runtime/20260831-table-format-module-office/runtime`。
+- `npm run check`、指定 `node --check`、`git diff --check`、源码 `npm test`、WPS 正式 runtime `npm test`、Office 正式 runtime `npm test` 和 Office 安装插件 runtime `npm test` 通过；结果属于模拟器/自动化测试，真实 WPS/Word 格式回读、保存重开和耗时/宿主调用统计继续保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+- 未提交代码、未上传 GitHub、未生成安装包；保留所有备份和回滚路径。
+
+## 2026-08-31
+
+- 根据 WPS Writer 截图排查“创建 Writer 表格 34% 后卡住且无终止入口”：确认当前宿主仍为旧 `.8` 页面，进度行三列固定布局把停止按钮挤出窄面板。
+- 将表格同步进度区改为进度条整行显示、停止按钮固定在下一行右侧；取消请求失败时保留可重试能力；客户端 build/cache 更新为 `2026.08.30-wps-table-sync-text-format.9`。
+- 保留已有取消事务：队列命令可立即取消；已送入 WPS 的调用采用最佳努力取消，返回后禁止格式化、绑定和保存，并报告可能的部分表格。
+- `npm run check`、`npm test`、`git diff --check` 通过，新增窄面板停止按钮静态回归断言通过。
+- 已同步插件 runtime，原子部署正式 runtime，备份为 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260831-001634/runtime`；Bridge/Add-in 重启且健康。
+- 运行态在线 WPS 会话仍上报旧 `.8`，真实 Writer 插入、停止按钮和保存回读保持 `PENDING_REAL_HOST_ACCEPTANCE`；未重复改动业务文档。
+
+## 2026-08-30
+
+- 修复 WPS 表格选区安全检查误报：`wpsConnectorRangeShape()` 补充 `cellCount`，避免正常的 `B12:H21` 被显示为 `undefined 个单元格` 并误判为 `ET_RANGE_TOO_LARGE`。
+- 面板端增加 `cellCount` 缺失时的行数×列数兜底；Add-in/cache 更新为 `2026.08.30-wps-table-sync-text-format.8`。
+- `npm run check`、`npm test`、`git diff --check` 通过；已同步插件 runtime，并原子部署正式 runtime，备份为 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-234353/runtime`。
+- 现场 WPS 页面仍为旧 `.7`，等待重开 WPS/Connector 面板后进行真实“加入清单”验收。
+
 ## 2026-08-30
 
 - 修复 WPS 表格“加入清单”慢：面板不再强制全量格式扫描，改用轻量 `profile` 采样；避免创建数据源时重复读取选区，并避免成功后再次完整刷新同步视图。

@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { tools } from "../shared/toolSchemas.js";
-import { asMatrix, cleanCellValue, mapSyncRows, mergeRowsByKey, normalizeSyncConfig } from "../../vendor/connector-shared/tableSyncCore.js";
+import { asMatrix, cleanCellValue, mapSyncRows, mergeRowsByKey, normalizeNumericDisplayText, normalizeSyncConfig } from "../../vendor/connector-shared/tableSyncCore.js";
+import { normalizeTransferPolicy } from "../../vendor/connector-shared/modules/table-sync/tableSyncCore.js";
 import {
   applyTableFormatTransactions,
   compareTableFormat,
@@ -36,6 +37,8 @@ const maxOfflineSessions = Number(process.env.WPS_CONNECTOR_MAX_OFFLINE_SESSIONS
 const commandPumpGraceMs = Number(process.env.WPS_CONNECTOR_COMMAND_PUMP_GRACE_MS || 5000);
 const commandPumpStaleMs = Number(process.env.WPS_CONNECTOR_COMMAND_PUMP_STALE_MS || 5000);
 const tableSyncSourceReadTimeoutMs = Number(process.env.WPS_CONNECTOR_TABLE_SYNC_SOURCE_READ_TIMEOUT_MS || 10000);
+const tableSyncSourceMaxCells = Number(process.env.WPS_CONNECTOR_TABLE_SYNC_SOURCE_MAX_CELLS || 100000);
+const tableSyncSourceChunkRows = Number(process.env.WPS_CONNECTOR_TABLE_SYNC_SOURCE_CHUNK_ROWS || 250);
 const addinUrl = (process.env.WPS_CONNECTOR_ADDIN_URL || "http://127.0.0.1:3891").replace(/\/$/, "");
 const runtimeRoot = process.env.WPS_CONNECTOR_RUNTIME_ROOT || join(homedir(), ".local/share/wps-connector/runtime");
 const catalogPath = process.env.WPS_CONNECTOR_CATALOG_PATH || join(runtimeRoot, "codex-catalog.snapshot.json");
@@ -117,6 +120,8 @@ function startTableSyncOperation(input = {}, details = {}) {
     totalCells: 0,
     stageIndex: 0,
     stageCount: 6,
+    cancelRequested: false,
+    partialPossible: false,
     startedAt: nowIso(),
     updatedAt: nowIso(),
     ...details,
@@ -138,6 +143,8 @@ function publicTableSyncOperation(operation) {
     operationId: operation.operationId,
     tool: operation.tool,
     status: operation.status,
+    cancelRequested: Boolean(operation.cancelRequested),
+    partialPossible: Boolean(operation.partialPossible),
     phase: operation.phase,
     phaseLabel: operation.phaseLabel,
     progress: Number(operation.progress || 0),
@@ -153,7 +160,58 @@ function publicTableSyncOperation(operation) {
     completedAt: operation.completedAt || null,
     elapsedMs: Math.max(0, Date.now() - Date.parse(operation.startedAt || nowIso())),
     error: operation.error || null,
+    cancel: operation.cancel || null,
   };
+}
+function tableSyncCancellationError(operation) {
+  return {
+    code: "TABLE_SYNC_CANCELLED",
+    message: "表格插入已停止；WPS 可能已经创建了部分表格，未建立绑定。",
+    details: {
+      operationId: operation?.operationId || "",
+      phase: operation?.phase || "",
+      tableIndex: operation?.tableIndex ?? null,
+      partialPossible: Boolean(operation?.partialPossible || (operation?.tableIndex !== undefined && operation?.tableIndex !== null)),
+    },
+    status: 409,
+  };
+}
+function assertTableSyncOperationActive(operation) {
+  if (operation?.cancelRequested || operation?.status === "cancel_requested" || operation?.status === "cancelled") throw tableSyncCancellationError(operation);
+}
+function removeQueuedCommand(session, commandId) {
+  if (!session || !Array.isArray(session.queue)) return false;
+  const before = session.queue.length;
+  session.queue = session.queue.filter((queuedId) => queuedId !== commandId);
+  return session.queue.length !== before;
+}
+function requestTableSyncCancellation(operation) {
+  if (!operation) return { ok: false, status: 404 };
+  if (["completed", "failed", "cancelled"].includes(operation.status)) return { ok: true, cancellable: false, operation };
+  operation.cancelRequested = true;
+  operation.cancelRequestedAt = nowIso();
+  operation.status = "cancel_requested";
+  operation.phase = "cancel_requested";
+  operation.phaseLabel = "正在停止插入";
+  const command = operation.activeCommandId ? commands.get(operation.activeCommandId) : null;
+  let commandState = "none";
+  if (command && ["queued", "delivered"].includes(command.status)) {
+    command.cancelRequested = true;
+    const cancellation = tableSyncCancellationError(operation);
+    if (command.status === "queued") {
+      removeQueuedCommand(sessions.get(command.sessionId), command.commandId);
+      command.status = "cancelled";
+      command.error = cancellation;
+      command.reject?.(cancellation);
+      commandState = "queued_cancelled";
+    } else {
+      // A delivered COM call cannot be safely interrupted. Its result route
+      // will reject the waiting operation when the host call returns.
+      commandState = "in_flight_best_effort";
+    }
+  }
+  operation.cancel = { requestedAt: operation.cancelRequestedAt, commandState, bestEffort: commandState === "in_flight_best_effort" };
+  return { ok: true, cancellable: true, operation };
 }
 function sendJson(res, status, payload) {
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type" });
@@ -185,6 +243,7 @@ function statusForError(error) {
   if (code.endsWith("_NOT_FOUND") || code === "AGENT_TURN_NOT_FOUND") return 404;
   if (code === "HOST_UNSUPPORTED") return 501;
   if (code === "COMMAND_TIMEOUT") return 504;
+  if (code === "TABLE_SYNC_CANCELLED") return 409;
   return 500;
 }
 async function readJson(req) { let body = ""; for await (const chunk of req) body += chunk; if (!body.trim()) return {}; return JSON.parse(body); }
@@ -961,11 +1020,18 @@ function assertCommandPumpReady(session, toolName) {
   if (pump.active === false) tableSyncError("SESSION_COMMAND_PUMP_INACTIVE", `WPS 会话当前没有响应命令泵，无法执行 ${toolName}。`, { sessionId: session.sessionId, documentName: session.documentName, documentKey: session.documentKey, toolName, commandPump: pump }, 409);
 }
 async function runSessionCommand(session, toolName, input = {}, options = {}) {
+  assertTableSyncOperationActive(options.operation);
   if (!session || session.status !== "online") tableSyncError("SESSION_OFFLINE", "目标 WPS 文档不在线，请打开对应面板后重试。", { toolName, sessionId: session?.sessionId }, 409);
   if (options.requireCommandPump) assertCommandPumpReady(session, toolName);
   const command = enqueueCommand(session, toolName, { ...input, sessionId: session.sessionId });
-  const result = await waitForCommand(command, options.timeoutMs);
-  return { command, result };
+  if (options.operation) options.operation.activeCommandId = command.commandId;
+  try {
+    const result = await waitForCommand(command, options.timeoutMs);
+    assertTableSyncOperationActive(options.operation);
+    return { command, result };
+  } finally {
+    if (options.operation?.activeCommandId === command.commandId) options.operation.activeCommandId = "";
+  }
 }
 function normalizeWpsMatrix(value) {
   if (!Array.isArray(value)) return [[value ?? ""]];
@@ -981,7 +1047,8 @@ function rectangularMatrix(value, rowCount, columnCount, fallback = "") {
 }
 function normalizeEtDisplayCell(value, display, format = {}) {
   if (value === null || value === undefined) return "";
-  const hostText = display === undefined || display === null ? "" : String(display);
+  const rawHostText = display === undefined || display === null ? "" : String(display);
+  const hostText = normalizeNumericDisplayText(value, rawHostText);
   const numericValue = typeof value === "number"
     ? value
     : typeof value === "string" && /^[-+]?\d+(?:\.\d+)?$/.test(value.trim())
@@ -1064,6 +1131,17 @@ function normalizeEtFormatSnapshot(readResult, rows) {
     enabled: Boolean(hasCellFormats || rowHeights.length || columnWidths.length || raw.displayText || readResult?.displayText),
   };
 }
+function normalizeEtDisplayText(readResult, rows) {
+  const sourceRows = normalizeWpsMatrix(rows);
+  const rowCount = Math.max(0, sourceRows.length);
+  const columnCount = Math.max(0, ...sourceRows.map((row) => row.length));
+  const displayText = rectangularMatrix(readResult?.displayText, rowCount, columnCount, null);
+  return displayText.map((row, rowIndex) => row.map((cell, columnIndex) => normalizeEtDisplayCell(
+    sourceRows[rowIndex]?.[columnIndex],
+    cell,
+    {},
+  )));
+}
 const ET_TEXT_FORMAT_PROFILE_FIELDS = ["fontName", "fontNameFarEast", "fontNameAscii", "fontSize", "bold", "italic", "underline", "fontColor", "indentLevel", "leftIndent", "firstLineIndent", "rightIndent"];
 function etFormatSnapshotNeedsTextRefresh(snapshot) {
   // A full cell snapshot remains usable even when it was produced by an older
@@ -1101,7 +1179,8 @@ function sourceFormatAt(snapshot, row, column) {
   return snapshot?.cells?.[row]?.[column] && typeof snapshot.cells[row][column] === "object" ? snapshot.cells[row][column] : {};
 }
 function fallbackEtNumberDisplay(value, display) {
-  const hostText = display === undefined || display === null ? "" : String(display);
+  const rawHostText = display === undefined || display === null ? "" : String(display);
+  const hostText = normalizeNumericDisplayText(value, rawHostText);
   const rawText = hostText.trim() || String(value ?? "").trim();
   if (!/^[-+]?\d+(?:\.\d+)?$/.test(rawText)) return hostText || String(value ?? "");
   if (typeof value === "string" && /^[-+]?0\d/.test(value.trim())) return hostText || String(value);
@@ -1241,6 +1320,80 @@ function mapEtRowsWithFormats(rows, snapshot, config) {
     heights: entries.map((entry) => entry.height),
   };
 }
+function mapEtRowsWithDisplayText(rows, displayText, config) {
+  const sourceRows = normalizeWpsMatrix(rows);
+  const sourceDisplayText = normalizeEtDisplayText({ displayText }, sourceRows);
+  const entryFor = (row, sourceIndex) => ({
+    sourceIndex,
+    values: config.columnMapping.map((sourceColumn) => row[sourceColumn - 1] ?? ""),
+    display: config.columnMapping.map((sourceColumn) => sourceDisplayText[sourceIndex]?.[sourceColumn - 1] ?? String(row[sourceColumn - 1] ?? "")),
+  });
+  const headerEntries = sourceRows.slice(0, config.headerRowCount).map((row, index) => entryFor(row, index));
+  let dataEntries = sourceRows.slice(config.headerRowCount).map((row, index) => entryFor(row, index + config.headerRowCount));
+  if (config.sort.enabled) {
+    const sortIndex = config.sort.column - 1;
+    dataEntries = [...dataEntries].sort((left, right) => {
+      const leftValue = cleanCellValue(left.values[sortIndex]);
+      const rightValue = cleanCellValue(right.values[sortIndex]);
+      const leftOther = config.sort.otherItemsBottom && leftValue === "其他";
+      const rightOther = config.sort.otherItemsBottom && rightValue === "其他";
+      if (leftOther !== rightOther) return leftOther ? 1 : -1;
+      const comparison = leftValue.localeCompare(rightValue, "zh-CN", { numeric: true });
+      return config.sort.direction === "asc" ? comparison : -comparison;
+    });
+  }
+  const header = config.syncHeader ? headerEntries : [];
+  const entries = [...header, ...dataEntries];
+  return {
+    sourceRows,
+    headerEntries,
+    dataEntries,
+    entries,
+    values: entries.map((entry) => entry.values),
+    display: entries.map((entry) => entry.display),
+  };
+}
+function mergeEtDisplayRowsByRawRows(mapped, mappedDisplay, targetValues, config, targetColumnCount, rowMerge) {
+  const pad = (row) => {
+    const next = Array.isArray(row) ? [...row] : [];
+    while (next.length < targetColumnCount) next.push("");
+    return next.slice(0, targetColumnCount);
+  };
+  const sourceEntries = (mapped.mappedDataRows || []).map((values, index) => ({
+    values: pad(values),
+    display: pad(mappedDisplay.mappedDataRows?.[index] || values).map((cell) => String(cell ?? "")),
+    index,
+  }));
+  if (!rowMerge?.enabled) return sourceEntries.map((entry) => entry.display);
+  const headerRowCount = config.syncHeader ? 0 : Math.max(0, Math.floor(Number(config.headerRowCount || 0)));
+  const targetRows = asMatrix(targetValues || []).slice(headerRowCount).map(pad);
+  const keyColumn = Math.max(1, Math.floor(Number(config.rowMatch?.keyColumn || 1)));
+  const keyOf = (row) => cleanCellValue(row?.[keyColumn - 1]);
+  const sourceByKey = new Map();
+  for (const entry of sourceEntries) {
+    const key = keyOf(entry.values);
+    if (!key) continue;
+    if (!sourceByKey.has(key)) sourceByKey.set(key, []);
+    sourceByKey.get(key).push(entry);
+  }
+  const used = new Set();
+  const output = [];
+  for (const targetRow of targetRows) {
+    const match = (sourceByKey.get(keyOf(targetRow)) || []).find((entry) => !used.has(entry.index));
+    if (match) {
+      used.add(match.index);
+      output.push(match.display);
+    } else if (config.rowMatch?.preserveUnmatchedWordRows !== false) {
+      output.push(targetRow.map((cell) => String(cell ?? "")));
+    }
+  }
+  if (config.rowMatch?.appendNewExcelRows !== false) {
+    for (const entry of sourceEntries) {
+      if (!used.has(entry.index)) output.push(entry.display);
+    }
+  }
+  return output;
+}
 function mergeEtRowsWithFormats(mapped, targetValues, config, targetColumnCount) {
   if (config.syncHeader) return { values: mapped.values, display: mapped.display, formats: mapped.formats, heights: mapped.heights, matchedCount: 0, preservedCount: 0, appendedCount: 0 };
   const targetRows = asMatrix(targetValues || []).map((row) => {
@@ -1375,7 +1528,7 @@ function formatVerificationCells(formatPayload, limit = 8) {
   }
   return selected.slice(0, limit);
 }
-async function applyEtWppFormatSnapshot(wppSession, tableIndex, formatPayload) {
+async function applyEtWppFormatSnapshot(wppSession, tableIndex, formatPayload, operation = null) {
   if (!formatPayload) return { applied: false, verified: false, skipped: true, reason: "源表没有可迁移的格式快照，已跳过格式写入。" };
   const verificationCells = formatVerificationCells(formatPayload);
   const requestedVerification = { ...formatPayload, cells: verificationCells };
@@ -1384,7 +1537,11 @@ async function applyEtWppFormatSnapshot(wppSession, tableIndex, formatPayload) {
     format: formatPayload,
     verifyCells: verificationCells.map((cell) => ({ row: cell.row, column: cell.column })),
     verifyFields: requestedWppVerificationFields(verificationCells),
-  });
+    skipMergedCellScan: true,
+    // The newly inserted target table is known to have no merged cells. The
+    // source merge map remains in formatPayload and is applied afterwards.
+    mergedCells: [],
+  }, { operation });
   const readback = apply.result?.verification || null;
   const verification = verificationCells.length
     ? (readback ? compareWppFormatSubset(requestedVerification, readback) : { verified: false, checkedCells: verificationCells.length, mismatches: [{ field: "verification", expected: "sample readback", actual: "missing" }] })
@@ -1403,6 +1560,7 @@ async function applyEtWppFormatSnapshot(wppSession, tableIndex, formatPayload) {
       hostCallsSaved: (apply.result?.formatGroups || []).reduce((total, group) => total + Number(group.hostCallsSaved || 0), 0),
       fallbackCellCount: (apply.result?.formatGroups || []).reduce((total, group) => total + Number(group.fallbackCellCount || 0), 0),
       formatFastPaths: (apply.result?.formatGroups || []).map((group) => group.fastPath).filter(Boolean),
+      mergedCellScan: apply.result?.mergedCellScan || "unknown",
     },
     mismatchSummary: verification.mismatches.reduce((summary, item) => {
       summary[item.field] = (summary[item.field] || 0) + 1;
@@ -1460,20 +1618,11 @@ function publicEtWppDataSource(source) {
     address: localEtAddress(source.sheetName, source.address),
     rowCount: Number(source.rowCount || 0),
     columnCount: Number(source.columnCount || 0),
+    transferPolicy: normalizeTransferPolicy(source.transferPolicy),
     execution: etSourceExecution(source),
-    formatting: source.formatSnapshot ? {
-      enabled: Boolean(source.formatSnapshot.enabled),
-      version: source.formatSnapshot.version || 1,
-      cellCount: Number(source.formatSnapshot.rowCount || 0) * Number(source.formatSnapshot.columnCount || 0),
-      rowHeights: (source.formatSnapshot.rowHeights || []).length,
-      columnWidths: (source.formatSnapshot.columnWidths || []).length,
-      readStrategy: source.formatSnapshot.readStrategy || "full",
-      sampleCount: Number(source.formatSnapshot.formatSampleCount || 0),
-      quality: source.formatSnapshot.formatQuality || "unknown",
-      coverage: etFormatSnapshotCoverage(source.formatSnapshot),
-      warnings: Array.isArray(source.formatSnapshot.formatWarnings) ? source.formatSnapshot.formatWarnings.slice(0, 20) : [],
-    } : { enabled: false, version: 0, cellCount: 0, rowHeights: 0, columnWidths: 0, readStrategy: "none", sampleCount: 0 },
+    formatting: { enabled: false, ignoredLegacySnapshot: Boolean(source.formatSnapshot) },
     status: boundSyncs.length ? "bound" : "pending",
+    bindingCount: boundSyncs.length,
     boundSyncs,
     createdAt: source.createdAt,
     updatedAt: source.updatedAt,
@@ -1487,7 +1636,8 @@ function publicEtWppTableSync(sync) {
     sourceId: sync.sourceId || "",
     source: sync.source || null,
     target: sync.target || null,
-    valueSource: sync.valueSource || "values",
+    valueSource: sync.valueSource || "displayText",
+    transferPolicy: normalizeTransferPolicy(sync.transferPolicy),
     allowStructuralChanges: Boolean(sync.allowStructuralChanges),
     config: sync.config || null,
     createdAt: sync.createdAt,
@@ -1515,16 +1665,20 @@ async function createEtWppDataSource(input = {}) {
     sessionId: etSession.sessionId,
     sheetName,
     address,
-    includeFormats: input.preserveFormatting !== false,
-    includeCellFormats: input.preserveFormatting !== false,
-    includeDisplayText: input.preserveFormatting !== false,
-    formatMode: input.preserveFormatting !== false ? etFormatReadMode(input, "full") : "full",
-    formatProfileHeaderRows: Number(input.headerRowCount ?? 1),
+    includeFormats: false,
+    includeCellFormats: false,
+    includeDisplayText: true,
+    formatMode: "values",
+    maxCellCount: tableSyncSourceMaxCells,
+    chunkRows: tableSyncSourceChunkRows,
   });
   const rows = normalizeWpsMatrix(read.result?.values ?? values);
+  const displayText = normalizeEtDisplayText(read.result, rows);
   const sourceId = input.sourceId || randomUUID();
   const existingIndex = tableSyncsStore.sources.findIndex((source) => source.sourceId === sourceId);
   const previous = existingIndex >= 0 ? tableSyncsStore.sources[existingIndex] : null;
+  const previousCache = tableSyncSourceCache.get(sourceId);
+  const retainedLegacyFormatSnapshot = previous?.formatSnapshot || previousCache?.formatSnapshot || null;
   const now = nowIso();
   const source = {
     sourceId,
@@ -1535,15 +1689,18 @@ async function createEtWppDataSource(input = {}) {
     address: localEtAddress(sheetName, address),
     rowCount: rows.length,
     columnCount: Math.max(0, ...rows.map((row) => row.length)),
-    formatSnapshot: input.preserveFormatting === false ? null : normalizeEtFormatSnapshot(read.result, rows),
+    transferPolicy: normalizeTransferPolicy(previous?.transferPolicy),
+    // Keep legacy state for compatibility with independent format-template
+    // tools, but table synchronization never reads or applies this snapshot.
+    formatSnapshot: retainedLegacyFormatSnapshot,
     createdAt: previous?.createdAt || now,
     updatedAt: now,
   };
   if (existingIndex >= 0) tableSyncsStore.sources[existingIndex] = source; else tableSyncsStore.sources.push(source);
-  tableSyncSourceCache.set(sourceId, { values: rows, displayText: read.result?.displayText || null, formatSnapshot: source.formatSnapshot, cachedAt: now });
+  tableSyncSourceCache.set(sourceId, { values: rows, displayText, formatSnapshot: retainedLegacyFormatSnapshot, cachedAt: now });
   await writeTableSyncSourceCache();
   await saveTableSyncs();
-  return { created: existingIndex < 0, source: publicEtWppDataSource(source), selection, preview: { values: rows.slice(0, 5), rowCount: source.rowCount, columnCount: source.columnCount }, formatting: source.formatSnapshot ? { enabled: source.formatSnapshot.enabled, rowCount: source.formatSnapshot.rowCount, columnCount: source.formatSnapshot.columnCount } : { enabled: false } };
+  return { created: existingIndex < 0, source: publicEtWppDataSource(source), selection, preview: { values: rows.slice(0, 5), displayText: displayText.slice(0, 5), rowCount: source.rowCount, columnCount: source.columnCount }, data: { valueSource: "displayText", displayTextAvailable: displayText.some((row) => row.some((cell) => String(cell) !== "")) }, formatting: { enabled: false, ignoredLegacySnapshot: Boolean(retainedLegacyFormatSnapshot) } };
 }
 async function unbindEtWppDataSource(input = {}) {
   const sourceId = String(input.sourceId || "").trim();
@@ -1573,7 +1730,6 @@ async function createEtWppTableSync(input = {}, options = {}) {
   if (input.sourceId && !registeredSource) tableSyncError("ET_WPP_DATA_SOURCE_NOT_FOUND", `WPS 表格数据源不存在：${input.sourceId}`, {}, 404);
   const etSession = registeredSource ? findOnlineDocumentSession("et", registeredSource.documentKey) : findOnlineHostSession("et", input.etSessionId);
   const cachedSource = registeredSource ? tableSyncSourceCache.get(registeredSource.sourceId) : null;
-  const cachedFormatSnapshot = registeredSource ? (cachedSource?.formatSnapshot || registeredSource.formatSnapshot || null) : null;
   const cachedRows = Array.isArray(options.sourceRows) ? options.sourceRows : cachedSource?.values;
   const usingCachedSource = !etSession && registeredSource && Array.isArray(cachedRows);
   if (!etSession && !usingCachedSource) tableSyncError("NO_ACTIVE_ET_SESSION", "源 WPS 表格文档不在线。", { sourceId: input.sourceId || "", documentKey: registeredSource?.documentKey || "", cachedSourceAvailable: Boolean(registeredSource && tableSyncSourceCache.has(registeredSource.sourceId)) }, 404);
@@ -1583,29 +1739,32 @@ async function createEtWppTableSync(input = {}, options = {}) {
   const sourceRead = options.sourceReadResult
     ? { result: options.sourceReadResult }
     : etSession
-      ? await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: registeredSource?.sheetName || input.sheetName, address: registeredSource?.address || input.address, includeFormats: input.refreshFormatting === true || !cachedFormatSnapshot, includeCellFormats: input.refreshFormatting === true || !cachedFormatSnapshot, includeDisplayText: input.refreshFormatting === true || !cachedFormatSnapshot, formatMode: input.refreshFormatting === true ? "full" : "profile", formatProfileHeaderRows: Number(input.headerRowCount ?? 1) })
-      : { result: { values: cachedRows, displayText: cachedSource?.displayText || null, formatSnapshot: cachedSource?.formatSnapshot || null, sheetName: registeredSource?.sheetName || input.sheetName } };
+      ? await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: registeredSource?.sheetName || input.sheetName, address: registeredSource?.address || input.address, includeFormats: false, includeCellFormats: false, includeDisplayText: true, formatMode: "values", maxCellCount: tableSyncSourceMaxCells, chunkRows: tableSyncSourceChunkRows }, { operation: options.operation })
+      : { result: { values: cachedRows, displayText: cachedSource?.displayText || null, sheetName: registeredSource?.sheetName || input.sheetName } };
   const sourceRows = Array.isArray(options.sourceRows) ? options.sourceRows : normalizeWpsMatrix(sourceRead.result?.values);
+  const sourceDisplayText = normalizeEtDisplayText(sourceRead.result, sourceRows);
   if (registeredSource) {
-    const sourceFormatSnapshot = sourceRead.result?.formatSnapshot || options.sourceFormatSnapshot || registeredSource.formatSnapshot || cachedSource?.formatSnapshot || null;
-    registeredSource.formatSnapshot = sourceFormatSnapshot ? normalizeEtFormatSnapshot({ ...sourceRead.result, formatSnapshot: sourceFormatSnapshot }, sourceRows) : null;
     registeredSource.rowCount = sourceRows.length;
     registeredSource.columnCount = Math.max(0, ...sourceRows.map((row) => row.length));
     registeredSource.updatedAt = nowIso();
     if (sourceRows.length && sourceRows[0]?.length) {
-      tableSyncSourceCache.set(registeredSource.sourceId, { values: sourceRows, displayText: sourceRead.result?.displayText || cachedSource?.displayText || null, formatSnapshot: registeredSource.formatSnapshot, cachedAt: registeredSource.updatedAt });
+      tableSyncSourceCache.set(registeredSource.sourceId, { values: sourceRows, displayText: sourceDisplayText, formatSnapshot: registeredSource.formatSnapshot || cachedSource?.formatSnapshot || null, cachedAt: registeredSource.updatedAt });
       await writeTableSyncSourceCache();
     }
     if (options.skipRegisteredSourceSave !== true) await saveTableSyncs();
   }
   const targetTable = options.targetTable || null;
-  const tableRead = targetTable ? null : await runSessionCommand(wppSession, "wpp.list_tables", { sessionId: wppSession.sessionId, includeValues: false, maxTables: 200 });
+  const tableRead = targetTable ? null : await runSessionCommand(wppSession, "wpp.list_tables", { sessionId: wppSession.sessionId, includeValues: false, maxTables: 200 }, { operation: options.operation });
   const resolvedTargetTable = targetTable || (tableRead.result?.tables || []).find((table) => Number(table.tableIndex ?? table.index) === tableIndex);
   if (!resolvedTargetTable) tableSyncError("WPP_TABLE_NOT_FOUND", "目标 WPS 文字表格不存在。", { tableIndex, tableCount: tableRead?.result?.count || 0 }, 404);
   const config = normalizeSyncConfig(input, Math.max(0, ...sourceRows.map((row) => row.length)), Number(resolvedTargetTable.columnCount || 0));
   const syncId = input.syncId || randomUUID();
   const existingIndex = tableSyncsStore.syncs.findIndex((item) => item.syncId === syncId);
   const previous = existingIndex >= 0 ? tableSyncsStore.syncs[existingIndex] : null;
+  const anchorTag = String(input.anchorTag || previous?.target?.anchorTag || `wps-sync-${syncId}`);
+  assertTableSyncOperationActive(options.operation);
+  const anchorCommand = options.anchorResult || await runSessionCommand(wppSession, "wpp.ensure_table_sync_anchor", { sessionId: wppSession.sessionId, tableIndex, anchorTag }, { operation: options.operation });
+  const anchor = anchorCommand?.result || anchorCommand || {};
   const now = nowIso();
   const sync = {
     syncId,
@@ -1613,8 +1772,9 @@ async function createEtWppTableSync(input = {}, options = {}) {
     name: String(input.name || "").trim() || registeredSource?.name || "WPS 表格同步",
     sourceId: registeredSource?.sourceId || input.sourceId || "",
     source: { documentKey: etSession?.documentKey || registeredSource?.documentKey || documentKeyFor(etSession), documentName: etSession?.documentName || registeredSource?.documentName || "", sheetName: sourceRead.result?.sheetName || registeredSource?.sheetName || input.sheetName || "", address: localEtAddress(sourceRead.result?.sheetName || registeredSource?.sheetName || input.sheetName, registeredSource?.address || input.address) },
-    target: { documentKey: wppSession.documentKey || documentKeyFor(wppSession), documentName: wppSession.documentName, fallbackTableIndex: tableIndex, anchorTag: `wps-sync-${syncId}` },
-    valueSource: input.valueSource || "values",
+    target: { documentKey: wppSession.documentKey || documentKeyFor(wppSession), documentName: wppSession.documentName, fallbackTableIndex: tableIndex, anchorTag: anchor.anchorTag || anchorTag },
+    valueSource: input.valueSource || "displayText",
+    transferPolicy: normalizeTransferPolicy(input.transferPolicy || registeredSource?.transferPolicy || previous?.transferPolicy),
     allowStructuralChanges: input.allowStructuralChanges !== false,
     config,
     createdAt: previous?.createdAt || now,
@@ -1624,20 +1784,31 @@ async function createEtWppTableSync(input = {}, options = {}) {
   };
   if (existingIndex >= 0) tableSyncsStore.syncs[existingIndex] = sync; else tableSyncsStore.syncs.push(sync);
   await saveTableSyncs();
-  return { created: existingIndex < 0, mapping: publicEtWppTableSync(sync), sourceShape: { rowCount: sourceRows.length, columnCount: Math.max(0, ...sourceRows.map((row) => row.length)) }, targetTable: resolvedTargetTable };
+  return { created: existingIndex < 0, mapping: publicEtWppTableSync(sync), anchor, sourceShape: { rowCount: sourceRows.length, columnCount: Math.max(0, ...sourceRows.map((row) => row.length)) }, targetTable: resolvedTargetTable };
 }
 async function insertEtWppDataSource(input = {}) {
   const operation = startTableSyncOperation(input, { sourceId: String(input.sourceId || "") });
   try {
     const result = await insertEtWppDataSourceInternal(input, operation);
+    assertTableSyncOperationActive(operation);
     updateTableSyncOperation(operation, { status: "completed", phase: "complete", phaseLabel: "插入并绑定完成", progress: 100, completedAt: nowIso(), tableIndex: result.insert?.tableIndex ?? null, sourceReadMode: result.sourceReadMode || "" });
     return { ...result, operationId: operation.operationId, progress: publicTableSyncOperation(operation) };
   } catch (error) {
-    updateTableSyncOperation(operation, { status: "failed", phase: "failed", phaseLabel: "插入失败", error: { code: error?.code || "TOOL_FAILED", message: error?.message || String(error), details: error?.details || {} }, completedAt: nowIso() });
+    const cancelled = operation.cancelRequested || error?.code === "TABLE_SYNC_CANCELLED";
+    const cancellation = cancelled ? tableSyncCancellationError(operation) : null;
+    updateTableSyncOperation(operation, {
+      status: cancelled ? "cancelled" : "failed",
+      phase: cancelled ? "cancelled" : "failed",
+      phaseLabel: cancelled ? "已停止插入" : "插入失败",
+      error: cancelled ? cancellation : { code: error?.code || "TOOL_FAILED", message: error?.message || String(error), details: error?.details || {} },
+      completedAt: nowIso(),
+      cancel: cancelled ? { ...(operation.cancel || {}), completedAt: nowIso(), partialPossible: Boolean(operation.partialPossible || (operation.tableIndex !== null && operation.tableIndex !== undefined)) } : operation.cancel,
+    });
     throw error;
   }
 }
 async function insertEtWppDataSourceInternal(input = {}, operation) {
+  assertTableSyncOperationActive(operation);
   const source = tableSyncsStore.sources.find((item) => item.sourceId === input.sourceId);
   if (!source) tableSyncError("ET_WPP_DATA_SOURCE_NOT_FOUND", `WPS 表格数据源不存在：${input.sourceId}`, {}, 404);
   updateTableSyncOperation(operation, { sourceId: source.sourceId, phase: "preflight", phaseLabel: "检查源表和目标文档", progress: 8, stageIndex: 1, totalCells: Number(source.rowCount || 0) * Number(source.columnCount || 0) });
@@ -1647,127 +1818,66 @@ async function insertEtWppDataSourceInternal(input = {}, operation) {
   if (!etSession && !useCachedSource) tableSyncError("NO_ACTIVE_ET_SESSION", "源 WPS 表格文档不在线，且当前 bridge 没有可用的数据快照。", { sourceId: source.sourceId, documentKey: source.documentKey, cachedSourceAvailable: false, execution: etSourceExecution(source) }, 409);
   const wppSession = findOnlineHostSession("wpp", input.wppSessionId || input.wordSessionId);
   if (!wppSession) tableSyncError("NO_ACTIVE_WPP_SESSION", "目标 WPS 文字文档不在线。", {}, 409);
-  // Insertion needs values first. Reuse a saved snapshot whenever possible;
-  // only sources without one take the bounded profile path. A full cell scan is
-  // reserved for an explicit refreshFormatting request below.
-  let savedFormatSnapshot = input.preserveFormatting === false ? null : (cachedSource?.formatSnapshot || source.formatSnapshot || null);
-  const captureProfileFormatting = input.preserveFormatting !== false && Boolean(etSession) && !savedFormatSnapshot;
-  const sourceReadInput = { sessionId: etSession?.sessionId || "", sheetName: source.sheetName, address: source.address, includeFormats: captureProfileFormatting, includeCellFormats: captureProfileFormatting, includeDisplayText: captureProfileFormatting, includeFormulas: false, formatMode: captureProfileFormatting ? "profile" : "full", formatProfileHeaderRows: Number(input.headerRowCount ?? 1) };
+  const sourceReadInput = { sessionId: etSession?.sessionId || "", sheetName: source.sheetName, address: source.address, includeFormats: false, includeCellFormats: false, includeDisplayText: true, includeFormulas: false, formatMode: "values", maxCellCount: tableSyncSourceMaxCells, chunkRows: tableSyncSourceChunkRows };
   let sourceReadMode = "live";
   let read;
   if (etSession) {
     updateTableSyncOperation(operation, { phase: "read_source", phaseLabel: "读取源表数据", progress: 16, stageIndex: 2, sourceReadMode: "live" });
     logTableSyncEvent("phase", { phase: "read_source_start", sourceId: source.sourceId, etSessionId: etSession.sessionId, wppSessionId: wppSession.sessionId });
     try {
-      logTableSyncEvent("phase", { phase: captureProfileFormatting ? "read_source_profile" : "read_source_values_only", sourceId: source.sourceId, includeFormats: captureProfileFormatting, includeDisplayText: captureProfileFormatting, formatMode: captureProfileFormatting ? "profile" : "values", timeoutMs: tableSyncSourceReadTimeoutMs });
-      read = await runSessionCommand(etSession, "et.read_range", sourceReadInput, { requireCommandPump: true, timeoutMs: tableSyncSourceReadTimeoutMs });
+      logTableSyncEvent("phase", { phase: "read_source_values_and_display_text", sourceId: source.sourceId, includeFormats: false, includeDisplayText: true, formatMode: "values", timeoutMs: tableSyncSourceReadTimeoutMs });
+      read = await runSessionCommand(etSession, "et.read_range", sourceReadInput, { requireCommandPump: true, timeoutMs: tableSyncSourceReadTimeoutMs, operation });
     } catch (error) {
       if (input.allowCachedSource !== false && Array.isArray(cachedSource?.values) && ["COMMAND_TIMEOUT", "SESSION_COMMAND_PUMP_INACTIVE", "SESSION_UNRESPONSIVE"].includes(error?.code)) {
         sourceReadMode = "cached_after_live_failure";
-        read = { result: { values: cachedSource.values, displayText: cachedSource.displayText, formatSnapshot: cachedSource.formatSnapshot || savedFormatSnapshot, sheetName: source.sheetName } };
+        read = { result: { values: cachedSource.values, displayText: cachedSource.displayText, sheetName: source.sheetName } };
         logTableSyncEvent("phase", { phase: "read_source_cached_fallback", sourceId: source.sourceId, etSessionId: etSession.sessionId, reason: error.code });
       } else throw error;
     }
   } else {
     sourceReadMode = "cached";
     updateTableSyncOperation(operation, { phase: "read_source", phaseLabel: "读取本地数据快照", progress: 16, stageIndex: 2, sourceReadMode });
-    read = { result: { values: cachedSource.values, displayText: cachedSource.displayText, formatSnapshot: cachedSource.formatSnapshot || savedFormatSnapshot, sheetName: source.sheetName } };
+    read = { result: { values: cachedSource.values, displayText: cachedSource.displayText, sheetName: source.sheetName } };
     logTableSyncEvent("phase", { phase: "read_source_cached", sourceId: source.sourceId, wppSessionId: wppSession.sessionId });
   }
   const rows = normalizeWpsMatrix(read.result?.values);
   if (!rows.length || !rows[0]?.length) tableSyncError("EMPTY_ET_RANGE", "源 WPS 表格区域为空，无法插入。", { sourceId: source.sourceId });
+  const displayText = normalizeEtDisplayText(read.result, rows);
   updateTableSyncOperation(operation, { phase: "source_ready", phaseLabel: "源表数据已读取", progress: 28, stageIndex: 2, totalCells: rows.length * Math.max(1, ...rows.map((row) => row.length)), sourceReadMode });
   logTableSyncEvent("phase", { phase: "read_source_complete", sourceId: source.sourceId, rowCount: rows.length, columnCount: Math.max(0, ...rows.map((row) => row.length)), sourceReadMode });
-  if (input.preserveFormatting !== false && read.result?.formatSnapshot) savedFormatSnapshot = read.result.formatSnapshot;
-  const candidateFormatSnapshot = input.preserveFormatting === false ? null : (savedFormatSnapshot || read.result?.formatSnapshot || null);
-  let snapshot = candidateFormatSnapshot ? normalizeEtFormatSnapshot({ ...read.result, formatSnapshot: candidateFormatSnapshot }, rows) : null;
-  let formatSnapshotRefreshed = false;
-  let formatSnapshotRejected = false;
-  let formatSnapshotWarning = "";
-  const savedSnapshotUsability = etFormatSnapshotUsability(candidateFormatSnapshot, rows);
-  if (!savedSnapshotUsability.usable) snapshot = null;
-  if (input.preserveFormatting !== false && savedFormatSnapshot && !savedSnapshotUsability.usable) {
-    snapshot = null;
-    savedFormatSnapshot = null;
-    formatSnapshotRejected = true;
-    formatSnapshotWarning = "源表格式快照与当前数据范围不匹配，已跳过格式写入。请打开源表并使用“刷新数据源”重新保存格式。";
-  }
-  let formatSnapshotFallbackUsed = false;
-  if (input.preserveFormatting !== false && etSession && input.refreshFormatting === true) {
-    try {
-      const refreshed = await runSessionCommand(etSession, "et.read_range", {
-        sessionId: etSession.sessionId,
-        sheetName: source.sheetName,
-        address: source.address,
-        includeFormats: true,
-        includeCellFormats: true,
-        includeDisplayText: true,
-        // Insertion must never promote a representative profile to a real
-        // document format. A full refresh is the only safe source of row-level
-        // font, emphasis, alignment and indentation data.
-        formatMode: "full",
-        formatProfileHeaderRows: Number(input.headerRowCount ?? 1),
-      }, { requireCommandPump: true, timeoutMs: tableSyncSourceReadTimeoutMs });
-      const refreshedRows = normalizeWpsMatrix(refreshed.result?.values);
-      const sameShape = refreshedRows.length === rows.length && Math.max(0, ...refreshedRows.map((row) => row.length)) === Math.max(0, ...rows.map((row) => row.length));
-      const refreshedSnapshot = refreshed.result?.formatSnapshot ? normalizeEtFormatSnapshot({ ...refreshed.result, formatSnapshot: refreshed.result.formatSnapshot }, rows) : null;
-      const refreshedUsability = etFormatSnapshotUsability(refreshedSnapshot, rows);
-      if (!sameShape || !refreshedUsability.usable) {
-        formatSnapshotWarning = "源表格式刷新未返回与数据匹配的可用快照，本次继续使用已有格式快照。";
-        if (savedSnapshotUsability.usable) {
-          formatSnapshotFallbackUsed = true;
-        } else {
-          snapshot = null;
-          savedFormatSnapshot = null;
-          formatSnapshotRejected = true;
-        }
-      } else {
-        savedFormatSnapshot = refreshed.result.formatSnapshot;
-        snapshot = refreshedSnapshot;
-        formatSnapshotRefreshed = true;
-      }
-    } catch (error) {
-      formatSnapshotWarning = `源表格式刷新失败，本次继续使用已有格式快照：${error?.message || String(error)}`;
-      if (savedSnapshotUsability.usable) {
-        formatSnapshotFallbackUsed = true;
-      } else {
-        snapshot = null;
-        savedFormatSnapshot = null;
-        formatSnapshotRejected = true;
-      }
-    }
-  }
-  const retainedFormatSnapshot = snapshot || (formatSnapshotRejected ? null : savedFormatSnapshot);
-  if (input.preserveFormatting !== false) source.formatSnapshot = retainedFormatSnapshot;
+  const retainedLegacyFormatSnapshot = source.formatSnapshot || cachedSource?.formatSnapshot || null;
+  source.formatSnapshot = retainedLegacyFormatSnapshot;
   source.rowCount = rows.length;
   source.columnCount = Math.max(0, ...rows.map((row) => row.length));
   source.updatedAt = nowIso();
-  tableSyncSourceCache.set(source.sourceId, { values: rows, displayText: read.result?.displayText || cachedSource?.displayText || null, formatSnapshot: retainedFormatSnapshot, cachedAt: source.updatedAt });
+  tableSyncSourceCache.set(source.sourceId, { values: rows, displayText, formatSnapshot: retainedLegacyFormatSnapshot, cachedAt: source.updatedAt });
   await writeTableSyncSourceCache();
-  if (input.preserveFormatting !== false) await saveTableSyncs();
+  await saveTableSyncs();
   const sourceConfig = normalizeSyncConfig({ headerRowCount: Number(input.headerRowCount ?? 1), syncHeader: input.syncHeader !== false }, source.columnCount, source.columnCount);
-  const mapped = mapEtRowsWithFormats(rows, snapshot, sourceConfig);
-  const displayRows = input.preserveFormatting === false ? mapped.values : mapped.display;
-  updateTableSyncOperation(operation, { phase: "create_table", phaseLabel: "创建 Writer 表格", progress: 34, stageIndex: 3, totalCells: displayRows.length * Math.max(1, ...displayRows.map((row) => row.length)) });
-  logTableSyncEvent("phase", { phase: "insert_table_start", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, rowCount: displayRows.length, columnCount: Math.max(1, ...displayRows.map((row) => row.length)), preserveFormatting: input.preserveFormatting !== false });
-  const inserted = await runSessionCommand(wppSession, "wpp.insert_table", { sessionId: wppSession.sessionId, rowCount: displayRows.length, columnCount: Math.max(1, ...displayRows.map((row) => row.length)), values: displayRows, border: input.border === true, headerRowBold: false, releaseSelection: false, ensureTrailingParagraph: false });
-  updateTableSyncOperation(operation, { phase: "write_content", phaseLabel: "表格内容已写入", progress: 60, stageIndex: 4, processedCells: Number(inserted.result?.write?.affectedCells || displayRows.length * Math.max(1, ...displayRows.map((row) => row.length))), tableIndex: inserted.result?.tableIndex ?? null });
+  const mapped = mapEtRowsWithDisplayText(rows, displayText, sourceConfig);
+  const displayRows = mapped.display;
+  updateTableSyncOperation(operation, { phase: "create_table", phaseLabel: "创建 Writer 表格", progress: 34, stageIndex: 3, totalCells: displayRows.length * Math.max(1, ...displayRows.map((row) => row.length)), partialPossible: true });
+  logTableSyncEvent("phase", { phase: "insert_table_start", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, rowCount: displayRows.length, columnCount: Math.max(1, ...displayRows.map((row) => row.length)), valueSource: "displayText" });
+  const inserted = await runSessionCommand(wppSession, "wpp.insert_table", { sessionId: wppSession.sessionId, rowCount: displayRows.length, columnCount: Math.max(1, ...displayRows.map((row) => row.length)), values: displayRows, border: input.border === true, headerRowBold: false, releaseSelection: false, ensureTrailingParagraph: false }, { operation });
+  const displayColumnCount = Math.max(1, ...displayRows.map((row) => row.length));
+  const valuesVerified = inserted.result?.verification?.ok !== false;
+  const shapeVerified = Number(inserted.result?.rowCount || 0) === displayRows.length && Number(inserted.result?.columnCount || 0) === displayColumnCount;
+  updateTableSyncOperation(operation, { phase: "write_content", phaseLabel: "写入并回读值和形状", progress: 64, stageIndex: 4, processedCells: Number(inserted.result?.write?.affectedCells || displayRows.length * displayColumnCount), tableIndex: inserted.result?.tableIndex ?? null });
   logTableSyncEvent("phase", { phase: "insert_table_complete", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, tableIndex: inserted.result?.tableIndex ?? null, writePath: inserted.result?.write?.writePath || "unknown", durationMs: inserted.result?.write?.durationMs ?? null });
   const oneBased = Number(inserted.result?.tableIndex || 1);
-  const formatPayload = input.preserveFormatting === false ? null : buildWppFormatPayload(snapshot, mapped.formats, mapped.heights, sourceConfig, Math.max(1, ...displayRows.map((row) => row.length)), mapped.values);
-  updateTableSyncOperation(operation, { phase: "format_table", phaseLabel: formatPayload ? "批量应用表格格式" : "跳过表格格式", progress: 66, stageIndex: 5, formatCells: Array.isArray(formatPayload?.cells) ? formatPayload.cells.length : 0, formatGroups: null });
-  logTableSyncEvent("phase", { phase: "apply_format_start", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, tableIndex: Math.max(0, oneBased - 1), formatEnabled: Boolean(formatPayload) });
-  const formatting = await applyEtWppFormatSnapshot(wppSession, Math.max(0, oneBased - 1), formatPayload);
-  updateTableSyncOperation(operation, { phase: "format_complete", phaseLabel: "表格格式已回读验证", progress: 82, stageIndex: 5, formatGroups: formatting.performance?.formatGroups ?? null, fallbackCellCount: formatting.performance?.fallbackCellCount ?? null });
-  logTableSyncEvent("phase", { phase: "apply_format_complete", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, tableIndex: Math.max(0, oneBased - 1), verified: formatting.verified, checkedCells: formatting.verification?.checkedCells || 0, mismatches: formatting.verification?.mismatches || [], mismatchSummary: formatting.mismatchSummary || {}, snapshotRefreshed: formatSnapshotRefreshed, snapshotRejected: formatSnapshotRejected, snapshotWarning: formatSnapshotWarning });
-  // Reuse both the source read and the insertion result; this avoids a second
-  // cross-document round trip merely to discover the table we just created.
-  const targetTable = { host: "wpp", tableIndex: Math.max(0, oneBased - 1), index: Math.max(0, oneBased - 1), oneBasedTableIndex: oneBased, rowCount: displayRows.length, columnCount: Math.max(1, ...displayRows.map((row) => row.length)), verifiedByInsert: inserted.result?.verification?.ok !== false };
+  const targetIndex = Math.max(0, oneBased - 1);
+  const targetTable = { host: "wpp", tableIndex: targetIndex, index: targetIndex, oneBasedTableIndex: oneBased, rowCount: displayRows.length, columnCount: displayColumnCount, verifiedByInsert: valuesVerified && shapeVerified };
+  const anchorTag = `wps-sync-${randomUUID()}`;
+  updateTableSyncOperation(operation, { phase: "anchor", phaseLabel: "创建稳定同步锚点", progress: 78, stageIndex: 5, tableIndex: targetIndex });
+  const anchorCommand = await runSessionCommand(wppSession, "wpp.ensure_table_sync_anchor", { sessionId: wppSession.sessionId, tableIndex: targetIndex, anchorTag }, { operation });
+  const anchor = anchorCommand.result || {};
+  const anchorVerified = String(anchor.anchorTag || "") === String(anchorTag);
+  logTableSyncEvent("phase", { phase: "anchor_complete", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, tableIndex: targetIndex, anchorTag: anchor.anchorTag || anchorTag, verified: anchorVerified });
   updateTableSyncOperation(operation, { phase: "binding", phaseLabel: "建立表格绑定", progress: 90, stageIndex: 6, tableIndex: Math.max(0, oneBased - 1) });
   logTableSyncEvent("phase", { phase: "binding_start", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, tableIndex: Math.max(0, oneBased - 1) });
-  const binding = await createEtWppTableSync({ sourceId: source.sourceId, etSessionId: etSession?.sessionId || "", wppSessionId: wppSession.sessionId, wppTableIndex: Math.max(0, oneBased - 1), name: source.name, allowStructuralChanges: true, headerRowCount: Number(input.headerRowCount ?? 1), syncHeader: input.syncHeader !== false }, { sourceReadResult: { ...read.result, formatSnapshot: retainedFormatSnapshot || read.result?.formatSnapshot || null }, sourceFormatSnapshot: retainedFormatSnapshot, sourceRows: rows, skipRegisteredSourceSave: true, allowCachedSource: useCachedSource || sourceReadMode === "cached_after_live_failure", targetTable });
+  const binding = await createEtWppTableSync({ sourceId: source.sourceId, etSessionId: etSession?.sessionId || "", wppSessionId: wppSession.sessionId, wppTableIndex: targetIndex, anchorTag, name: source.name, allowStructuralChanges: true, headerRowCount: Number(input.headerRowCount ?? 1), syncHeader: input.syncHeader !== false, valueSource: "displayText" }, { sourceReadResult: { values: rows, displayText, sheetName: read.result?.sheetName || source.sheetName }, sourceRows: rows, skipRegisteredSourceSave: true, allowCachedSource: useCachedSource || sourceReadMode === "cached_after_live_failure", targetTable, anchorResult: anchor, operation });
   logTableSyncEvent("phase", { phase: "binding_complete", sourceId: source.sourceId, wppSessionId: wppSession.sessionId, syncId: binding.mapping?.syncId || null });
-  return { inserted: true, insert: inserted.result, formatting: { ...formatting, snapshotRefreshed: formatSnapshotRefreshed, snapshotRejected: formatSnapshotRejected, snapshotFallbackUsed: formatSnapshotFallbackUsed, snapshotWarning: formatSnapshotWarning, snapshotCoverage: etFormatSnapshotCoverage(retainedFormatSnapshot) }, binding, sourceReadMode, sourceWarning: sourceReadMode === "live" ? formatSnapshotWarning : `源表命令泵暂时未响应，本次插入使用加入清单时的本地快照。后续同步仍需源表在线。${formatSnapshotWarning}`, performance: { sourceReadCommands: sourceReadMode === "live" ? 1 : 0, targetDiscoveryCommands: 0, persistedStateWrites: 1, insertionWritePath: inserted.result?.write?.writePath || "unknown" } };
+  return { inserted: true, insert: inserted.result, valueSource: "displayText", transferPolicy: normalizeTransferPolicy(source.transferPolicy), displayText, formatting: { applied: false, skipped: true, writerStylesPreserved: true, targetStylesPreserved: true, reason: "表格同步不应用源表格式，保留 WPS 文字样式。", ignoredLegacySnapshot: Boolean(retainedLegacyFormatSnapshot) }, verification: { valuesVerified, shapeVerified, anchorVerified, bindingVerified: Boolean(binding.mapping?.syncId) }, anchor, binding, sourceReadMode, sourceWarning: sourceReadMode === "live" ? "" : "源表命令泵暂时未响应，本次插入使用加入清单时的本地数据和显示值。后续同步仍需源表在线。", performance: { sourceReadCommands: sourceReadMode === "live" ? 1 : 0, targetDiscoveryCommands: 0, anchorCommands: 1, persistedStateWrites: 1, insertionWritePath: inserted.result?.write?.writePath || "unknown" } };
 }
 async function syncEtWppTable(input = {}) {
   const sync = tableSyncsStore.syncs.find((item) => item.syncId === input.syncId);
@@ -1775,70 +1885,58 @@ async function syncEtWppTable(input = {}) {
   const etSession = findOnlineDocumentSession("et", sync.source?.documentKey);
   const wppSession = findOnlineDocumentSession("wpp", sync.target?.documentKey);
   if (!etSession || !wppSession) tableSyncError("ET_WPP_SYNC_SESSION_OFFLINE", "请同时打开源 WPS 表格和目标 WPS 文字文档，再同步。", { etOnline: Boolean(etSession), wppOnline: Boolean(wppSession), source: sync.source, target: sync.target }, 409);
-  const preserveFormatting = input.preserveFormatting !== false;
   const source = tableSyncsStore.sources.find((item) => item.sourceId === sync.sourceId);
   const cachedSource = source ? tableSyncSourceCache.get(source.sourceId) : null;
-  const savedFormatSnapshot = preserveFormatting ? (cachedSource?.formatSnapshot || source?.formatSnapshot || null) : null;
-  const shouldReadFormats = preserveFormatting && (input.refreshFormatting === true || !savedFormatSnapshot);
-  const read = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: sync.source?.sheetName, address: sync.source?.address, includeFormats: shouldReadFormats, includeCellFormats: shouldReadFormats, includeDisplayText: shouldReadFormats, formatMode: "full", formatProfileHeaderRows: Number(input.headerRowCount ?? sync.config?.headerRowCount ?? 1) });
+  const read = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: sync.source?.sheetName, address: sync.source?.address, includeFormats: false, includeCellFormats: false, includeDisplayText: true, formatMode: "values", maxCellCount: tableSyncSourceMaxCells, chunkRows: tableSyncSourceChunkRows });
   const rawSourceRows = normalizeWpsMatrix(read.result?.values);
   if (!rawSourceRows.length || !rawSourceRows[0]?.length) tableSyncError("EMPTY_ET_RANGE", "映射的 WPS 表格区域为空。", { syncId: sync.syncId });
+  const rawDisplayText = normalizeEtDisplayText(read.result, rawSourceRows);
   const tableRead = await runSessionCommand(wppSession, "wpp.list_tables", { sessionId: wppSession.sessionId, includeValues: true, maxTables: 200, maxRows: 500, maxColumns: 200 });
   const targetTable = (tableRead.result?.tables || []).find((table) => Number(table.tableIndex ?? table.index) === Number(sync.target?.fallbackTableIndex ?? 0));
   if (!targetTable) tableSyncError("WPP_SYNC_TARGET_MISSING", "映射的 WPS 文字表格不存在。", { syncId: sync.syncId, tableCount: tableRead.result?.count || 0 }, 409);
-  const snapshot = preserveFormatting
-    ? read.result?.formatSnapshot
-      ? normalizeEtFormatSnapshot(read.result, rawSourceRows)
-      : etFormatSnapshotUsability(savedFormatSnapshot, rawSourceRows).usable
-        ? normalizeEtFormatSnapshot({ ...read.result, formatSnapshot: savedFormatSnapshot }, rawSourceRows)
-        : null
-    : null;
-  if (source && preserveFormatting) {
-    if (snapshot) source.formatSnapshot = snapshot;
+  if (source) {
     source.rowCount = rawSourceRows.length;
     source.columnCount = Math.max(0, ...rawSourceRows.map((row) => row.length));
     source.updatedAt = nowIso();
-    tableSyncSourceCache.set(source.sourceId, { values: rawSourceRows, displayText: read.result?.displayText || cachedSource?.displayText || null, formatSnapshot: source.formatSnapshot || savedFormatSnapshot || null, cachedAt: source.updatedAt });
+    tableSyncSourceCache.set(source.sourceId, { values: rawSourceRows, displayText: rawDisplayText, formatSnapshot: source.formatSnapshot || cachedSource?.formatSnapshot || null, cachedAt: source.updatedAt });
     await writeTableSyncSourceCache();
     await saveTableSyncs();
   }
   const config = normalizeSyncConfig({ ...(sync.config || {}), ...(input.config || {}), ...input }, Math.max(0, ...rawSourceRows.map((row) => row.length)), Number(targetTable.columnCount || 0));
   const mapped = mapSyncRows(rawSourceRows, config);
-  const mappedWithFormats = mapEtRowsWithFormats(rawSourceRows, snapshot, config);
+  const mappedDisplay = mapEtRowsWithDisplayText(rawSourceRows, rawDisplayText, config);
   const targetColumnCount = Number(targetTable.columnCount || config.columnMapping.length || Math.max(0, ...rawSourceRows.map((row) => row.length)));
   let finalRows = mapped.valuesForTarget;
-  let finalDisplayRows = preserveFormatting ? mappedWithFormats.display : finalRows;
-  let finalFormatRows = mappedWithFormats.formats;
-  let finalHeights = mappedWithFormats.heights;
+  let finalDisplayRows = mappedDisplay.display;
   let rowMerge = { enabled: false, reason: "header only or disabled" };
   if (!config.syncHeader) {
     rowMerge = mergeRowsByKey(mapped.mappedDataRows, targetTable.values || [], config, targetColumnCount);
     finalRows = rowMerge.rows;
-    const formatMerge = mergeEtRowsWithFormats(mappedWithFormats, targetTable.values || [], config, targetColumnCount);
-    finalDisplayRows = preserveFormatting ? formatMerge.display : finalRows;
-    finalFormatRows = formatMerge.formats;
-    finalHeights = formatMerge.heights;
+    finalDisplayRows = mergeEtDisplayRowsByRawRows(mapped, mappedDisplay, targetTable.values || [], config, targetColumnCount, rowMerge);
   }
-  const formatPayload = preserveFormatting ? buildWppFormatPayload(snapshot, finalFormatRows, finalHeights, config, targetColumnCount, finalRows) : null;
   if (input.previewOnly) {
-    return { previewOnly: true, syncId: sync.syncId, sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: targetTable.rowCount, columnCount: targetTable.columnCount }, rowMerge, values: finalRows.slice(0, 20), valueCount: finalRows.length, formatting: formatPayload ? { enabled: true, cells: formatPayload.cells.length, rowHeights: formatPayload.rowHeights.length, columnWidths: formatPayload.columnWidths.length } : { enabled: false } };
+    return { previewOnly: true, syncId: sync.syncId, valueSource: "displayText", transferPolicy: normalizeTransferPolicy(sync.transferPolicy), sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: targetTable.rowCount, columnCount: targetTable.columnCount }, rowMerge, values: finalRows.slice(0, 20), displayValues: finalDisplayRows.slice(0, 20), valueCount: finalRows.length, formatting: { applied: false, skipped: true, writerStylesPreserved: true, targetStylesPreserved: true } };
   }
-  const replace = await runSessionCommand(wppSession, "wpp.replace_table_values", { sessionId: wppSession.sessionId, tableIndex: sync.target?.fallbackTableIndex || 0, values: finalDisplayRows, allowStructuralChanges: sync.allowStructuralChanges !== false, headerRowCount: config.headerRowCount, syncHeader: config.syncHeader });
-  const targetIndex = Number(sync.target?.fallbackTableIndex || 0);
+  const targetIndex = Number(sync.target?.fallbackTableIndex ?? 0);
+  const replace = await runSessionCommand(wppSession, "wpp.replace_table_values", { sessionId: wppSession.sessionId, tableIndex: targetIndex, values: finalDisplayRows, allowStructuralChanges: sync.allowStructuralChanges !== false, headerRowCount: config.headerRowCount, syncHeader: config.syncHeader, preserveStyle: true });
   const valuesReadback = await runSessionCommand(wppSession, "wpp.read_table", { sessionId: wppSession.sessionId, tableIndex: targetIndex + 1 });
   const readbackValues = normalizeWpsMatrix(valuesReadback.result?.values);
   const expectedValues = finalDisplayRows.map((row) => row.map((cell) => String(cell ?? "")));
   const actualValues = readbackValues.map((row) => row.map((cell) => String(cell ?? "")));
   const valuesVerified = JSON.stringify(actualValues) === JSON.stringify(expectedValues);
-  if (!valuesVerified) tableSyncError("TABLE_REPLACE_READBACK_MISMATCH", "WPS 文字表格写入后读回内容与预期不一致。", { syncId: sync.syncId, expectedPreview: expectedValues.slice(0, 3), actualPreview: actualValues.slice(0, 3) }, 409);
-  const formatting = await applyEtWppFormatSnapshot(wppSession, targetIndex, formatPayload);
+  const actualRowCount = Number(valuesReadback.result?.rowCount ?? actualValues.length);
+  const actualColumnCount = Number(valuesReadback.result?.columnCount ?? Math.max(0, ...actualValues.map((row) => row.length)));
+  const shapeVerified = actualRowCount === expectedValues.length && actualColumnCount === targetColumnCount;
+  if (!valuesVerified || !shapeVerified) tableSyncError("TABLE_REPLACE_READBACK_MISMATCH", "WPS 文字表格写入后读回内容或形状与预期不一致。", { syncId: sync.syncId, valuesVerified, shapeVerified, expectedShape: { rowCount: expectedValues.length, columnCount: targetColumnCount }, actualShape: { rowCount: actualRowCount, columnCount: actualColumnCount }, expectedPreview: expectedValues.slice(0, 3), actualPreview: actualValues.slice(0, 3) }, 409);
+  const formatting = { applied: false, skipped: true, writerStylesPreserved: true, targetStylesPreserved: true, reason: "表格同步不应用源表格式，保留 WPS 文字样式。" };
   const now = nowIso();
   sync.config = config;
+  sync.valueSource = "displayText";
   sync.lastSyncedAt = now;
   sync.updatedAt = now;
-  sync.lastSyncSummary = { rowCount: finalRows.length, columnCount: targetColumnCount, rowMerge, replaced: replace.result, valuesVerified, formatting: { applied: formatting.applied, verified: formatting.verified, checkedCells: formatting.verification?.checkedCells || 0 } };
+  sync.lastSyncSummary = { rowCount: finalRows.length, columnCount: targetColumnCount, rowMerge, replaced: replace.result, valuesVerified, shapeVerified, formatting: { applied: false, skipped: true, writerStylesPreserved: true, targetStylesPreserved: true } };
   await saveTableSyncs();
-  return { synced: true, syncId: sync.syncId, mapping: publicEtWppTableSync(sync), sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: replace.result?.rowCount, columnCount: replace.result?.columnCount }, rowMerge, replace: replace.result, valuesReadback: { verified: valuesVerified, rowCount: actualValues.length, columnCount: Math.max(0, ...actualValues.map((row) => row.length)) }, formatting };
+  return { synced: true, syncId: sync.syncId, valueSource: "displayText", transferPolicy: normalizeTransferPolicy(sync.transferPolicy), mapping: publicEtWppTableSync(sync), sourceShape: { rowCount: rawSourceRows.length, columnCount: Math.max(0, ...rawSourceRows.map((row) => row.length)) }, targetShape: { rowCount: actualRowCount, columnCount: actualColumnCount }, rowMerge, replace: replace.result, valuesReadback: { verified: valuesVerified, shapeVerified, rowCount: actualRowCount, columnCount: actualColumnCount }, formatting };
 }
 
 function wpsTemplateOrThrow(templateId) {
@@ -1851,7 +1949,9 @@ function wpsTemplateOrThrow(templateId) {
 }
 
 function wpsTemplatePublic(template) {
-  return { ...template, formatSummary: { rowCount: template.shape?.rowCount ?? template.format?.rowCount ?? null, columnCount: template.shape?.columnCount ?? template.format?.columnCount ?? null, fields: Object.keys(template.format || {}) } };
+  const format = template.format || {};
+  const publicFormat = { ...(format.table || {}), ...format, table: format.table || {} };
+  return { ...template, format: publicFormat, formatSummary: { rowCount: template.shape?.rowCount ?? format.rowCount ?? format.table?.rowCount ?? null, columnCount: template.shape?.columnCount ?? format.columnCount ?? format.table?.columnCount ?? null, fields: Object.keys(publicFormat) } };
 }
 
 function wpsTemplateInputForCapture(input = {}) {
@@ -1874,7 +1974,7 @@ async function wpsCaptureTableFormatTemplate(input = {}, save = false) {
       warnings: captured.warnings || [],
       unsupportedFields: captured.unsupportedFields || [],
     });
-    return { captured: true, sessionId: session.sessionId, commandId: command.command.commandId, template: { ...capturedTemplate, templateId: undefined, name: undefined }, result: captured };
+    return { captured: true, sessionId: session.sessionId, commandId: command.command.commandId, template: wpsTemplatePublic({ ...capturedTemplate, templateId: undefined, name: undefined }), result: captured };
   }
   const now = nowIso();
   const existing = tableFormatTemplatesStore.templates.find((item) => String(item.templateId || "") === String(input.templateId || ""));
@@ -1885,6 +1985,8 @@ async function wpsCaptureTableFormatTemplate(input = {}, save = false) {
     source: { documentKey: session.documentKey, documentName: session.documentName, tableIndex: captured.tableIndex },
     shape: { rowCount: captured.rowCount, columnCount: captured.columnCount },
     format: captured.format,
+    warnings: captured.warnings || [],
+    unsupportedFields: captured.unsupportedFields || [],
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   });
@@ -2041,6 +2143,15 @@ async function handle(req, res) {
       if (!operation) return sendError(res, 404, "OPERATION_NOT_FOUND", "Table sync operation was not found.", { operationId: decodeURIComponent(tableSyncOperation[1]) });
       return sendJson(res, 200, { ok: true, operation: publicTableSyncOperation(operation) });
     }
+    const tableSyncOperationCancel = /^\/api\/operations\/([^/]+)\/cancel$/.exec(pathname);
+    if (req.method === "POST" && tableSyncOperationCancel) {
+      const operationId = decodeURIComponent(tableSyncOperationCancel[1]);
+      pruneTableSyncOperations();
+      const operation = tableSyncOperations.get(operationId);
+      if (!operation) return sendError(res, 404, "OPERATION_NOT_FOUND", "Table sync operation was not found.", { operationId });
+      const result = requestTableSyncCancellation(operation);
+      return sendJson(res, result.cancellable === false ? 200 : 202, { ok: true, operation: publicTableSyncOperation(result.operation), cancel: result.operation.cancel || null });
+    }
     if (req.method === "POST" && pathname === "/api/catalog/refresh") { const catalog = await refreshCatalog(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source, refreshed: true }); }
     if (req.method === "GET" && pathname === "/api/catalog") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
@@ -2149,7 +2260,7 @@ async function handle(req, res) {
     const nextCommand = /^\/api\/sessions\/([^/]+)\/commands\/next$/.exec(pathname);
     if (req.method === "GET" && nextCommand) { const session = sessions.get(nextCommand[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${nextCommand[1]}`); session.status = "online"; session.commandPollSeen = true; session.lastCommandPollAt = nowIso(); session.lastSeenAt = nowIso(); const commandId = session.queue.shift(); if (!commandId) return sendJson(res, 200, { ok: true, command: null }); const command = commands.get(commandId); command.status = "delivered"; command.deliveredAt = nowIso(); return sendJson(res, 200, { ok: true, command: { commandId, toolName: command.toolName, input: command.input } }); }
     const commandResult = /^\/api\/commands\/([^/]+)\/result$/.exec(pathname);
-    if (req.method === "POST" && commandResult) { const command = commands.get(commandResult[1]); if (!command) return sendError(res, 404, "COMMAND_NOT_FOUND", `Command not found: ${commandResult[1]}`); const body = await readJson(req); command.completedAt = nowIso(); const session = sessions.get(command.sessionId); if (session) session.lastCommandCompletedAt = command.completedAt; if (body.ok === false) { command.status = "failed"; command.error = body.error || { code: "COMMAND_FAILED", message: "Command failed." }; command.reject?.(command.error); } else { command.status = "completed"; command.result = body.result || {}; command.resolve?.(command.result); } return sendJson(res, 200, { ok: true, commandId: command.commandId, status: command.status }); }
+    if (req.method === "POST" && commandResult) { const command = commands.get(commandResult[1]); if (!command) return sendError(res, 404, "COMMAND_NOT_FOUND", `Command not found: ${commandResult[1]}`); const body = await readJson(req); command.completedAt = nowIso(); const session = sessions.get(command.sessionId); if (session) session.lastCommandCompletedAt = command.completedAt; if (command.cancelRequested || command.status === "cancelled") { command.status = "cancelled"; command.error = command.error || { code: "TABLE_SYNC_CANCELLED", message: "命令所属的表格插入已取消。" }; command.reject?.(command.error); return sendJson(res, 200, { ok: true, commandId: command.commandId, status: command.status }); } if (body.ok === false) { command.status = "failed"; command.error = body.error || { code: "COMMAND_FAILED", message: "Command failed." }; command.reject?.(command.error); } else { command.status = "completed"; command.result = body.result || {}; command.resolve?.(command.result); } return sendJson(res, 200, { ok: true, commandId: command.commandId, status: command.status }); }
     const toolCall = /^\/api\/tools\/([^/]+)\/([^/]+)$/.exec(pathname);
     if (req.method === "POST" && toolCall) { const toolName = `${toolCall[1]}.${toolCall[2]}`; if (!tools.some((tool) => tool.name === toolName)) return sendError(res, 404, "TOOL_NOT_FOUND", `Unknown tool: ${toolName}`); const input = await readJson(req); const isTableSync = ["wps.insert_et_wpp_data_source", "wps.create_et_wpp_table_sync", "wps.sync_et_wpp_table"].includes(toolName); if (isTableSync) logTableSyncEvent("request", { toolName, sourceId: input?.sourceId || "", syncId: input?.syncId || "", wppSessionId: input?.wppSessionId || input?.wordSessionId || "" }); try { const result = await runTool(toolName, input); if (isTableSync) logTableSyncEvent("completed", { toolName, sourceId: input?.sourceId || "", syncId: result?.binding?.mapping?.syncId || result?.mapping?.syncId || input?.syncId || "", wppSessionId: input?.wppSessionId || input?.wordSessionId || "" }); return sendJson(res, 200, { ok: true, ...result }); } catch (error) { if (isTableSync) logTableSyncEvent("failed", { toolName, sourceId: input?.sourceId || "", syncId: input?.syncId || "", code: error?.code || "TOOL_FAILED", message: error?.message || String(error) }); return sendError(res, statusForError(error), error.code || "TOOL_FAILED", error.message || String(error), error.details || {}); } }
     return sendError(res, 404, "NOT_FOUND", `Route not found: ${req.method} ${pathname}`);

@@ -46,7 +46,7 @@
         },
         {
           "file": "tableSyncCore.js",
-          "sha256": "6fe3c5c5d53fb8b72f922610890b774f1fef5ae0ce249fe5e7147f391bc1f34c"
+          "sha256": "bf9f924350f03467b26e83e459eeb398ca8e1463d192ad829034e6edda40b17a"
         }
       ]
     },
@@ -63,7 +63,7 @@
         },
         {
           "file": "templateCore.js",
-          "sha256": "1a1581bd40321b8c3d7d1a54f49ea428d78b228d02472ec4ba652bb6d0a9a3ef"
+          "sha256": "d35033eda08a8d682f1e7a146d4a7cf5d1e916747f1ddd5a63c6c9c7fe82f21a"
         },
         {
           "file": "tableFormatPanel.js",
@@ -140,7 +140,7 @@
     },
     {
       "file": "modules/table-sync/tableSyncCore.js",
-      "sha256": "6fe3c5c5d53fb8b72f922610890b774f1fef5ae0ce249fe5e7147f391bc1f34c"
+      "sha256": "7eb461eebfb4a01e05ecad0e115a147a5cf60e085bc2ae74004a16489d3a8673"
     },
     {
       "file": "modules/table-format-template/state.js",
@@ -148,7 +148,7 @@
     },
     {
       "file": "modules/table-format-template/templateCore.js",
-      "sha256": "1a1581bd40321b8c3d7d1a54f49ea428d78b228d02472ec4ba652bb6d0a9a3ef"
+      "sha256": "d35033eda08a8d682f1e7a146d4a7cf5d1e916747f1ddd5a63c6c9c7fe82f21a"
     },
     {
       "file": "modules/table-format-template/tableFormatPanel.js",

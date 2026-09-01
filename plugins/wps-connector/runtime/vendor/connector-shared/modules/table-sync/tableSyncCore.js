@@ -1,11 +1,113 @@
+export const DEFAULT_TRANSFER_POLICY = Object.freeze({
+  transferPolicy: "display-values-only",
+  preserveTargetStyle: true,
+  applySourceFormatting: false,
+});
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+export function normalizeTransferPolicy(input = {}) {
+  const record = isRecord(input) ? input : {};
+  const nested = isRecord(record.transferPolicy) ? record.transferPolicy : record;
+  const requestedPolicy = typeof record.transferPolicy === "string"
+    ? record.transferPolicy
+    : nested.transferPolicy ?? nested.valueMode ?? nested.mode;
+  const transferPolicy = requestedPolicy === "display-values-only"
+    ? requestedPolicy
+    : DEFAULT_TRANSFER_POLICY.transferPolicy;
+
+  // Formatting switches from legacy records are intentionally not carried forward.
+  return {
+    transferPolicy,
+    preserveTargetStyle: true,
+    applySourceFormatting: false,
+  };
+}
+
 export function cleanCellValue(value) {
   return String(value ?? "").replace(/\r?\n/g, " ").trim();
+}
+
+function toMatrix(value) {
+  if (!Array.isArray(value) || value.length === 0) return [];
+  if (!Array.isArray(value[0])) return [value.slice()];
+  return value.map((row) => (Array.isArray(row) ? row.slice() : [row]));
 }
 
 export function asMatrix(value) {
   if (!Array.isArray(value)) return [];
   if (!Array.isArray(value[0])) return [value.map((cell) => cell ?? "")];
   return value.map((row) => (Array.isArray(row) ? row.map((cell) => cell ?? "") : [row ?? ""]));
+}
+
+function resolveDisplayText(value) {
+  if (!isRecord(value)) return value;
+  if (hasOwn(value, "displayText") && value.displayText !== undefined && value.displayText !== null) {
+    return value.displayText;
+  }
+  if (hasOwn(value, "text")) return value.text;
+  return undefined;
+}
+
+const NUMERIC_DISPLAY_CHARACTERS = /^[+\-−()（）$€£¥￥₹,.\d%]+$/;
+
+function numericCellValue(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  const raw = value.trim();
+  // String values with leading zeroes may be identifiers, not numbers.
+  if (!raw || /^[-+]?0\d/.test(raw) || !/^[-+]?\d+(?:\.\d+)?$/.test(raw)) return null;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function normalizeNumericDisplayText(value, display) {
+  const original = display === undefined || display === null ? String(value ?? "") : display;
+  if (numericCellValue(value) === null) return original;
+  const trimmed = String(original).trim();
+  const compact = trimmed.replace(/\s+/g, "");
+  if (!compact || !/\d/.test(compact) || !NUMERIC_DISPLAY_CHARACTERS.test(compact)) return original;
+  return compact;
+}
+
+export function buildDisplayValueMatrix(values, displayTextOrText) {
+  const valueMatrix = toMatrix(values);
+  const displayMatrix = toMatrix(resolveDisplayText(displayTextOrText));
+  const rowCount = Math.max(valueMatrix.length, displayMatrix.length);
+  const columnCount = Math.max(
+    0,
+    ...valueMatrix.map((row) => row.length),
+    ...displayMatrix.map((row) => row.length),
+  );
+
+  return Array.from({ length: rowCount }, (_, rowIndex) => {
+    const valueRow = valueMatrix[rowIndex] || [];
+    const displayRow = displayMatrix[rowIndex] || [];
+    return Array.from({ length: columnCount }, (_, columnIndex) => {
+      const displayCell = displayRow[columnIndex];
+      if (displayCell !== undefined && displayCell !== null) {
+        return normalizeNumericDisplayText(valueRow[columnIndex], displayCell);
+      }
+      return valueRow[columnIndex] ?? "";
+    });
+  });
+}
+
+/**
+ * Both first insert and subsequent sync use this value-only payload shape.
+ * Formatting is intentionally absent so the target remains the style owner.
+ */
+export function buildValueOnlyTransferPayload(values, displayTextOrText, policyInput = {}) {
+  return {
+    values: buildDisplayValueMatrix(values, displayTextOrText),
+    transferPolicy: normalizeTransferPolicy(policyInput),
+  };
 }
 
 export function normalizeTableRows(rows, options = {}) {
@@ -38,6 +140,7 @@ export function normalizeSyncConfig(input = {}, sourceColumnCount = 0, targetCol
   }
   const sortColumn = Number(input.sortColumn || 0);
   return {
+    transferPolicy: normalizeTransferPolicy(input),
     headerRowCount,
     syncHeader,
     columnMapping,
@@ -57,30 +160,37 @@ export function normalizeSyncConfig(input = {}, sourceColumnCount = 0, targetCol
   };
 }
 
-export function mapSyncRows(rows, config) {
-  const sourceRows = normalizeTableRows(rows, {
+export function mapSyncRows(rows, config, displayTextOrText) {
+  const syncConfig = isRecord(config) ? config : normalizeSyncConfig();
+  const rowEnvelope = isRecord(rows) && hasOwn(rows, "values") ? rows : null;
+  const sourceValues = rowEnvelope ? rowEnvelope.values : rows;
+  const displayInput = displayTextOrText !== undefined
+    ? displayTextOrText
+    : rowEnvelope;
+  const transfer = buildValueOnlyTransferPayload(sourceValues, displayInput, syncConfig);
+  const sourceRows = normalizeTableRows(transfer.values, {
     preserveEmptyRows: true,
-    columnCount: Math.max(0, ...asMatrix(rows).map((row) => row.length)),
+    columnCount: Math.max(0, ...transfer.values.map((row) => row.length)),
   });
-  const headerRows = sourceRows.slice(0, config.headerRowCount);
-  const dataRows = sourceRows.slice(config.headerRowCount);
-  const mapped = (row) => config.columnMapping.map((sourceIndex) => row[sourceIndex - 1] ?? "");
+  const headerRows = sourceRows.slice(0, syncConfig.headerRowCount);
+  const dataRows = sourceRows.slice(syncConfig.headerRowCount);
+  const mapped = (row) => syncConfig.columnMapping.map((sourceIndex) => row[sourceIndex - 1] ?? "");
   const sortedDataRows = [...dataRows];
-  if (config.sort.enabled) {
-    const sortIndex = config.sort.column - 1;
+  if (syncConfig.sort.enabled) {
+    const sortIndex = syncConfig.sort.column - 1;
     sortedDataRows.sort((left, right) => {
       const leftValue = cleanCellValue(left[sortIndex]);
       const rightValue = cleanCellValue(right[sortIndex]);
-      const leftOther = config.sort.otherItemsBottom && leftValue === "其他";
-      const rightOther = config.sort.otherItemsBottom && rightValue === "其他";
+      const leftOther = syncConfig.sort.otherItemsBottom && leftValue === "其他";
+      const rightOther = syncConfig.sort.otherItemsBottom && rightValue === "其他";
       if (leftOther !== rightOther) return leftOther ? 1 : -1;
       const comparison = leftValue.localeCompare(rightValue, "zh-CN", { numeric: true });
-      return config.sort.direction === "asc" ? comparison : -comparison;
+      return syncConfig.sort.direction === "asc" ? comparison : -comparison;
     });
   }
   const mappedHeaderRows = headerRows.map(mapped);
   const mappedDataRows = sortedDataRows.map(mapped);
-  const valuesForTarget = config.syncHeader ? [...mappedHeaderRows, ...mappedDataRows] : mappedDataRows;
+  const valuesForTarget = syncConfig.syncHeader ? [...mappedHeaderRows, ...mappedDataRows] : mappedDataRows;
   return {
     sourceRows,
     headerRows,
@@ -89,6 +199,7 @@ export function mapSyncRows(rows, config) {
     mappedDataRows,
     valuesForTarget,
     valuesForWord: valuesForTarget,
+    transferPolicy: transfer.transferPolicy,
   };
 }
 
@@ -107,6 +218,7 @@ function padSyncRow(row, columnCount) {
 }
 
 export function mergeRowsByKey(sourceDataRows, targetValues, config, targetColumnCount) {
+  const transferPolicy = normalizeTransferPolicy(config);
   const rowMatch = config.rowMatch || {};
   const keyColumn = Math.max(1, Math.floor(Number(rowMatch.keyColumn || 1)));
   const headerRowCount = config.syncHeader ? 0 : Math.max(0, Math.floor(Number(config.headerRowCount || 0)));
@@ -128,6 +240,7 @@ export function mergeRowsByKey(sourceDataRows, targetValues, config, targetColum
       appendedExcelRowCount: 0,
       fallbackToPosition: true,
       keyColumn,
+      transferPolicy,
     };
   }
   const sourceByKey = new Map();
@@ -189,5 +302,6 @@ export function mergeRowsByKey(sourceDataRows, targetValues, config, targetColum
     targetKeyCount: keyedTargetRows.length,
     excelKeyCount: keyedSourceRows.length,
     wordKeyCount: keyedTargetRows.length,
+    transferPolicy,
   };
 }

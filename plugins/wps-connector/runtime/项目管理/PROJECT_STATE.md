@@ -1,5 +1,67 @@
 # 当前状态
 
+## 2026-09-01 表格同步显示值策略部署
+
+- 状态：`deployed / PENDING_REAL_HOST_ACCEPTANCE`。
+- 架构：WPS 表格数据源与 WPS 文字目标关系独立于 Codex 项目、任务和对话；一个数据源可绑定多个目标表格。
+- 首次插入：读取源表显示值，保留日期、百分比、千分位和货币等显示结果，不复制字体、段落、边框、底纹、行高或列宽。
+- 后续同步：只调用内容替换并回读值和形状，返回 `formatting.applied=false`、`targetStylesPreserved=true`；目标 Writer 样式由用户维护。
+- 性能：优先整块读取 `Range.Text`；不可用时读取数字格式矩阵，小范围才逐单元格回退；保留分块读取、超限保护、进度、取消和命令泵。
+- UI：数据源改为可复用清单，已绑定来源仍可再次“插入并绑定”；build/cache 为 `2026.09.01-table-sync-display-values.1`。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；E2E 覆盖显示值、一源多目标、目标样式保留、取消、读回和保存。
+- 部署：正式 runtime `/Users/zer0y/.local/share/wps-connector/runtime`，Bridge/Add-in LaunchAgent 已重启；备份 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260901-085507/runtime`。
+- 运行态：`40215/api/health`、`3891/health` 均返回 200；当前 WPS 在线 session 为 0，真实 ET/Writer 首插、再次同步、新增行样式继承和保存重开待用户验收。
+
+## 2026-08-31 Connector Suite 表格格式模块专项收尾核验
+
+- 状态：`PENDING_REAL_HOST_ACCEPTANCE`。
+- 分支：`codex/table-format-module-debug-0.2.1`；基线 `ed1e44d`；当前 HEAD `9df5c2b`。源码工作区仍为 dirty，保留既有及本专项未提交修改；本轮未执行 reset、`checkout --`、删除或覆盖用户成果。
+- 根因：旧实现把宿主命令返回成功当作格式生效，且 WPS/Office 的读取、写入和回读逻辑分散；WPS Writer 数字格式不能直接承载 Excel `numberFormat`，Office Word 段落格式必须通过 `range.paragraphs`/`Word.Paragraph`，表格宽度和边框需要 OOXML 回写后刷新读取。
+- 共享核心：`vendor/connector-shared/modules/table-format-template/` 统一负责旧模板兼容、schema、字段白名单、归一化、差异比较、应用计划、回读验证、事务回滚和性能统计；WPS/Office 仅保留宿主适配调用。
+- WPS 适配：连续同格式单元格使用表格/矩形 Range 批量设置；合并单元格、控制字符、范围写入或读回失败时回退逐单元格，并记录 `fastPath`、`hostCallsSaved`、`affectedCells`、`fallbackCellCount`、`durationMs`。
+- Office 适配：使用 `range.paragraphs` 读取段落格式；表格宽度统一归一化为 `auto/percent/points`，宽度与边框合并为一次 OOXML 替换，刷新后再回读；不支持或无法确认的字段不进入成功列表。
+- 数字格式：WPS/Office 文字表格不直接写入 Excel 数字格式；优先保留源表显示文本，历史空格式快照对普通数字使用安全千分位兜底；Writer 数字格式字段标记为 `unsupported`，不伪报已应用。
+- 源码验证：`npm run check`、指定 `node --check`、`git diff --check`、源码 `npm test`、WPS 正式 runtime `npm test`、Office 正式 runtime `npm test` 和 Office 安装插件 runtime `npm test` 均已通过；Office 安装插件先补齐缺失的生产依赖 `sql.js/ws` 后通过。以上均为模拟器/自动化验证，不等于真实宿主验收。
+- 运行时：WPS 正式 runtime `/Users/zer0y/.local/share/wps-connector/runtime`；Office 正式 runtime `/Users/zer0y/.local/share/office-connector/runtime`；WPS 插件副本已同步。Office 安装插件 `/Users/zer0y/plugins/office-connector` 已备份并同步实际漂移的共享核心、Word Add-in、Bridge 和 E2E 文件。
+- 备份：WPS `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260831-table-format-module-wps/runtime`；Office `/Users/zer0y/Library/Application Support/Connector Suite/backups/office-runtime/20260831-table-format-module-office/runtime`；Office 安装插件 `/Users/zer0y/Library/Application Support/Connector Suite/backups/office-plugin/20260831-table-format-module-office`。
+- 健康检查：WPS Bridge `40215`、WPS Add-in `3891`、Platform `40315` 健康；Office HTTPS `https://127.0.0.1:40116/api/health` 返回 `protocol=https`，HTTP `40115` 仅为 fallback，未用 HTTP 降级冒充 HTTPS。产品探针显示 Connector Suite/WPS/Office 均为 `0.2.1`，shared `0.2.0`。
+- 当前会话：WPS 在线 ET/WPP 会话均未绑定本任务；WPS 当前 `clientVersion=0.2.1`、`clientBuild=2026.08.30-wps-table-sync-text-format.9`。Office Word 在线 Add-in session 数为 0；不能取得可写的 Word `sessionId`、`bindingId`、`documentKey`。
+- 一致性：源码、WPS 插件 runtime、WPS 正式 runtime 的共享 `templateCore.js`/`state.js` 与 WPS Add-in 关键文件一致；Office 正式 runtime 与安装插件的 `templateCore.js`、`state.js`、`taskpane.js`、`tableFormatPanel.js`、Bridge、E2E 文件一致。
+- ERROR：无静态检查或模拟测试失败；未执行真实文档写入，因此没有真实宿主写入错误可报告。
+- WARNING：Office 日志出现项目目录预热超过 10000ms及 Codex shared transport unavailable 警告，但 HTTPS 健康和 Connector Platform 当前探针通过；Office 交接目录中的旧源码快照未用来覆盖当前正式 runtime。
+- PENDING：真实 WPS 抓取/保存/应用/多表回读、真实 Office Word 抓取/应用/回读、保存重开持久性、真实数字显示、真实宿主耗时和调用次数，均待匹配的测试文档与绑定可用后验收；不得创建假 session。
+- 回滚：停止对应 LaunchAgent 后，将正式 runtime 备份中的 `runtime` 恢复到原路径并重新 kickstart；Office 安装插件可从其备份目录恢复。未提交 GitHub，未生成安装包。
+
+## 2026-08-31 WPS Writer 插入卡住时停止入口与缓存刷新
+
+- 状态：`deployed / pending real WPS Writer acceptance`。
+- 现场根因：截图中的 WPS Writer 页面仍加载 `clientBuild=2026.08.30-wps-table-sync-text-format.8`；进度条的长状态文字占据固定宽度，导致停止按钮在窄面板中被挤出可视区域。正式运行时当时已更新，但已打开的 WPS WebView 尚未重载。
+- 修复：进度条改为独占一行，状态文字允许收缩/换行，停止按钮固定显示在下一行右侧；取消请求失败时恢复按钮可重试。客户端 build、页面缓存键更新为 `2026.08.30-wps-table-sync-text-format.9`。
+- 取消边界：排队中的 WPS 命令可以立即取消；已经送入 WPS 的 COM 调用只能在宿主调用返回后阻止后续格式化、绑定和保存，面板会提示可能已创建部分表格且未建立绑定，不能安全强杀正在执行的宿主调用。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；模拟插入、格式回读、取消和“不建立绑定”回归通过。
+- 部署：源码、插件 runtime、正式 runtime 已一致；正式 runtime `/Users/zer0y/.local/share/wps-connector/runtime`；本轮备份 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260831-001634/runtime`；Bridge `40215`、Add-in `3891` 和 Platform `40315` 健康，两个 LaunchAgent running。
+- 当前边界：在线 WPS Writer/Spreadsheet 会话仍报告旧 `.8`，尚未完成真实宿主重载和业务文档验收；未再次对当前文档执行插入。
+- 待用户动作：若当前 WPS 仍卡住，先完全退出 WPS 后重新打开；重新打开 Connector 面板确认 build 为 `.9`，再用小范围测试数据点击“插入并绑定”。卡住时应在进度区点击“停止插入”，不要重复点击“插入中…”。
+
+## 2026-08-30 ET 选区数量误判修复
+
+- 状态：`deployed / pending real WPS reload and acceptance`。
+- 根因：WPS Add-in 的通用 `wpsConnectorRangeShape()` 只返回 `rowCount`/`columnCount`，未返回 `cellCount`；安全检查读取该字段时得到 `undefined`，将正常的 `Sheet1!B12:H21`（70 个单元格）误报为超限。
+- 修复：范围形状补充数字型 `cellCount`；“加入清单”前端在旧页面缺少该字段时按行数×列数兜底；Add-in/cache build 更新为 `2026.08.30-wps-table-sync-text-format.8`。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；源码、插件 runtime、正式 runtime 均已同步；正式 Bridge `40215` 和 Add-in `3891` 健康。
+- 部署：正式 runtime `/Users/zer0y/.local/share/wps-connector/runtime`；备份 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-234353/runtime`。
+- 现场状态：当前已在线 WPS 页面仍报告旧 `.7`，需关闭并重新打开 WPS 表格/Connector 面板后，再用 `B12:H21` 点击“加入清单”验证；在此之前保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+
+## 2026-08-30 ET 数据源加入清单性能优化
+
+- 根因：WPS 表格面板的“加入清单”强制使用 `formatReadMode:"full"`，逐单元读取完整格式；同时重复读取选区并完整刷新同步视图。
+- 修复：默认改为 `formatReadMode:"profile"`，创建数据源时复用已读取的地址，避免重复 `et.read_selection`；完成后只刷新数据源/绑定清单，不再次刷新选区。
+- 边界：轻量 profile 仍保留字体、字号、加粗、斜体、下划线、对齐、换行和缩进等代表性格式；需要逐单元精确快照时仍可显式传 `formatReadMode:"full"`。
+- 版本：WPS Add-in `clientVersion=0.2.1`，`clientBuild=2026.08.30-wps-table-sync-text-format.6`。
+- 验证：`npm run check`、`npm test`、`git diff --check` 通过；Bridge 健康，源码/插件 runtime/正式 runtime 关键文件一致。
+- 部署：正式 runtime `/Users/lin/.local/share/wps-connector/runtime`；备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-154130/runtime`；未推送 GitHub。
+- 真实 WPS：等待用户重启 WPS 后验证“加入清单”耗时和格式效果，状态为 `PENDING_REAL_HOST_ACCEPTANCE`。
+
 ## 2026-08-30 ET→WPS Writer 文本格式刷新性能修复
 
 - 状态：`deployed / pending real WPS reload and acceptance`。
