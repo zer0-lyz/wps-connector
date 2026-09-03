@@ -49,7 +49,11 @@ async function handle(req, res) {
     if (safeMethod && (pathname === "/" || pathname === "/index.html" || pathname === "/runtime.html")) return sendAsset(res, "runtime.html");
     if (safeMethod && pathname === "/pane.html") return sendAsset(res, "pane.html");
     if (safeMethod && pathname === "/main.js") return sendAsset(res, "main.js");
+    if (safeMethod && pathname === "/sourceFileMatcher.js") return sendAsset(res, "../../vendor/connector-shared/sourceFileMatcher.js");
     if (safeMethod && pathname === "/connectorSuiteUi.js") return sendAsset(res, "connectorSuiteUi.js");
+    // Serve the host-neutral module directly so WPS and Office execute the
+    // same table-settings UI and session-payload rules.
+    if (safeMethod && pathname === "/shared/table-format-panel.js") return sendAsset(res, "../../vendor/connector-shared/modules/table-format-template/tableFormatPanel.js");
     if (safeMethod && pathname === "/tableFormatPanel.js") return sendAsset(res, "tableFormatPanel.js");
     if (safeMethod && pathname === "/ribbon.xml") return sendAsset(res, "ribbon.xml");
     if (safeMethod && pathname === "/icon.png") return sendAsset(res, "icon.png");

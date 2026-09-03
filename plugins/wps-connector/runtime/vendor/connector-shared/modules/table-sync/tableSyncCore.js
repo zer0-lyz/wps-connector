@@ -46,6 +46,23 @@ export function asMatrix(value) {
   return value.map((row) => (Array.isArray(row) ? row.map((cell) => cell ?? "") : [row ?? ""]));
 }
 
+const DISPLAY_PLACEHOLDER_DASHES = "-‐‑‒–—−－";
+
+/**
+ * Normalize text copied from a spreadsheet without changing meaningful spaces
+ * inside a text value. Spreadsheet hosts commonly pad a dash placeholder with
+ * spaces, so treat that shape as a single dash before transferring it.
+ */
+export function normalizeDisplayText(value, display) {
+  const source = display === undefined || display === null ? value : display;
+  if (source === undefined || source === null) return "";
+  const raw = String(source);
+  const trimmed = raw.replace(/\r?\n/g, " ").trim();
+  if (!trimmed) return "";
+  if (new RegExp(`^\\s*[${DISPLAY_PLACEHOLDER_DASHES}]\\s*$`, "u").test(raw)) return "-";
+  return trimmed;
+}
+
 function resolveDisplayText(value) {
   if (!isRecord(value)) return value;
   if (hasOwn(value, "displayText") && value.displayText !== undefined && value.displayText !== null) {
@@ -68,9 +85,10 @@ function numericCellValue(value) {
 }
 
 export function normalizeNumericDisplayText(value, display) {
-  const original = display === undefined || display === null ? String(value ?? "") : display;
+  const original = normalizeDisplayText(value, display);
   if (numericCellValue(value) === null) return original;
   const trimmed = String(original).trim();
+  if (trimmed === "-") return "-";
   const compact = trimmed.replace(/\s+/g, "");
   if (!compact || !/\d/.test(compact) || !NUMERIC_DISPLAY_CHARACTERS.test(compact)) return original;
   return compact;
@@ -94,7 +112,8 @@ export function buildDisplayValueMatrix(values, displayTextOrText) {
       if (displayCell !== undefined && displayCell !== null) {
         return normalizeNumericDisplayText(valueRow[columnIndex], displayCell);
       }
-      return valueRow[columnIndex] ?? "";
+      const valueCell = valueRow[columnIndex] ?? "";
+      return typeof valueCell === "string" ? normalizeDisplayText(valueCell) : valueCell;
     });
   });
 }

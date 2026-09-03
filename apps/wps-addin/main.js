@@ -1,6 +1,6 @@
 const WPS_CONNECTOR_DEFAULT_BRIDGE = "http://127.0.0.1:40215";
 const WPS_CONNECTOR_CLIENT_VERSION = "0.2.1";
-const WPS_CONNECTOR_CLIENT_BUILD = "2026.09.01-table-sync-cleanup-status.1";
+const WPS_CONNECTOR_CLIENT_BUILD = "2026.09.03-table-format-session-ready.1";
 const WPS_CONNECTOR_SELECTION_PREVIEW_CELL_LIMIT = 256;
 const WPS_CONNECTOR_ET_DISPLAY_TEXT_CELL_LIMIT = 256;
 const WPS_CONNECTOR_ET_SOURCE_MAX_CELLS = 100000;
@@ -2904,6 +2904,11 @@ function wpsConnectorWppAlignment(value) {
   if (value === undefined || value === null || value === "") return undefined;
   return map[String(value).toLowerCase()] ?? value;
 }
+function wpsConnectorWppVerticalAlignment(value) {
+  const map = { top: 0, center: 1, middle: 1, bottom: 3 };
+  if (value === undefined || value === null || value === "") return undefined;
+  return map[String(value).toLowerCase()] ?? value;
+}
 function wpsConnectorWppTableCellText(table, row, column) {
   try {
     const cell = table.Cell(row, column);
@@ -2969,11 +2974,13 @@ function wpsConnectorWppOneBasedTableIndex(input = {}) {
   return raw + 1;
 }
 function wpsConnectorWppSelectTable(input = {}) {
-  const { table, tableIndex } = wpsConnectorWppTable(input);
+  const oneBasedTableIndex = wpsConnectorWppOneBasedTableIndex(input);
+  const { table } = wpsConnectorWppTable({ ...input, tableIndex: oneBasedTableIndex });
   const range = table.Range;
-  if (!range || typeof range.Select !== "function") wpsConnectorFail("HOST_UNSUPPORTED", "WPS Writer table range selection is not available.", { tableIndex });
-  try { range.Select(); } catch (error) { wpsConnectorFail("WPP_SELECT_TABLE_FAILED", "WPS Writer failed to select the requested table.", { hostMessage: error.message, tableIndex }); }
-  return { host: "wpp", selected: true, tableIndex, oneBasedTableIndex: tableIndex + 1, ...wpsConnectorWppTableSize(table) };
+  const tableIndex = oneBasedTableIndex - 1;
+  if (!range || typeof range.Select !== "function") wpsConnectorFail("HOST_UNSUPPORTED", "WPS Writer table range selection is not available.", { tableIndex, oneBasedTableIndex });
+  try { range.Select(); } catch (error) { wpsConnectorFail("WPP_SELECT_TABLE_FAILED", "WPS Writer failed to select the requested table.", { hostMessage: error.message, tableIndex, oneBasedTableIndex }); }
+  return { host: "wpp", selected: true, tableIndex, oneBasedTableIndex, ...wpsConnectorWppTableSize(table) };
 }
 
 function wpsConnectorWppReplaceTableValues(input = {}) {
@@ -3213,6 +3220,43 @@ function wpsConnectorWppAlignmentComparable(value) {
   if (text === "right") return 2;
   return Number.isFinite(numeric) && String(value ?? "").trim() !== "" ? numeric : text;
 }
+function wpsConnectorWppVerticalAlignmentComparable(value) {
+  const numeric = Number(value);
+  if (numeric === 0) return "top";
+  if (numeric === 1) return "center";
+  if (numeric === 3) return "bottom";
+  const text = String(value ?? "").trim().toLowerCase();
+  if (text === "middle") return "center";
+  return text;
+}
+function wpsConnectorWppBorderLineStyle(value) {
+  if (value === undefined || value === null || value === "") return value;
+  const map = { none: 0, nil: 0, single: 1, solid: 1 };
+  const text = String(value).trim().toLowerCase();
+  return map[text] ?? value;
+}
+function wpsConnectorWppBorderLineStyleComparable(value) {
+  const numeric = Number(value);
+  if (numeric === 0) return "nil";
+  if (numeric === 1) return "single";
+  const text = String(value ?? "").trim().toLowerCase();
+  if (text === "none") return "nil";
+  if (text === "solid") return "single";
+  return text;
+}
+function wpsConnectorWppBorderLineWidth(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  const pointsToHost = new Map([[0.25, 2], [0.5, 4], [0.75, 6], [1, 8], [1.5, 12], [2.25, 18], [3, 24], [4.5, 36], [6, 48]]);
+  for (const [points, hostValue] of pointsToHost) if (Math.abs(numeric - points) < 0.001) return hostValue;
+  return numeric;
+}
+function wpsConnectorWppBorderLineWidthComparable(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return value;
+  const hostToPoints = new Map([[2, 0.25], [4, 0.5], [6, 0.75], [8, 1], [12, 1.5], [18, 2.25], [24, 3], [36, 4.5], [48, 6]]);
+  return hostToPoints.get(numeric) ?? numeric;
+}
 function wpsConnectorWppFontName(font) {
   return wpsConnectorSafeGet(font, "NameFarEast") || wpsConnectorSafeGet(font, "Name") || wpsConnectorSafeGet(font, "NameAscii");
 }
@@ -3224,9 +3268,11 @@ function wpsConnectorBorderFormat(borders) {
     try { border = typeof borders?.Item === "function" ? borders.Item(index) : null; } catch {}
     if (!border) { try { border = typeof borders?.Item === "function" ? borders.Item(Math.abs(index)) : null; } catch {} }
     if (!border) continue;
-    const item = { edge, index, lineStyle: wpsConnectorSafeGet(border, "LineStyle"), lineWidth: wpsConnectorSafeGet(border, "LineWidth") ?? wpsConnectorSafeGet(border, "Weight"), color: wpsConnectorWppColorText(wpsConnectorSafeGet(border, "Color")) };
+    const lineStyle = wpsConnectorSafeGet(border, "LineStyle");
+    const lineWidth = wpsConnectorSafeGet(border, "LineWidth") ?? wpsConnectorSafeGet(border, "Weight");
+    const item = { edge, index, lineStyle, lineWidth, type: wpsConnectorWppBorderLineStyleComparable(lineStyle), width: wpsConnectorWppBorderLineWidthComparable(lineWidth), color: wpsConnectorWppColorText(wpsConnectorSafeGet(border, "Color")) };
     out.items.push(item);
-    out.edges[edge] = { lineStyle: item.lineStyle, lineWidth: item.lineWidth, color: item.color };
+    out.edges[edge] = { lineStyle: item.lineStyle, lineWidth: item.lineWidth, type: item.type, width: item.width, color: item.color };
   }
   if (!out.items.length) {
     const aggregate = { lineStyle: wpsConnectorSafeGet(borders, "LineStyle"), lineWidth: wpsConnectorSafeGet(borders, "LineWidth") ?? wpsConnectorSafeGet(borders, "Weight"), color: wpsConnectorWppColorText(wpsConnectorSafeGet(borders, "Color")) };
@@ -3257,9 +3303,11 @@ function wpsConnectorApplyBorderFormat(borders, format = {}, diagnostics = null,
       }
       continue;
     }
-    if (item.lineStyle !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "LineStyle", item.lineStyle, "lineStyle")) applied.push(`border:${item.index}:lineStyle`);
-    if ((item.lineWidth ?? item.width) !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "LineWidth", item.lineWidth ?? item.width, "lineWidth")) applied.push(`border:${item.index}:lineWidth`);
-    if (!item.lineWidth && item.weight !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "Weight", item.weight, "weight")) applied.push(`border:${item.index}:weight`);
+    const lineStyle = item.lineStyle ?? item.type;
+    const lineWidth = item.lineWidth ?? item.width;
+    if (lineStyle !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "LineStyle", wpsConnectorWppBorderLineStyle(lineStyle), "lineStyle")) applied.push(`border:${item.index}:lineStyle`);
+    if (lineWidth !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "LineWidth", wpsConnectorWppBorderLineWidth(lineWidth), "lineWidth")) applied.push(`border:${item.index}:lineWidth`);
+    if (lineWidth === undefined && item.weight !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "Weight", item.weight, "weight")) applied.push(`border:${item.index}:weight`);
     if (item.color !== undefined && wpsConnectorWppTrySet(diagnostics, itemPrefix, border, "Color", item.color, "color")) applied.push(`border:${item.index}:color`);
   }
   for (const [edge, item] of Object.entries(format.edges || {})) {
@@ -3275,8 +3323,10 @@ function wpsConnectorApplyBorderFormat(borders, format = {}, diagnostics = null,
       }
       continue;
     }
-    if ((item.lineStyle ?? item.type) !== undefined && wpsConnectorWppTrySet(diagnostics, edgePrefix, border, "LineStyle", item.lineStyle ?? item.type, "lineStyle")) applied.push(`border:${edge}:lineStyle`);
-    if ((item.lineWidth ?? item.width) !== undefined && wpsConnectorWppTrySet(diagnostics, edgePrefix, border, "LineWidth", item.lineWidth ?? item.width, "lineWidth")) applied.push(`border:${edge}:lineWidth`);
+    const lineStyle = item.lineStyle ?? item.type;
+    const lineWidth = item.lineWidth ?? item.width;
+    if (lineStyle !== undefined && wpsConnectorWppTrySet(diagnostics, edgePrefix, border, "LineStyle", wpsConnectorWppBorderLineStyle(lineStyle), "lineStyle")) applied.push(`border:${edge}:lineStyle`);
+    if (lineWidth !== undefined && wpsConnectorWppTrySet(diagnostics, edgePrefix, border, "LineWidth", wpsConnectorWppBorderLineWidth(lineWidth), "lineWidth")) applied.push(`border:${edge}:lineWidth`);
     if (item.color !== undefined && wpsConnectorWppTrySet(diagnostics, edgePrefix, border, "Color", item.color, "color")) applied.push(`border:${edge}:color`);
   }
   return applied;
@@ -3296,7 +3346,8 @@ function wpsConnectorApplyWppRangeCellFormat(range, format = {}, diagnostics = n
   applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(range, "Borders"), format.borders, diagnostics, "cells.borders"));
   const cells = wpsConnectorSafeGet(range, "Cells");
   if (format.verticalAlignment !== undefined && format.verticalAlignment !== null) {
-    const ok = wpsConnectorWppRecordSet(diagnostics, "cells.verticalAlignment", wpsConnectorSafeSet(cells, "VerticalAlignment", format.verticalAlignment) || wpsConnectorSafeSet(range, "VerticalAlignment", format.verticalAlignment));
+    const verticalAlignment = wpsConnectorWppVerticalAlignment(format.verticalAlignment);
+    const ok = wpsConnectorWppRecordSet(diagnostics, "cells.verticalAlignment", wpsConnectorSafeSet(cells, "VerticalAlignment", verticalAlignment) || wpsConnectorSafeSet(range, "VerticalAlignment", verticalAlignment));
     if (ok) applied.push("cells.verticalAlignment");
   }
   const padding = format.padding || {};
@@ -3332,7 +3383,7 @@ function wpsConnectorApplyWppRangeFormat(range, format = {}, diagnostics = null,
   if (f.highlightColor !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, font, "HighlightColor", f.highlightColor, "font.highlightColor")) applied.push("font.highlightColor");
   const p = format.paragraph || {};
   const paragraphAlignment = p.alignment ?? format.horizontalAlignment;
-  if (paragraphAlignment !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "Alignment", paragraphAlignment, "paragraph.alignment")) applied.push("paragraph.alignment");
+  if (paragraphAlignment !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "Alignment", wpsConnectorWppAlignment(paragraphAlignment), "paragraph.alignment")) applied.push("paragraph.alignment");
   if (p.spaceBefore !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "SpaceBefore", p.spaceBefore, "paragraph.spaceBefore")) applied.push("paragraph.spaceBefore");
   if (p.spaceAfter !== undefined && wpsConnectorWppTrySet(diagnostics, diagnosticPrefix, paragraph, "SpaceAfter", p.spaceAfter, "paragraph.spaceAfter")) applied.push("paragraph.spaceAfter");
   const lineSpacingValue = p.lineSpacing !== undefined ? p.lineSpacing : p.lineSpacingValue;
@@ -3363,7 +3414,7 @@ function wpsConnectorApplyWppCellFormat(cell, format = {}, diagnostics = null) {
     : { ...format, paragraph: { ...(format.paragraph || {}), wordWrap: format.wrapText } };
   applied.push(...wpsConnectorApplyWppRangeFormat(wpsConnectorSafeGet(cell, "Range"), rangeFormat, diagnostics, "cells"));
   applied.push(...wpsConnectorApplyBorderFormat(wpsConnectorSafeGet(cell, "Borders"), format.borders, diagnostics, "cells.borders"));
-  if (format.verticalAlignment !== undefined && wpsConnectorWppTrySet(diagnostics, "cells", cell, "VerticalAlignment", format.verticalAlignment, "verticalAlignment")) applied.push("cell.verticalAlignment");
+  if (format.verticalAlignment !== undefined && wpsConnectorWppTrySet(diagnostics, "cells", cell, "VerticalAlignment", wpsConnectorWppVerticalAlignment(format.verticalAlignment), "verticalAlignment")) applied.push("cell.verticalAlignment");
   const p = format.padding || {};
   for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"]]) {
     if (p[key] !== undefined && wpsConnectorWppTrySet(diagnostics, "cells.padding", cell, prop, p[key], key)) applied.push(`cell.padding.${key}`);
@@ -3536,6 +3587,9 @@ function wpsConnectorWppReadTableFormat(input = {}) {
   const rangeFormat = wpsConnectorWppRangeFormat(tableRange);
   const preferredWidthType = wpsConnectorSafeGet(table, "PreferredWidthType");
   const allowAutoFit = wpsConnectorSafeGet(table, "AllowAutoFit");
+  const headerRow = (() => { try { return table.Rows?.Item?.(1); } catch { return null; } })();
+  const headingFormat = headerRow ? wpsConnectorSafeGet(headerRow, "HeadingFormat") : undefined;
+  const repeatHeaderRows = headingFormat === undefined || headingFormat === null ? undefined : wpsConnectorBoolFormat(headingFormat);
   const preferredWidth = wpsConnectorSafeGet(table, "PreferredWidth");
   const tableWidth = wpsConnectorWppFirstDefined(wpsConnectorSafeGet(table, "Width"), preferredWidth);
   const format = {
@@ -3547,7 +3601,8 @@ function wpsConnectorWppReadTableFormat(input = {}) {
       tableWidth: tableWidth,
       tableWidthType: wpsConnectorWppTableWidthTypeName(preferredWidthType),
       allowAutoFit,
-      autoFit: wpsConnectorSafeGet(table, "AutoFit") ?? allowAutoFit,
+      autoFit: wpsConnectorBoolFormat(allowAutoFit) ? "window" : wpsConnectorSafeGet(table, "AutoFit") ?? allowAutoFit,
+      repeatHeaderRows,
       preferredWidth,
       preferredWidthType,
       fontName: rangeFormat.font?.name,
@@ -3683,12 +3738,26 @@ function wpsConnectorWppApplyTableFormat(input = {}) {
   tryTableSet("styleBuiltIn", "StyleBuiltIn", tf.styleBuiltIn);
   tryTableSet("allowAutoFit", "AllowAutoFit", tf.allowAutoFit);
   if (tf.autoFit !== undefined && tf.autoFit !== null) {
-    let autoFitApplied = wpsConnectorSafeSet(table, "AutoFit", tf.autoFit);
-    if (!autoFitApplied) {
-      try { wpsConnectorMember(table, "AutoFitBehavior", tf.autoFit ? 1 : 0); autoFitApplied = true; } catch {}
+    const autoFitText = String(tf.autoFit).trim().toLowerCase();
+    const fitToWindow = tf.autoFit === true || ["window", "autofitwindow", "2"].includes(autoFitText);
+    let autoFitApplied = false;
+    if (fitToWindow) {
+      autoFitApplied = wpsConnectorSafeSet(table, "AllowAutoFit", true) || autoFitApplied;
+      try { table.AutoFitBehavior?.(2); autoFitApplied = true; } catch {}
+      if (!autoFitApplied) autoFitApplied = wpsConnectorSafeSet(table, "AutoFit", true);
+    } else {
+      autoFitApplied = wpsConnectorSafeSet(table, "AllowAutoFit", false) || autoFitApplied;
+      try { table.AutoFitBehavior?.(0); autoFitApplied = true; } catch {}
+      if (!autoFitApplied) autoFitApplied = wpsConnectorSafeSet(table, "AutoFit", false);
     }
     wpsConnectorWppRecordSet(diagnostics, "table.autoFit", autoFitApplied);
     if (autoFitApplied) applied.push("table.autoFit");
+  }
+  if (typeof tf.repeatHeaderRows === "boolean") {
+    let repeatHeaderApplied = false;
+    try { repeatHeaderApplied = wpsConnectorSafeSet(table.Rows?.Item?.(1), "HeadingFormat", tf.repeatHeaderRows ? -1 : 0); } catch {}
+    wpsConnectorWppRecordSet(diagnostics, "table.repeatHeaderRows", repeatHeaderApplied);
+    if (repeatHeaderApplied) applied.push("table.repeatHeaderRows");
   }
   const preferredWidthType = tf.preferredWidthType !== undefined ? tf.preferredWidthType : wpsConnectorWppTableWidthTypeValue(tf.tableWidthType);
   tryTableSet("preferredWidthType", "PreferredWidthType", preferredWidthType);
@@ -3732,7 +3801,7 @@ function wpsConnectorWppApplyTableFormat(input = {}) {
   for (const [key, prop] of [["top", "TopPadding"], ["bottom", "BottomPadding"], ["left", "LeftPadding"], ["right", "RightPadding"], ["spacing", "Spacing"]]) if (wpsConnectorWppTrySet(diagnostics, "table.padding", table, prop, padding[key], key)) applied.push(`table.padding.${key}`);
   if (tf.alignment !== undefined || tf.horizontalAlignment !== undefined) {
     const paragraph = wpsConnectorSafeGet(tableRange, "ParagraphFormat");
-    if (wpsConnectorWppTrySet(diagnostics, "table", paragraph, "Alignment", tf.alignment ?? tf.horizontalAlignment, "alignment")) applied.push("table.alignment");
+    if (wpsConnectorWppTrySet(diagnostics, "table", paragraph, "Alignment", wpsConnectorWppAlignment(tf.alignment ?? tf.horizontalAlignment), "alignment")) applied.push("table.alignment");
   }
   if (format.rowHeights) applied.push(...wpsConnectorWppSetRowHeights({ tableIndex, rowHeights: format.rowHeights }, diagnostics).appliedRows.map((r) => `row:${r}:height`));
   if (format.columnWidths) applied.push(...wpsConnectorWppSetColumnWidths({ tableIndex, columnWidths: format.columnWidths }, diagnostics).appliedColumns.map((c) => `column:${c}:width`));
@@ -4038,6 +4107,9 @@ function wpsConnectorWppFormatReadPath(object, path) { return String(path).split
 function wpsConnectorWppFormatComparable(path, value) {
   if (/color/i.test(path)) return wpsConnectorWppColorText(value);
   if (path === "paragraph.alignment") return wpsConnectorWppAlignmentComparable(value);
+  if (path === "verticalAlignment") return wpsConnectorWppVerticalAlignmentComparable(value);
+  if (/borders\.(?:type|lineStyle)$/.test(path)) return wpsConnectorWppBorderLineStyleComparable(value);
+  if (/borders\.(?:width|lineWidth)$/.test(path)) return wpsConnectorWppBorderLineWidthComparable(value);
   if (["font.bold", "font.italic", "font.underline", "paragraph.wordWrap", "borders.enable"].includes(path)) {
     if (value === true || value === false) return value;
     const text = String(value ?? "").trim().toLowerCase();

@@ -19,7 +19,7 @@ const TABLE_KEYS = new Set([
   "bandedRows", "bandedColumns", "firstColumn", "lastColumn", "totalRow",
   "styleBandedRows", "styleBandedColumns", "styleFirstColumn", "styleLastColumn", "styleTotalRow",
   "alignment", "tableAlignment", "horizontalAlignment", "verticalAlignment", "width", "tableWidth",
-  "preferredWidth", "preferredWidthType", "allowAutoFit", "autoFit", "autoFitBehavior", "shadingColor", "tableWidthType",
+  "preferredWidth", "preferredWidthType", "allowAutoFit", "autoFit", "autoFitBehavior", "autoFitMode", "shadingColor", "tableWidthType",
   "fontName", "fontSize", "fontColor", "bold", "italic", "cellPadding", "padding",
   "borderColor", "borderType", "borderWidth", "borders", "headerRowStyle", "bodyRowStyle",
   "headerRowFontName", "headerRowFontSize", "headerRowFontColor", "headerRowBold",
@@ -39,6 +39,7 @@ const PARAGRAPH_KEYS = new Set([
 ]);
 const SHADING_KEYS = new Set(["backgroundColor", "foregroundColor", "texture", "color", "shadingColor", "pattern"]);
 const BORDER_KEYS = new Set(["enable", "items", "edges", "top", "left", "bottom", "right", "insideH", "insideV", "start", "end", "lineStyle", "lineWidth", "color", "type", "width", "rawSize", "space", "ooxml"]);
+const BORDER_EDGE_KEYS = new Set(["top", "left", "bottom", "right", "insideH", "insideV", "start", "end"]);
 const DIMENSION_KEYS = new Set(["row", "column", "index", "height", "width", "heightRule", "unit", "columnWidth", "rowHeight"]);
 const MERGE_KEYS = new Set(["startRow", "startColumn", "endRow", "endColumn", "row", "column", "rowSpan", "columnSpan"]);
 
@@ -47,6 +48,41 @@ export const TABLE_FORMAT_FIELD_WHITELIST = Object.freeze([
   "cells[].borders.*", "cells[].padding.*", "cells[].verticalAlignment", "cells[].numberFormat", "cells[].numberFormatLocal",
   "rowHeights[].*", "columnWidths[].*", "mergedCells[].*", "rowCount", "columnCount",
 ]);
+
+/**
+ * First-release table settings preset. Values are host-neutral; adapters map
+ * alignment names, font properties and the point-based row height to their
+ * native WPS/Word APIs. Number display format is deliberately excluded: this
+ * feature changes appearance, not cell values or their displayed text.
+ */
+export const TABLE_SETTINGS_DEFAULT_PRESET = Object.freeze({
+  id: "default",
+  name: "默认表格格式",
+  textFontName: "宋体",
+  numberFontName: "Times New Roman",
+  fontSize: 10,
+  rowHeightCm: 0.6,
+  rowHeightPoints: 17.00787401574803,
+  rowHeightRule: "atLeast",
+  autoFit: "window",
+  repeatHeaderRows: true,
+  headerBold: true,
+  headerAlignment: "center",
+  numberAlignment: "right",
+  textAlignment: "left",
+  verticalAlignment: "center",
+  borders: {
+    enable: true,
+    edges: {
+      top: { type: "single", width: 1.5, color: "#000000" },
+      bottom: { type: "single", width: 1.5, color: "#000000" },
+      left: { type: "nil", width: 0, color: "#000000" },
+      right: { type: "nil", width: 0, color: "#000000" },
+      insideH: { type: "single", width: 0.5, color: "#000000" },
+      insideV: { type: "single", width: 0.5, color: "#000000" },
+    },
+  },
+});
 
 function clone(value) {
   if (value === undefined || value === null) return value;
@@ -60,12 +96,30 @@ function canonicalColor(value) {
   if (/^[0-9a-f]{6}$/i.test(text)) return `#${text.toUpperCase()}`;
   return text;
 }
+function canonicalAlignment(value) {
+  if (value === undefined || value === null || value === "") return value;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && String(value).trim() !== "") {
+    if (numeric === 0) return "left";
+    if (numeric === 1) return "center";
+    if (numeric === 2) return "right";
+    if (numeric === 3) return "justify";
+  }
+  const text = String(value).trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (/^(left|start|wdalignparagraphleft)$/.test(text)) return "left";
+  if (/^(center|centred|centered|middle|wdalignparagraphcenter)$/.test(text)) return "center";
+  if (/^(right|end|wdalignparagraphright)$/.test(text)) return "right";
+  if (/^(justify|justified|wdalignparagraphjustify)$/.test(text)) return "justify";
+  return text;
+}
 function normalizeLeaf(value, key = "") {
   if (!defined(value)) return undefined;
   if (typeof value === "string") {
     const text = value.trim();
     if (!text || text === "unsupported") return undefined;
-    return /color/i.test(key) ? canonicalColor(text) : text;
+    if (/color/i.test(key)) return canonicalColor(text);
+    if (/alignment/i.test(key)) return canonicalAlignment(text);
+    return text;
   }
   return value;
 }
@@ -82,7 +136,7 @@ function normalizeObject(value, allowed, context = "") {
       continue;
     }
     if (raw && typeof raw === "object") {
-      const nestedAllowed = key === "font" ? FONT_KEYS : key === "paragraph" ? PARAGRAPH_KEYS : key === "shading" ? SHADING_KEYS : key === "borders" ? BORDER_KEYS : key === "padding" || key === "cellPadding" ? DIMENSION_KEYS : key === "headerRowStyle" || key === "bodyRowStyle" ? TABLE_KEYS : null;
+      const nestedAllowed = key === "font" ? FONT_KEYS : key === "paragraph" ? PARAGRAPH_KEYS : key === "shading" ? SHADING_KEYS : key === "borders" || key === "edges" || BORDER_EDGE_KEYS.has(key) ? BORDER_KEYS : key === "padding" || key === "cellPadding" ? DIMENSION_KEYS : key === "headerRowStyle" || key === "bodyRowStyle" ? TABLE_KEYS : null;
       output[key] = nestedAllowed ? normalizeObject(raw, nestedAllowed, `${context}.${key}`) : normalizeFormatValue(raw, `${context}.${key}`);
       if (!Object.keys(output[key] || {}).length) delete output[key];
       continue;
@@ -222,7 +276,9 @@ function compareValue(expected, actual, path, mismatches, options = {}) {
     return;
   }
   if (numericEqual(expected, actual, options)) return;
-  if (comparablePrimitive(expected) !== comparablePrimitive(actual)) mismatches.push({ path: pathLabel(path), expected, actual: actual ?? null });
+  const expectedComparable = /alignment/i.test(path) ? canonicalAlignment(expected) : comparablePrimitive(expected);
+  const actualComparable = /alignment/i.test(path) ? canonicalAlignment(actual) : comparablePrimitive(actual);
+  if (expectedComparable !== actualComparable) mismatches.push({ path: pathLabel(path), expected, actual: actual ?? null });
 }
 export function compareTableFormat(expected = {}, actual = {}, options = {}) {
   const mismatches = [];
@@ -276,6 +332,70 @@ export function fitTableFormatToShape(format = {}, shape = {}) {
   if (Array.isArray(next.mergedCells) && rowCount && columnCount) next.mergedCells = next.mergedCells.filter((item) => Number(item.startRow) >= 1 && Number(item.startColumn) >= 1 && Number(item.endRow) <= rowCount && Number(item.endColumn) <= columnCount);
   next.rowCount = rowCount || next.rowCount; next.columnCount = columnCount || next.columnCount;
   return next;
+}
+
+/** Recognize numeric display values without classifying dates or identifiers. */
+export function isNumericTableValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return true;
+  const text = String(value ?? "").trim();
+  if (!text || /^[-+]?\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}$/.test(text)) return false;
+  return /^\(?[-+]?\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*%?\)?$/.test(text);
+}
+
+/** Build the shared default settings format for one concrete table shape. */
+export function buildDefaultTableSettingsFormat({ rowCount = 0, columnCount = 0, values = [], preset = TABLE_SETTINGS_DEFAULT_PRESET } = {}) {
+  const rows = Math.max(0, Math.floor(Number(rowCount) || 0));
+  const columns = Math.max(0, Math.floor(Number(columnCount) || 0));
+  const cells = [];
+  const rowHeights = [];
+  for (let row = 1; row <= rows; row += 1) {
+    rowHeights.push({ row, height: Number(preset.rowHeightPoints), unit: "points", heightRule: 1 });
+    for (let column = 1; column <= columns; column += 1) {
+      const header = row === 1;
+      const numeric = !header && isNumericTableValue(values?.[row - 1]?.[column - 1]);
+      cells.push({
+        row,
+        column,
+        font: { name: numeric ? preset.numberFontName : preset.textFontName, size: Number(preset.fontSize), bold: header ? Boolean(preset.headerBold) : false },
+        paragraph: { alignment: header ? preset.headerAlignment : numeric ? preset.numberAlignment : preset.textAlignment },
+        verticalAlignment: preset.verticalAlignment,
+      });
+    }
+  }
+  return {
+    table: {
+      repeatHeaderRows: rows > 0 ? Boolean(preset.repeatHeaderRows) : false,
+      autoFit: preset.autoFit,
+      borders: clone(preset.borders),
+    },
+    rowHeights,
+    columnWidths: [],
+    mergedCells: [],
+    cells,
+    rowCount: rows,
+    columnCount: columns,
+  };
+}
+
+/** Resolve UI/API table scope into a validated, de-duplicated 0-based list. */
+export function resolveTableTargetIndexes({ target = "All", tableIndexes = [], tableCount = 0, selectedTableIndex = null } = {}) {
+  const count = Math.max(0, Math.floor(Number(tableCount) || 0));
+  const all = Array.from({ length: count }, (_, index) => index);
+  const selected = Number.isInteger(Number(selectedTableIndex)) && Number(selectedTableIndex) >= 0 && Number(selectedTableIndex) < count
+    ? Number(selectedTableIndex) : null;
+  const requested = Array.isArray(tableIndexes) ? tableIndexes : [];
+  const normalized = [...new Set(requested.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 0))];
+  const invalidTableIndexes = normalized.filter((index) => index >= count);
+  const kind = String(target || "All").trim().toLowerCase();
+  let indexes;
+  let excludedTableIndexes = [];
+  if (["selection", "selected", "current"].includes(kind)) indexes = selected === null ? [] : [selected];
+  else if (["tableindexes", "selectedtables", "multi", "multiple"].includes(kind)) indexes = normalized.filter((index) => index < count);
+  else if (["exceptselection", "exceptselected"].includes(kind)) {
+    excludedTableIndexes = selected === null ? [] : [selected];
+    indexes = selected === null ? [] : all.filter((index) => index !== selected);
+  } else indexes = all;
+  return { target, tableIndexes: [...indexes], targetIndexes: [...indexes], excludedTableIndexes, invalidTableIndexes, selectedTableIndex: selected, tableCount: count };
 }
 export function buildTableFormatApplyPlan(format = {}, options = {}) {
   const normalized = normalizeTableFormatSnapshot(format).format;
@@ -350,17 +470,61 @@ function filterAppliedFields(fields, excluded) {
 export async function applyTableFormatTransactions({ targets = [], format = {}, host = "", read, apply, restore, options = {} }) {
   const started = Date.now();
   const results = [];
+  const beforeByTable = new Map();
+
+  const restoreOne = async (tableIndex, before, verify = options.verifyRestore !== false) => {
+    if (!before) return null;
+    let rollback;
+    try {
+      rollback = await restore?.(tableIndex, before?.format || before || {});
+    } catch (error) {
+      rollback = { ok: false, error: { code: error.code || "ROLLBACK_FAILED", message: error.message || String(error) } };
+    }
+    if (rollback && verify) {
+      try {
+        const restored = await read(tableIndex, { phase: "restore" });
+        rollback.verification = compareTableFormat(before?.format || before || {}, restored?.format || restored || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
+        rollback.ok = rollback.ok !== false && rollback.verification.matched;
+      } catch (error) {
+        rollback.ok = false;
+        rollback.verification = { matched: false, mismatches: [{ path: "restore", expected: "readback", actual: error.message || String(error) }] };
+      }
+    }
+    return rollback;
+  };
+
+  const rollbackSuccessfulBatch = async () => {
+    if (options.atomic !== true) return [];
+    const rolledBack = [];
+    for (const item of results) {
+      if (item?.ok !== true) continue;
+      const before = beforeByTable.get(item.tableIndex);
+      const rollback = await restoreOne(item.tableIndex, before);
+      item.rollback = rollback;
+      item.batchRolledBack = true;
+      item.ok = false;
+      item.applied = [];
+      item.warning = "批量应用未完整验证，已回滚本批次此前已应用的表格。";
+      rolledBack.push({ tableIndex: item.tableIndex, rollback });
+    }
+    return rolledBack;
+  };
+
   for (const target of targets) {
     const tableIndex = typeof target === "object" ? target.tableIndex : target;
     const targetShape = typeof target === "object" ? target.shape || {} : {};
-    const plan = buildTableFormatApplyPlan(fitTableFormatToShape(format, targetShape), options);
+    const targetFormat = typeof format === "function" ? format(target) : format;
+    const plan = buildTableFormatApplyPlan(fitTableFormatToShape(targetFormat, targetShape), options);
     const requested = tableFormatForApply({ format: plan.format, host }, { host });
     let before;
     try {
       before = await read(tableIndex, { phase: "before", plan });
+      beforeByTable.set(tableIndex, before);
       const writeResult = await apply(tableIndex, requested, plan);
       const after = await read(tableIndex, { phase: "after", plan });
-      const verification = compareTableFormat(plan.format, after?.format || after || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
+      const verification = writeResult?.verification?.authoritative === true && typeof writeResult.verification.matched === "boolean"
+        ? writeResult.verification
+        : compareTableFormat(plan.format, after?.format || after || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
       const attemptedFields = collectTableFormatFields(plan.format);
       const statusFields = (values) => [...new Set(values || [])].filter((field) => attemptedFields.some((attempted) => fieldMatchesStatus(attempted, field)));
       const unsupported = statusFields([
@@ -383,23 +547,20 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
       // when every requested field matches, those provisional markers must be
       // promoted to applied instead of making an actually verified operation
       // fail.  Explicit unsupported fields remain a hard boundary.
-      const unresolvedAttemptedButUnverified = verification.matched ? [] : attemptedButUnverified;
-      const appliedFields = verification.matched
+      const authoritativeAdapterVerification = writeResult?.verification?.authoritative === true;
+      const adapterVerifiedFields = new Set(authoritativeAdapterVerification ? (writeResult.verification.verifiedFields || []) : []);
+      const unresolvedAttemptedButUnverified = verification.matched
+        ? (authoritativeAdapterVerification ? attemptedButUnverified.filter((field) => !adapterVerifiedFields.has(field)) : [])
+        : attemptedButUnverified;
+      const candidateAppliedFields = verification.matched
         ? filterAppliedFields(attemptedFields, [...unsupported, ...unresolvedAttemptedButUnverified])
         : [];
+      const appliedFields = verification.matched && authoritativeAdapterVerification && Array.isArray(writeResult.verification.verifiedFields)
+        ? candidateAppliedFields.filter((field) => adapterVerifiedFields.has(field) || [...adapterVerifiedFields].some((verifiedField) => fieldMatchesStatus(field, verifiedField)))
+        : candidateAppliedFields;
       let rollback = null;
       if (!verification.matched) {
-        try { rollback = await restore?.(tableIndex, before?.format || before || {}); } catch (error) { rollback = { ok: false, error: { code: error.code || "ROLLBACK_FAILED", message: error.message || String(error) } }; }
-        if (rollback && options.verifyRestore !== false) {
-          try {
-            const restored = await read(tableIndex, { phase: "restore" });
-            rollback.verification = compareTableFormat(before?.format || before || {}, restored?.format || restored || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
-            rollback.ok = rollback.ok !== false && rollback.verification.matched;
-          } catch (error) {
-            rollback.ok = false;
-            rollback.verification = { matched: false, mismatches: [{ path: "restore", expected: "readback", actual: error.message || String(error) }] };
-          }
-        }
+        rollback = await restoreOne(tableIndex, before);
       }
       results.push({
         tableIndex,
@@ -407,32 +568,24 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
         applied: appliedFields,
         unsupported,
         attemptedButUnverified: unresolvedAttemptedButUnverified,
-        warning: verification.matched && unsupported.length === 0 && unresolvedAttemptedButUnverified.length === 0
+        warning: writeResult?.warning || (verification.matched && unsupported.length === 0 && unresolvedAttemptedButUnverified.length === 0
           ? undefined
           : verification.matched
             ? "部分格式字段未被宿主接受或无法确认，未计入成功字段。"
-            : "写入后回读不一致，已尝试恢复原格式。",
+            : "写入后回读不一致，已尝试恢复原格式。"),
         write: writeResult,
         verification,
         rollback,
         plan: performanceStats(plan),
       });
+      if (results.at(-1)?.ok !== true) await rollbackSuccessfulBatch();
     } catch (error) {
       let rollback = null;
       if (before) {
-        try { rollback = await restore?.(tableIndex, before?.format || before || {}); } catch (rollbackError) { rollback = { ok: false, error: { code: rollbackError.code || "ROLLBACK_FAILED", message: rollbackError.message || String(rollbackError) } }; }
-        if (rollback && options.verifyRestore !== false) {
-          try {
-            const restored = await read(tableIndex, { phase: "restore" });
-            rollback.verification = compareTableFormat(before?.format || before || {}, restored?.format || restored || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
-            rollback.ok = rollback.ok !== false && rollback.verification.matched;
-          } catch (rollbackReadError) {
-            rollback.ok = false;
-            rollback.verification = { matched: false, mismatches: [{ path: "restore", expected: "readback", actual: rollbackReadError.message || String(rollbackReadError) }] };
-          }
-        }
+        rollback = await restoreOne(tableIndex, before);
       }
       results.push({ tableIndex, ok: false, warning: "应用表格格式失败，已尝试恢复原格式。", error: { code: error.code || "TABLE_FORMAT_APPLY_FAILED", message: error.message || String(error) }, rollback, plan: performanceStats(plan) });
+      await rollbackSuccessfulBatch();
     }
   }
   const summary = summarizeTemplateApplication(results);

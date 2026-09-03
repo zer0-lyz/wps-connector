@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { promisify } from "node:util";
 import { tools } from "../shared/toolSchemas.js";
-import { asMatrix, cleanCellValue, mapSyncRows, mergeRowsByKey, normalizeNumericDisplayText, normalizeSyncConfig } from "../../vendor/connector-shared/tableSyncCore.js";
+import { asMatrix, cleanCellValue, mapSyncRows, mergeRowsByKey, normalizeDisplayText, normalizeNumericDisplayText, normalizeSyncConfig } from "../../vendor/connector-shared/tableSyncCore.js";
 import { normalizeTransferPolicy } from "../../vendor/connector-shared/modules/table-sync/tableSyncCore.js";
 import {
   applyTableFormatTransactions,
@@ -26,6 +26,11 @@ import { connectorPlatformStatus, startConnectorPlatformHeartbeat } from "./conn
 import { pushAdapterState, reconcileAdapterState } from "../../vendor/connector-shared/connectorStateClient.js";
 import { deriveDesktopSyncStatus } from "../../vendor/connector-shared/modules/agent-chat/desktopSync.js";
 import { buildSourcePrompt } from "../../vendor/connector-shared/sourceMetadata.js";
+import "../../vendor/connector-shared/sourceFileMatcher.js";
+import {
+  buildDefaultTableSettingsFormat,
+  resolveTableTargetIndexes,
+} from "../../vendor/connector-shared/modules/table-format-template/templateCore.js";
 
 const host = process.env.WPS_CONNECTOR_HOST || "127.0.0.1";
 const port = Number(process.env.WPS_CONNECTOR_PORT || 40215);
@@ -1015,6 +1020,34 @@ function findOnlineDocumentSession(hostPrefix, documentKey = "") {
     .filter((session) => session.status === "online" && String(session.host || "").startsWith(hostPrefix))
     .find((session) => canonicalDocumentKey(session.documentKey || documentKeyFor(session)) === key) || null;
 }
+
+function findOnlineSourceDocumentSession(hostPrefix, source = {}) {
+  const exact = findOnlineDocumentSession(hostPrefix, source.documentKey || source.etDocumentKey || source.excelDocumentKey || "");
+  if (exact) return { session: exact, kind: "exact", candidates: [exact] };
+  const sourceName = source.documentName || source.etDocumentName || source.excelDocumentName || "";
+  const online = [...sessions.values()]
+    .filter((session) => session.status === "online" && String(session.host || "").startsWith(hostPrefix))
+    .sort((left, right) => sessionLastSeenMs(right) - sessionLastSeenMs(left));
+  const matcher = globalThis.ConnectorSourceFileMatcher;
+  const sameName = online.filter((session) => matcher?.matchKind?.(sourceName, session.documentName) === "exact");
+  if (sameName.length === 1) return { session: sameName[0], kind: "name-exact", candidates: sameName };
+  if (sameName.length > 1) return { session: null, kind: "ambiguous-exact", candidates: sameName };
+  const candidates = online.filter((session) => matcher?.matchKind?.(sourceName, session.documentName) === "version-family");
+  if (candidates.length === 1) return { session: candidates[0], kind: "version-family", candidates };
+  return { session: null, kind: candidates.length > 1 ? "ambiguous-version-family" : "none", candidates };
+}
+function findOnlineTargetDocumentSession(hostPrefix, target = {}) {
+  const online = [...sessions.values()]
+    .filter((session) => session.status === "online" && String(session.host || "").startsWith(hostPrefix))
+    .sort((left, right) => sessionLastSeenMs(right) - sessionLastSeenMs(left));
+  const matcher = globalThis.ConnectorSourceFileMatcher;
+  const stable = online.filter((session) => matcher?.documentIdentityMatchKind?.(target, session, { allowNameFallback: false }) === "stable-path");
+  if (stable.length === 1) return { session: stable[0], kind: "stable-path", candidates: stable };
+  if (stable.length > 1) return { session: null, kind: "ambiguous-stable-path", candidates: stable };
+  const names = online.filter((session) => matcher?.documentIdentityMatchKind?.(target, session, { allowNameFallback: true }) === "name-fallback");
+  if (names.length === 1) return { session: names[0], kind: "name-fallback", candidates: names };
+  return { session: null, kind: names.length > 1 ? "ambiguous-name" : "none", candidates: names };
+}
 function assertCommandPumpReady(session, toolName) {
   const pump = commandPumpStatus(session);
   if (pump.active === false) tableSyncError("SESSION_COMMAND_PUMP_INACTIVE", `WPS 会话当前没有响应命令泵，无法执行 ${toolName}。`, { sessionId: session.sessionId, documentName: session.documentName, documentKey: session.documentKey, toolName, commandPump: pump }, 409);
@@ -1047,16 +1080,21 @@ function rectangularMatrix(value, rowCount, columnCount, fallback = "") {
 }
 function normalizeEtDisplayCell(value, display, format = {}) {
   if (value === null || value === undefined) return "";
-  const rawHostText = display === undefined || display === null ? "" : String(display);
-  const hostText = normalizeNumericDisplayText(value, rawHostText);
+  const hasDisplay = display !== undefined && display !== null;
+  const rawHostText = hasDisplay ? String(display) : "";
+  const fallbackText = normalizeDisplayText(value);
+  const hostText = hasDisplay ? normalizeNumericDisplayText(value, rawHostText) : fallbackText;
   const numericValue = typeof value === "number"
     ? value
     : typeof value === "string" && /^[-+]?\d+(?:\.\d+)?$/.test(value.trim())
       ? Number(value)
       : NaN;
-  if (!Number.isFinite(numericValue)) return hostText || String(value);
+  if (!Number.isFinite(numericValue)) return hostText;
+  // Preserve text placeholders such as a padded dash instead of rebuilding
+  // them from the numeric format mask.
+  if (hostText && !/\d/.test(hostText)) return hostText;
   const pattern = String(format?.numberFormat || "");
-  if (!pattern || /^general$/i.test(pattern) || pattern === "@") return hostText || String(value);
+  if (!pattern || /^general$/i.test(pattern) || pattern === "@") return hostText;
   const dateSection = pattern.split(";")[0].replace(/\\./g, "");
   if (/[ymdhHs]/i.test(dateSection) && !/[#0]/.test(dateSection)) {
     if (hostText && hostText !== String(value)) return hostText;
@@ -1194,8 +1232,8 @@ function fallbackEtNumberDisplay(value, display) {
   });
 }
 function sourceDisplayAt(snapshot, rows, row, column) {
-  const value = snapshot?.displayText?.[row]?.[column];
-  const display = value === undefined || value === null ? String(rows[row]?.[column] ?? "") : String(value);
+  const rawDisplay = snapshot?.displayText?.[row]?.[column];
+  const display = normalizeEtDisplayCell(rows[row]?.[column], rawDisplay, sourceFormatAt(snapshot, row, column));
   const format = sourceFormatAt(snapshot, row, column);
   if (String(format.numberFormat || "").trim()) return display;
   return fallbackEtNumberDisplay(rows[row]?.[column], display);
@@ -1585,7 +1623,8 @@ function defaultEtWppDataSourceName(documentKey, sheetName, address) {
   return `表 ${nextNumber}-${sheet}：${localEtAddress(sheet, address) || "当前选区"}`;
 }
 function etSourceExecution(source) {
-  const live = findOnlineDocumentSession("et", source.documentKey);
+  const sourceMatch = findOnlineSourceDocumentSession("et", source);
+  const live = sourceMatch.session;
   const cached = tableSyncSourceCache.get(source.sourceId);
   const known = [...sessions.values()]
     .filter((session) => String(session.host || "").startsWith("et") && canonicalDocumentKey(session.documentKey || documentKeyFor(session)) === canonicalDocumentKey(source.documentKey))
@@ -1599,6 +1638,8 @@ function etSourceExecution(source) {
     sessionId: live?.sessionId || known?.sessionId || "",
     lastSeenAt: live?.lastSeenAt || known?.lastSeenAt || "",
     commandPump: live ? commandPumpStatus(live) : null,
+    matchedBy: sourceMatch.kind,
+    matchedDocumentName: live?.documentName || "",
   };
 }
 function publicEtWppDataSource(source) {
@@ -1606,6 +1647,9 @@ function publicEtWppDataSource(source) {
     syncId: sync.syncId,
     name: sync.name || "",
     wppDocumentName: sync.target?.documentName || "",
+    wppDocumentKey: sync.target?.documentKey || "",
+    wppDocumentPath: sync.target?.documentPath || sync.target?.documentIdentity?.fullPath || "",
+    wppDocumentIdentity: sync.target?.documentIdentity || null,
     wppTableIndex: sync.target?.fallbackTableIndex ?? null,
     lastSyncedAt: sync.lastSyncedAt || null,
   }));
@@ -1614,6 +1658,8 @@ function publicEtWppDataSource(source) {
     name: source.name || "",
     etDocumentKey: source.documentKey || "",
     etDocumentName: source.documentName || "",
+    etDocumentPath: source.documentPath || source.documentIdentity?.fullPath || source.documentKey || "",
+    etDocumentIdentity: source.documentIdentity || null,
     sheetName: source.sheetName || "",
     address: localEtAddress(source.sheetName, source.address),
     rowCount: Number(source.rowCount || 0),
@@ -1685,6 +1731,8 @@ async function createEtWppDataSource(input = {}) {
     name: String(input.name || "").trim() || previous?.name || defaultEtWppDataSourceName(etSession.documentKey || documentKeyFor(etSession), sheetName, address),
     documentKey: etSession.documentKey || documentKeyFor(etSession),
     documentName: etSession.documentName,
+    documentPath: etSession.documentIdentity?.fullPath || etSession.documentIdentity?.url || "",
+    documentIdentity: etSession.documentIdentity || null,
     sheetName: sheetName || read?.result?.sheetName || "",
     address: localEtAddress(sheetName, address),
     rowCount: rows.length,
@@ -1712,6 +1760,20 @@ async function unbindEtWppDataSource(input = {}) {
   const source = tableSyncsStore.sources.find((item) => item.sourceId === sourceId);
   return { unbound: true, sourceId, removedSyncIds: removedSyncs.map((sync) => sync.syncId), removedCount: removedSyncs.length, source: source ? publicEtWppDataSource(source) : null };
 }
+async function unbindEtWppDataSources(input = {}) {
+  const relations = Array.isArray(input.bindings) ? input.bindings : Array.isArray(input.relations) ? input.relations : [];
+  const normalized = relations
+    .map((item) => ({ sourceId: String(item?.sourceId || "").trim(), syncId: String(item?.syncId || "").trim() }))
+    .filter((item) => item.sourceId && item.syncId);
+  const unique = [...new Map(normalized.map((item) => [`${item.sourceId}\u0000${item.syncId}`, item])).values()];
+  if (!unique.length) tableSyncError("ET_WPP_BINDINGS_REQUIRED", "请至少选择一条要解除的绑定关系。", {}, 400);
+  const missing = unique.filter((item) => !tableSyncsStore.syncs.some((sync) => sync.sourceId === item.sourceId && sync.syncId === item.syncId));
+  if (missing.length) tableSyncError("ET_WPP_BINDING_NOT_FOUND", "部分绑定关系已不存在，请刷新绑定管理后重试。", { missing }, 404);
+  const selected = new Set(unique.map((item) => `${item.sourceId}\u0000${item.syncId}`));
+  tableSyncsStore.syncs = tableSyncsStore.syncs.filter((sync) => !selected.has(`${sync.sourceId}\u0000${sync.syncId}`));
+  await saveTableSyncs();
+  return { unbound: true, removedCount: unique.length, removedSyncIds: unique.map((item) => item.syncId), bindings: unique };
+}
 async function deleteEtWppDataSource(input = {}) {
   const sourceId = String(input.sourceId || "").trim();
   if (!sourceId) tableSyncError("ET_WPP_DATA_SOURCE_ID_REQUIRED", "sourceId is required.");
@@ -1728,7 +1790,11 @@ async function deleteEtWppDataSource(input = {}) {
 async function createEtWppTableSync(input = {}, options = {}) {
   const registeredSource = input.sourceId ? tableSyncsStore.sources.find((source) => source.sourceId === input.sourceId) : null;
   if (input.sourceId && !registeredSource) tableSyncError("ET_WPP_DATA_SOURCE_NOT_FOUND", `WPS 表格数据源不存在：${input.sourceId}`, {}, 404);
-  const etSession = registeredSource ? findOnlineDocumentSession("et", registeredSource.documentKey) : findOnlineHostSession("et", input.etSessionId);
+  const sourceMatch = registeredSource ? findOnlineSourceDocumentSession("et", registeredSource) : null;
+  const etSession = registeredSource ? sourceMatch.session : findOnlineHostSession("et", input.etSessionId);
+  if (registeredSource && !etSession && ["ambiguous-version-family", "ambiguous-exact"].includes(sourceMatch.kind)) {
+    tableSyncError("AMBIGUOUS_ET_SOURCE_DOCUMENT", "同名或同系列源文件有多个在线版本，请只保留目标版本在线后重试。", { sourceId: registeredSource.sourceId, candidates: sourceMatch.candidates.map((item) => ({ sessionId: item.sessionId, documentName: item.documentName, documentKey: item.documentKey })) }, 409);
+  }
   const cachedSource = registeredSource ? tableSyncSourceCache.get(registeredSource.sourceId) : null;
   const cachedRows = Array.isArray(options.sourceRows) ? options.sourceRows : cachedSource?.values;
   const usingCachedSource = !etSession && registeredSource && Array.isArray(cachedRows);
@@ -1771,8 +1837,8 @@ async function createEtWppTableSync(input = {}, options = {}) {
     modelVersion: 2,
     name: String(input.name || "").trim() || registeredSource?.name || "WPS 表格同步",
     sourceId: registeredSource?.sourceId || input.sourceId || "",
-    source: { documentKey: etSession?.documentKey || registeredSource?.documentKey || documentKeyFor(etSession), documentName: etSession?.documentName || registeredSource?.documentName || "", sheetName: sourceRead.result?.sheetName || registeredSource?.sheetName || input.sheetName || "", address: localEtAddress(sourceRead.result?.sheetName || registeredSource?.sheetName || input.sheetName, registeredSource?.address || input.address) },
-    target: { documentKey: wppSession.documentKey || documentKeyFor(wppSession), documentName: wppSession.documentName, fallbackTableIndex: tableIndex, anchorTag: anchor.anchorTag || anchorTag },
+    source: { documentKey: etSession?.documentKey || registeredSource?.documentKey || documentKeyFor(etSession), documentName: etSession?.documentName || registeredSource?.documentName || "", documentPath: etSession?.documentIdentity?.fullPath || registeredSource?.documentPath || registeredSource?.documentIdentity?.fullPath || "", documentIdentity: etSession?.documentIdentity || registeredSource?.documentIdentity || null, sheetName: sourceRead.result?.sheetName || registeredSource?.sheetName || input.sheetName || "", address: localEtAddress(sourceRead.result?.sheetName || registeredSource?.sheetName || input.sheetName, registeredSource?.address || input.address) },
+    target: { documentKey: wppSession.documentKey || documentKeyFor(wppSession), documentName: wppSession.documentName, documentPath: wppSession.documentIdentity?.fullPath || wppSession.documentIdentity?.url || "", documentIdentity: wppSession.documentIdentity || null, fallbackTableIndex: tableIndex, anchorTag: anchor.anchorTag || anchorTag },
     valueSource: input.valueSource || "displayText",
     transferPolicy: normalizeTransferPolicy(input.transferPolicy || registeredSource?.transferPolicy || previous?.transferPolicy),
     allowStructuralChanges: input.allowStructuralChanges !== false,
@@ -1812,7 +1878,17 @@ async function insertEtWppDataSourceInternal(input = {}, operation) {
   const source = tableSyncsStore.sources.find((item) => item.sourceId === input.sourceId);
   if (!source) tableSyncError("ET_WPP_DATA_SOURCE_NOT_FOUND", `WPS 表格数据源不存在：${input.sourceId}`, {}, 404);
   updateTableSyncOperation(operation, { sourceId: source.sourceId, phase: "preflight", phaseLabel: "检查源表和目标文档", progress: 8, stageIndex: 1, totalCells: Number(source.rowCount || 0) * Number(source.columnCount || 0) });
-  const etSession = findOnlineDocumentSession("et", source.documentKey);
+  const sourceMatch = findOnlineSourceDocumentSession("et", source);
+  const etSession = sourceMatch.session;
+  if (!etSession && ["ambiguous-version-family", "ambiguous-exact"].includes(sourceMatch.kind)) {
+    tableSyncError("AMBIGUOUS_ET_SOURCE_DOCUMENT", "同名或同系列源文件有多个在线版本，请只保留目标版本在线后重试。", { sourceId: source.sourceId, candidates: sourceMatch.candidates.map((item) => ({ sessionId: item.sessionId, documentName: item.documentName, documentKey: item.documentKey })) }, 409);
+  }
+  if (etSession && ["exact", "version-family", "name-exact"].includes(sourceMatch.kind)) {
+    source.documentKey = etSession.documentKey || documentKeyFor(etSession);
+    source.documentName = etSession.documentName || source.documentName;
+    source.documentPath = etSession.documentIdentity?.fullPath || etSession.documentIdentity?.url || source.documentPath || "";
+    source.documentIdentity = etSession.documentIdentity || source.documentIdentity || null;
+  }
   const cachedSource = tableSyncSourceCache.get(source.sourceId);
   const useCachedSource = !etSession && input.allowCachedSource !== false && Array.isArray(cachedSource?.values);
   if (!etSession && !useCachedSource) tableSyncError("NO_ACTIVE_ET_SESSION", "源 WPS 表格文档不在线，且当前 bridge 没有可用的数据快照。", { sourceId: source.sourceId, documentKey: source.documentKey, cachedSourceAvailable: false, execution: etSourceExecution(source) }, 409);
@@ -1882,10 +1958,29 @@ async function insertEtWppDataSourceInternal(input = {}, operation) {
 async function syncEtWppTable(input = {}) {
   const sync = tableSyncsStore.syncs.find((item) => item.syncId === input.syncId);
   if (!sync) tableSyncError("ET_WPP_SYNC_NOT_FOUND", `WPS 表格-文字同步关系不存在：${input.syncId}`, {}, 404);
-  const etSession = findOnlineDocumentSession("et", sync.source?.documentKey);
-  const wppSession = findOnlineDocumentSession("wpp", sync.target?.documentKey);
-  if (!etSession || !wppSession) tableSyncError("ET_WPP_SYNC_SESSION_OFFLINE", "请同时打开源 WPS 表格和目标 WPS 文字文档，再同步。", { etOnline: Boolean(etSession), wppOnline: Boolean(wppSession), source: sync.source, target: sync.target }, 409);
   const source = tableSyncsStore.sources.find((item) => item.sourceId === sync.sourceId);
+  const sourceReference = { ...(source || {}), ...(sync.source || {}), documentName: sync.source?.documentName || source?.documentName || "", documentKey: sync.source?.documentKey || source?.documentKey || "" };
+  const sourceMatch = findOnlineSourceDocumentSession("et", sourceReference);
+  const etSession = sourceMatch.session;
+  if (!etSession && ["ambiguous-version-family", "ambiguous-exact"].includes(sourceMatch.kind)) {
+    tableSyncError("AMBIGUOUS_ET_SOURCE_DOCUMENT", "同名或同系列源文件有多个在线版本，请只保留目标版本在线后重试。", { syncId: sync.syncId, sourceId: sync.sourceId, candidates: sourceMatch.candidates.map((item) => ({ sessionId: item.sessionId, documentName: item.documentName, documentKey: item.documentKey })) }, 409);
+  }
+  const targetMatch = findOnlineTargetDocumentSession("wpp", sync.target || {});
+  const wppSession = targetMatch.session;
+  if (!wppSession && ["ambiguous-stable-path", "ambiguous-name"].includes(targetMatch.kind)) {
+    tableSyncError("AMBIGUOUS_WPP_TARGET_DOCUMENT", "绑定目标对应多个在线 WPS 文字文档，请只保留目标文档在线后重试。", { syncId: sync.syncId, target: sync.target, candidates: targetMatch.candidates.map((item) => ({ sessionId: item.sessionId, documentName: item.documentName, documentKey: item.documentKey })) }, 409);
+  }
+  if (!etSession || !wppSession) tableSyncError("ET_WPP_SYNC_SESSION_OFFLINE", "请同时打开源 WPS 表格和目标 WPS 文字文档，再同步。", { etOnline: Boolean(etSession), wppOnline: Boolean(wppSession), source: sync.source, target: sync.target, sourceMatch: sourceMatch.kind, targetMatch: targetMatch.kind }, 409);
+  if (source && etSession) {
+    source.documentKey = etSession.documentKey || source.documentKey;
+    source.documentName = etSession.documentName || source.documentName;
+    source.documentPath = etSession.documentIdentity?.fullPath || etSession.documentIdentity?.url || source.documentPath || "";
+    source.documentIdentity = etSession.documentIdentity || source.documentIdentity || null;
+    sync.source = { ...(sync.source || {}), documentKey: etSession.documentKey || sync.source?.documentKey || source.documentKey, documentName: etSession.documentName || sync.source?.documentName || source.documentName, documentPath: source.documentPath, documentIdentity: source.documentIdentity };
+  }
+  if (wppSession && ["stable-path", "name-fallback"].includes(targetMatch.kind)) {
+    sync.target = { ...(sync.target || {}), documentKey: wppSession.documentKey || sync.target?.documentKey || "", documentName: wppSession.documentName || sync.target?.documentName || "", documentPath: wppSession.documentIdentity?.fullPath || wppSession.documentIdentity?.url || sync.target?.documentPath || "", documentIdentity: wppSession.documentIdentity || sync.target?.documentIdentity || null };
+  }
   const cachedSource = source ? tableSyncSourceCache.get(source.sourceId) : null;
   const read = await runSessionCommand(etSession, "et.read_range", { sessionId: etSession.sessionId, sheetName: sync.source?.sheetName, address: sync.source?.address, includeFormats: false, includeCellFormats: false, includeDisplayText: true, formatMode: "values", maxCellCount: tableSyncSourceMaxCells, chunkRows: tableSyncSourceChunkRows });
   const rawSourceRows = normalizeWpsMatrix(read.result?.values);
@@ -2055,6 +2150,97 @@ async function wpsApplyTableFormatTemplate(input = {}) {
   };
 }
 
+/** Apply the shared first-release default settings to an explicit WPS table set. */
+async function wpsApplyTableSettings(input = {}) {
+  const session = selectSession(input, "wpp", "wpp.apply_table_settings");
+  const target = input.target || "All";
+  const listed = await runSessionCommand(session, "wpp.list_tables", {
+    sessionId: session.sessionId,
+    includeValues: true,
+    maxTables: 500,
+    maxRows: 1000,
+    maxColumns: 200,
+  });
+  const tables = listed.result?.tables || [];
+  let selectedTableIndex = input.selectedTableIndex;
+  if (["Selection", "ExceptSelection"].includes(target)) {
+    const selected = await runSessionCommand(session, "wpp.capture_table_format", { target: "Selection" });
+    selectedTableIndex = Number(selected.result?.tableIndex);
+    if (!Number.isInteger(selectedTableIndex)) throw { code: "SELECTION_TABLE_NOT_FOUND", message: "当前 WPS Writer 选区不在表格内，请先选中一个表格。" };
+  }
+  const resolved = resolveTableTargetIndexes({
+    target,
+    tableIndexes: input.tableIndexes,
+    tableCount: Number(listed.result?.count ?? tables.length),
+    selectedTableIndex,
+  });
+  if (resolved.invalidTableIndexes.length) throw { code: "TABLE_TARGET_NOT_FOUND", message: "指定的表格序号超出当前文档范围。", details: resolved };
+  const tableByIndex = new Map(tables.map((item) => [Number(item.tableIndex ?? item.index), item]));
+  const targets = resolved.targetIndexes.map((tableIndex) => {
+    const item = tableByIndex.get(tableIndex) || {};
+    const values = Array.isArray(item.values) ? item.values : [];
+    return {
+      tableIndex,
+      values,
+      shape: {
+        rowCount: Number(item.rowCount || values.length || 0),
+        columnCount: Number(item.columnCount || Math.max(0, ...values.map((row) => Array.isArray(row) ? row.length : 0))),
+      },
+    };
+  });
+  if (!targets.length) {
+    return {
+      applied: false,
+      verified: false,
+      preset: "default",
+      target,
+      selectedTableIndex: resolved.selectedTableIndex,
+      targetIndexes: [],
+      excludedTableIndexes: resolved.excludedTableIndexes,
+      summary: summarizeTemplateApplication([]),
+      performance: { fastPath: "none", hostCallsSaved: 0, affectedCells: 0, fallbackCellCount: 0, durationMs: 0 },
+      warnings: ["没有可应用的目标表格。"],
+    };
+  }
+  const applied = await applyTableFormatTransactions({
+    targets,
+    format: (targetInfo) => buildDefaultTableSettingsFormat({ rowCount: targetInfo.shape.rowCount, columnCount: targetInfo.shape.columnCount, values: targetInfo.values }),
+    host: "WPS",
+    read: async (tableIndex) => {
+      const result = await runSessionCommand(session, "wpp.read_table_format", { tableIndex: tableIndex + 1 });
+      return result.result || {};
+    },
+    apply: async (tableIndex, format, plan) => {
+      const result = await runSessionCommand(session, "wpp.apply_table_format", {
+        tableIndex: tableIndex + 1,
+        format,
+        verifyCells: plan.verifyCells,
+        // The full read before/after already carries the table shape. The
+        // adapter will still fall back per cell when a merge is detected.
+        skipMergedCellScan: false,
+      });
+      return { ...(result.result || {}), commandId: result.command.commandId };
+    },
+    restore: async (tableIndex, beforeFormat) => {
+      const result = await runSessionCommand(session, "wpp.apply_table_format", { tableIndex: tableIndex + 1, format: beforeFormat, verify: false });
+      return { ok: true, commandId: result.command.commandId };
+    },
+    options: { atomic: true, verifyRestore: false, numericTolerance: 0.1 },
+  });
+  return {
+    applied: applied.verified,
+    verified: applied.verified,
+    preset: "default",
+    target,
+    selectedTableIndex: resolved.selectedTableIndex,
+    targetIndexes: resolved.targetIndexes,
+    excludedTableIndexes: resolved.excludedTableIndexes,
+    summary: applied.summary,
+    performance: applied.performance,
+    warnings: applied.summary.results.map((item) => item.warning).filter(Boolean),
+  };
+}
+
 async function wpsTableFormatTemplateTool(toolName, input = {}) {
   if (toolName === "wpp.capture_table_format") return wpsCaptureTableFormatTemplate(input, false);
   if (toolName === "wpp.save_table_format_template") return wpsCaptureTableFormatTemplate(input, true);
@@ -2084,6 +2270,7 @@ async function runTool(toolName, input) {
   }
   if (toolName === "wps.delete_et_wpp_data_source") return deleteEtWppDataSource(input || {});
   if (toolName === "wps.unbind_et_wpp_data_source") return unbindEtWppDataSource(input || {});
+  if (toolName === "wps.unbind_et_wpp_data_sources") return unbindEtWppDataSources(input || {});
   if (toolName === "wps.create_et_wpp_table_sync") return createEtWppTableSync(input || {});
   if (toolName === "wps.insert_et_wpp_data_source") return insertEtWppDataSource(input || {});
   if (toolName === "wps.list_et_wpp_table_syncs") {
@@ -2091,6 +2278,7 @@ async function runTool(toolName, input) {
     return { syncs, count: syncs.length };
   }
   if (toolName === "wps.sync_et_wpp_table") return syncEtWppTable(input || {});
+  if (toolName === "wpp.apply_table_settings") return wpsApplyTableSettings(input || {});
   if (["wpp.capture_table_format", "wpp.save_table_format_template", "wpp.list_table_format_templates", "wpp.apply_table_format_template", "wpp.delete_table_format_template"].includes(toolName)) return wpsTableFormatTemplateTool(toolName, input || {});
   const localSyncPrimitiveTools = new Set(["et.select_range", "et.inspect_sheet_overlays", "et.delete_sheet_overlays", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values", "wpp.ensure_table_sync_anchor", "wpp.resolve_table_sync_anchor"]);
   if (localSyncPrimitiveTools.has(toolName)) {

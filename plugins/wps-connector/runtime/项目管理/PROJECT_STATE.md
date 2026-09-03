@@ -1,5 +1,29 @@
 # 当前状态
 
+## 2026-09-02 WPS 绑定稳定性修复部署与运行态核验
+
+- 状态：`deployed / pending real WPS Writer acceptance`。
+- 目标：修复 WPS Writer 文档重开后绑定丢失、同名文件误匹配、多源绑定状态不稳定，以及“全部同步”可能跨文档操作的问题。
+- 修复：共享源文件匹配器保留稳定文档路径、文件名和版本系列信息；同名但路径不同的文件不再误匹配；仅保存旧名称的多源绑定可恢复全部关系；Writer 面板按当前文档隔离绑定、源文件选择、绑定管理和全部同步范围；跨源绑定明细及批量解绑继续使用精确 `sourceId + syncId`。
+- 修改文件：`vendor/connector-shared/sourceFileMatcher.js`、`apps/bridge/server.js`、`apps/shared/toolSchemas.js`、`apps/wps-addin/pane.html`、`apps/wps-addin/main.js`、`apps/wps-addin/runtime.html`、`apps/wps-addin/server.js`、`tests/source-file-matcher.test.js`、`tests/e2e.js`、`package.json`；对应插件 runtime 副本已同步。
+- 自动验证：`npm run check`、`npm test`、`git diff --check`、源文件匹配回归、多表绑定/批量解绑回归、源码与插件 runtime/正式 runtime 一致性检查均通过。
+- 客户端版本：WPS `0.2.1`，build `2026.09.02-binding-stability.1`。
+- 部署：正式 runtime `/Users/zer0y/.local/share/wps-connector/runtime`；部署前备份 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260902-131138/runtime`；`com.codex.wps-connector.bridge` 与 `com.codex.wps-connector.addin` 均已重启并 running。
+- 运行回读：Platform `/api/product` 返回 `ok:true`、`compatible:true`，Office/WPS adapter 均为 `0.2.1`、`ok:true`、`compatible:true`；健康 adapter 数量为 `2`；WPS Bridge `40215/api/health`、Add-in `3891/health` 均 HTTP 200/`ok:true`。
+- 当前宿主：最终回读时在线 WPS 表格会话 5 个，均为当前 build 且可执行；WPS Writer 会话 0 个。未使用假 session，未修改用户文档、历史绑定、源表、用户配置或证书。
+- 真实验收边界：Writer 重开后按当前文档恢复绑定、多源绑定“全部同步”、源表更新后一键同步，以及保存/关闭/重开后的绑定持久性尚未完成，当前保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+- 下一步：完全退出并重新打开 WPS Writer 和 Connector 面板，确认当前 Writer 文档键；在已有多个绑定的文档中核对绑定对象、批量解绑和全部同步，再修改源表执行一次批量同步并保存重开回读。
+
+## 2026-09-01 WPS 表格同步显示文本空白清洗修复
+
+- 状态：`deployed / PENDING_REAL_HOST_ACCEPTANCE`。
+- 根因：WPS ET 显示值快照中的占位单元格实际为 `"                           -   "`；原逻辑只清理数值显示文本，非数值文本被原样传入 WPS Writer。
+- 修复：共享 table-sync 核心新增显示文本归一化；去除首尾空白，纯空白转空字符串，空白包围的短横线统一为 `-`，保留中文正文内部空格。Bridge 的首次插入、后续同步、旧缓存和无格式快照回退均使用该规则。
+- 缓存：WPS Add-in build/cache 更新为 `2026.09.01-table-sync-whitespace.1`，避免 WPS WebView 复用旧页面。
+- 验证：`npm run check`、`npm test`、共享显示文本回归、插件运行时显示文本回归和 `git diff --check` 通过；Bridge `40215`、Add-in `3891` 均返回 HTTP 200。
+- 部署：正式 runtime `/Users/zer0y/.local/share/wps-connector/runtime`；原子部署备份 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260901-205848/runtime`；Bridge/Add-in LaunchAgent 已重启。
+- 待验收：用户完全退出并重新打开 WPS 及 Connector 面板后，使用原数据源重新执行插入或同步，确认该单元格显示为 `-` 且没有前后空格；本轮未直接写入用户文档。
+
 ## 2026-09-01 表格同步显示值策略部署
 
 - 状态：`deployed / PENDING_REAL_HOST_ACCEPTANCE`。
@@ -159,3 +183,21 @@
 - 边界：旧数据源若创建于本修复前且没有快照，仍需打开源 Excel 后在表格同步面板刷新一次；当前真实 WPS 无在线 session，真实插入和保存重开保持 `PENDING_REAL_HOST_ACCEPTANCE`。
 - 验证：`npm run check`、`npm test`、`git diff --check` 通过；源码、插件 runtime、正式 runtime 的 Bridge 和 pane 文件 SHA-256 一致。
 - 部署：正式 runtime `/Users/lin/.local/share/wps-connector/runtime`；备份 `/Users/lin/Library/Application Support/Connector Suite/backups/wps-runtime/20260830-102130/runtime`、`20260830-102323/runtime`；未推送 GitHub。
+
+## 2026-09-01 WPS Writer 数据源识别与文档绑定隔离
+
+- 状态：`deployed / pending WPS WebView reload and real Writer acceptance`。
+- 修复：共享 `sourceFileMatcher` 新增版本系列源文件分组；同一系列的 V2.0/V1.1 记录合并展示全部 4 条数据源，并保留真实 sourceId、工作簿键和精确源表跳转能力。
+- 修复：WPS Writer 面板严格按当前 Writer `documentKey` 过滤绑定；锚点会话不存在、当前文档键缺失或绑定缺少目标文档键时均返回空列表，不回退到其他在线 WPP 会话。
+- 验证：源文件匹配器回归、Platform `npm test`、`npm run check`、面板脚本解析、插件 runtime 测试和 `git diff --check` 通过；真实只读回读确认 4 条源记录合并为 1 个源文件组，当前 Writer 绑定数为 0。
+- 部署：正式 runtime `/Users/zer0y/.local/share/wps-connector/runtime`；备份 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260901-214349/runtime`；Bridge/Add-in running；未提交、未上传 GitHub、未生成安装包。
+- 待用户验收：重开 WPS Writer/Connector 面板后确认 build `2026.09.01-table-sync-source-scope.1`，V2.0 文件显示 4 条源，新 Writer 不显示旧绑定，原文档只显示自身绑定。
+
+## 2026-09-03 共享表格格式清单读取兼容与部署
+
+- 统一修复：共享 `vendor/connector-shared/modules/table-format-template/tableFormatPanel.js` 现在兼容直接返回、单层/嵌套 `result`、`data` 的表格清单响应；读取时显示进行状态，完成后明确显示已加载数量和宿主耗时，避免成功结果被错误渲染为空清单。
+- 对应 Office Word 的真实只读诊断已返回两张实际表格，证明该修复针对面板层；WPS 复用相同共享文件，无复制业务逻辑。
+- build：`2026.09.03-table-format-list-readback.1`；已更新 WPS runtime/pane 缓存标识。
+- 验证：`npm run check`、表格格式核心、源文件匹配、数字显示格式测试均通过；全量 `npm test` 进入模拟同步 e2e 阶段，但当前执行环境未可靠返回最终退出码，不能称全量 e2e 已通过。
+- 部署：已原子替换 `/Users/zer0y/.local/share/wps-connector/runtime`，同步插件 runtime、保留绑定/模板/同步配置，重启 WPS Bridge/Add-in；备份 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260903-table-format-list-readback-wps/runtime`。
+- 待验收：当前无在线 WPS session；重开 WPS Connector 面板注册后，确认 session build 并在真实文档检查表格清单。状态 `PENDING_REAL_HOST_ACCEPTANCE`。

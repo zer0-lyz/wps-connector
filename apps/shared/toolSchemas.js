@@ -78,9 +78,14 @@ export const tools = [
     inputSchema: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" } }, required: ["sourceId"], additionalProperties: false },
   },
   {
+    name: "wps.unbind_et_wpp_data_sources",
+    description: "Unbind selected WPS Spreadsheet to WPS Writer binding relations across multiple sources in one persisted operation.",
+    inputSchema: { type: "object", properties: { bindings: { type: "array", items: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" } }, required: ["sourceId", "syncId"], additionalProperties: false } } }, required: ["bindings"], additionalProperties: false },
+  },
+  {
     name: "wps.create_et_wpp_table_sync",
     description: "Bind a WPS Spreadsheet range/source to an existing WPS Writer table for repeatable synchronization.",
-    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" }, name: { type: "string" }, etSessionId: { type: "string" }, wppSessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, wppTableIndex: { type: "number" }, tableIndex: { type: "number" }, allowStructuralChanges: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, columnMapping: { type: "array", items: { type: "number" } }, refreshFormatting: { type: "boolean" } }, additionalProperties: false },
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" }, name: { type: "string" }, etSessionId: { type: "string" }, wppSessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, wppTableIndex: { type: "number" }, tableIndex: { type: "number" }, allowStructuralChanges: { type: "boolean" }, allowCachedSource: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, columnMapping: { type: "array", items: { type: "number" } }, refreshFormatting: { type: "boolean" } }, additionalProperties: false },
   },
   {
     name: "wps.insert_et_wpp_data_source",
@@ -540,6 +545,20 @@ export const tools = [
     name: "wpp.list_tables",
     description: "List WPS Writer tables with 0-based table indexes for sync workflows.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" }, includeValues: { type: "boolean" }, maxTables: { type: "number" }, maxRows: { type: "number" }, maxColumns: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_table_settings",
+    description: "Apply the shared default batch table settings to selected WPS Writer tables and verify the changed table formats by reading them back.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        target: { type: "string", enum: ["All", "Selection", "tableIndexes", "ExceptSelection"] },
+        tableIndexes: { type: "array", items: { type: "number" } },
+        selectedTableIndex: { type: "number" },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "wpp.select_table",

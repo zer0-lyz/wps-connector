@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   applyTableFormatTransactions,
+  buildDefaultTableSettingsFormat,
   buildTableFormatApplyPlan,
   compareTableFormat,
   normalizeTableFormatTemplate,
@@ -42,6 +43,26 @@ function assertPerformance(stats) {
     assert.ok(Object.prototype.hasOwnProperty.call(stats, key), `performance missing ${key}`);
   }
 }
+
+const defaultSettings = buildDefaultTableSettingsFormat({
+  rowCount: 2,
+  columnCount: 3,
+  values: [["项目", "金额", "说明"], ["甲", "1,234.50", "文本"]],
+});
+assert.equal(defaultSettings.table.autoFit, "window");
+assert.equal(defaultSettings.table.repeatHeaderRows, true);
+assert.deepEqual(defaultSettings.table.borders.edges.top, { type: "single", width: 1.5, color: "#000000" });
+assert.deepEqual(defaultSettings.table.borders.edges.bottom, { type: "single", width: 1.5, color: "#000000" });
+assert.equal(defaultSettings.table.borders.edges.left.type, "nil");
+assert.equal(defaultSettings.table.borders.edges.right.type, "nil");
+assert.equal(defaultSettings.table.borders.edges.insideH.width, 0.5);
+assert.equal(defaultSettings.table.borders.edges.insideV.width, 0.5);
+assert.equal(defaultSettings.cells.find((cell) => cell.row === 1 && cell.column === 1).verticalAlignment, "center");
+assert.equal(defaultSettings.cells.find((cell) => cell.row === 2 && cell.column === 2).font.name, "Times New Roman");
+const wpsDefaultApplyFormat = tableFormatForApply({ format: defaultSettings, host: "WPS" }, { host: "WPS" });
+assert.deepEqual(wpsDefaultApplyFormat.table.borders.edges.top, { type: "single", width: 1.5, color: "#000000" });
+assert.deepEqual(wpsDefaultApplyFormat.table.borders.edges.right, { type: "nil", width: 0, color: "#000000" });
+assert.deepEqual(wpsDefaultApplyFormat.table.borders.edges.insideH, { type: "single", width: 0.5, color: "#000000" });
 
 // Legacy flat snapshots normalize into the v2 shared shape and remain valid
 // when the host adapter asks for its native apply representation.
