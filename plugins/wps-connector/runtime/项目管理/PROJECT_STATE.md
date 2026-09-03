@@ -201,3 +201,8 @@
 - 验证：`npm run check`、表格格式核心、源文件匹配、数字显示格式测试均通过；全量 `npm test` 进入模拟同步 e2e 阶段，但当前执行环境未可靠返回最终退出码，不能称全量 e2e 已通过。
 - 部署：已原子替换 `/Users/zer0y/.local/share/wps-connector/runtime`，同步插件 runtime、保留绑定/模板/同步配置，重启 WPS Bridge/Add-in；备份 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260903-table-format-list-readback-wps/runtime`。
 - 待验收：当前无在线 WPS session；重开 WPS Connector 面板注册后，确认 session build 并在真实文档检查表格清单。状态 `PENDING_REAL_HOST_ACCEPTANCE`。
+
+## 2026-09-03 表格设置支线已推送 GitHub
+
+- 源码支线 `codex/table-format-module-debug-0.2.1` 已提交 `1da63b2` 并推送；未创建 PR、未合并主线、未生成安装包。
+- 真实 WPS/Office 宿主表格清单验收继续保持 `PENDING_REAL_HOST_ACCEPTANCE`。

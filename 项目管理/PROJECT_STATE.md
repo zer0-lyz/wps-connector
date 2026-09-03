@@ -201,3 +201,10 @@
 - 验证：`npm run check`、表格格式核心、源文件匹配、数字显示格式测试均通过；全量 `npm test` 进入模拟同步 e2e 阶段，但当前执行环境未可靠返回最终退出码，不能称全量 e2e 已通过。
 - 部署：已原子替换 `/Users/zer0y/.local/share/wps-connector/runtime`，同步插件 runtime、保留绑定/模板/同步配置，重启 WPS Bridge/Add-in；备份 `/Users/zer0y/Library/Application Support/Connector Suite/backups/wps-runtime/20260903-table-format-list-readback-wps/runtime`。
 - 待验收：当前无在线 WPS session；重开 WPS Connector 面板注册后，确认 session build 并在真实文档检查表格清单。状态 `PENDING_REAL_HOST_ACCEPTANCE`。
+
+## 2026-09-03 表格设置支线已推送 GitHub
+
+- 已提交并推送独立 WPS 支线 `codex/table-format-module-debug-0.2.1`，提交 `1da63b2`（`fix: stabilize table format list loading`）。
+- 推送前 `npm run check`、`npm test`、表格格式/源文件匹配/显示文本专项回归和 `git diff --check` 均通过；远端未发现同名支线分叉。
+- 清理提交阻塞时仅将无进程占用、创建于 2026-09-01 的 0 字节 Git 锁移动至 `/var/tmp/wps-index-lock-backup.xn0KWz/index.lock` 备份，未删除成果。
+- 未创建 PR、未合并主线、未创建 tag/release、未生成安装包；真实 Word/WPS 宿主验收仍为 `PENDING_REAL_HOST_ACCEPTANCE`。

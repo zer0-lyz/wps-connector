@@ -160,3 +160,7 @@
 - WPS build/cache 更新为 `2026.09.03-table-format-list-readback.1`；已原子部署并重启 WPS Bridge/Add-in，用户绑定、模板、同步配置和日志保留。
 - `npm run check`、表格格式核心、数字显示和同步专项回归通过；完整 e2e 末尾退出状态未被当前执行环境可靠回传，不作全量通过结论。
 - 当前无在线 WPS session，真实表格清单显示及格式操作待用户重开面板后验收；未提交 Git、未上传 GitHub、未生成安装包。
+
+## 2026-09-03 表格设置 WPS 支线推送
+
+- 源码支线 `codex/table-format-module-debug-0.2.1` 已提交 `1da63b2` 并推送；未创建 PR、未合并主线、未上传安装包。
