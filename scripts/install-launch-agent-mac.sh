@@ -3,8 +3,12 @@ set -euo pipefail
 RUNTIME_ROOT="${WPS_CONNECTOR_RUNTIME_ROOT:-$HOME/.local/share/wps-connector/runtime}"
 AGENT_DIR="$HOME/Library/LaunchAgents"
 UID_VALUE="$(id -u)"
+NODE_BIN="${WPS_CONNECTOR_NODE_BIN:-$(command -v node)}"
+if [[ -z "$NODE_BIN" ]]; then
+  echo "Node.js is required to install WPS Connector LaunchAgents." >&2
+  exit 1
+fi
 mkdir -p "$AGENT_DIR" "$RUNTIME_ROOT/logs"
-launchctl setenv CODEX_APP_SERVER_USE_LOCAL_DAEMON 1
 
 unload_agent() {
   local label="$1"
@@ -34,7 +38,7 @@ write_agent() {
   <string>$label</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
+    <string>$NODE_BIN</string>
     <string>$script_path</string>
   </array>
   <key>WorkingDirectory</key>
