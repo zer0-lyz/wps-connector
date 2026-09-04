@@ -22,6 +22,15 @@ function contentType(pathname) {
   return mimeTypes[ext] || "text/plain; charset=utf-8";
 }
 
+process.on("uncaughtException", (error) => {
+  console.error(`[wps-addin] FATAL uncaughtException: ${error?.stack || error}`);
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error(`[wps-addin] FATAL unhandledRejection: ${reason?.stack || reason}`);
+  process.exit(1);
+});
+
 async function sendAsset(res, relPath) {
   const isBinary = relPath.endsWith(".png");
   const body = await readFile(join(rootDir, relPath), isBinary ? undefined : "utf8");
@@ -35,8 +44,17 @@ async function handle(req, res) {
   const pathname = url.pathname;
   try {
     const safeMethod = req.method === "GET" || req.method === "HEAD";
-    if (safeMethod && (pathname === "/" || pathname === "/index.html" || pathname === "/pane.html")) return sendAsset(res, "pane.html");
+    const paneRequest = pathname === "/index.html" && (url.searchParams.has("doc") || url.searchParams.has("session") || url.searchParams.has("view"));
+    if (safeMethod && paneRequest) return sendAsset(res, "pane.html");
+    if (safeMethod && (pathname === "/" || pathname === "/index.html" || pathname === "/runtime.html")) return sendAsset(res, "runtime.html");
+    if (safeMethod && pathname === "/pane.html") return sendAsset(res, "pane.html");
     if (safeMethod && pathname === "/main.js") return sendAsset(res, "main.js");
+    if (safeMethod && pathname === "/sourceFileMatcher.js") return sendAsset(res, "../../vendor/connector-shared/sourceFileMatcher.js");
+    if (safeMethod && pathname === "/connectorSuiteUi.js") return sendAsset(res, "connectorSuiteUi.js");
+    // Serve the host-neutral module directly so WPS and Office execute the
+    // same table-settings UI and session-payload rules.
+    if (safeMethod && pathname === "/shared/table-format-panel.js") return sendAsset(res, "../../vendor/connector-shared/modules/table-format-template/tableFormatPanel.js");
+    if (safeMethod && pathname === "/tableFormatPanel.js") return sendAsset(res, "tableFormatPanel.js");
     if (safeMethod && pathname === "/ribbon.xml") return sendAsset(res, "ribbon.xml");
     if (safeMethod && pathname === "/icon.png") return sendAsset(res, "icon.png");
     if (safeMethod && pathname === "/images/connector.svg") return sendAsset(res, "images/connector.svg");
@@ -54,6 +72,11 @@ async function handle(req, res) {
   }
 }
 
-createServer(handle).listen(port, host, () => {
+const server = createServer(handle);
+server.on("error", (error) => {
+  console.error(`[wps-addin] FATAL server error: ${error?.stack || error}`);
+  process.exit(1);
+});
+server.listen(port, host, () => {
   console.error(`wps-connector addin server listening on http://${host}:${port}`);
 });

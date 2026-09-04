@@ -1,4 +1,7 @@
 import { createInterface } from "node:readline";
+import { appendFileSync } from "node:fs";
+
+let createdThreadNeedsFirstTurn = false;
 
 function send(message) {
   process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -11,6 +14,10 @@ lines.on("line", (line) => {
   const { id, method, params = {} } = request;
   if (method === "initialized") return;
   if (method === "initialize") return send({ jsonrpc: "2.0", id, result: { userAgent: "fake-codex", codexHome: "/tmp/fake-codex" } });
+  if (method === "thread/start") {
+    createdThreadNeedsFirstTurn = true;
+    return send({ jsonrpc: "2.0", id, result: { thread: { id: "thread-created", name: "新建测试对话", cwd: params.cwd || "" } } });
+  }
   if (method === "thread/read") {
     return send({
       jsonrpc: "2.0",
@@ -30,8 +37,20 @@ lines.on("line", (line) => {
       },
     });
   }
-  if (method === "thread/resume") return send({ jsonrpc: "2.0", id, result: { thread: { id: params.threadId, turns: [] } } });
+  if (method === "thread/resume") {
+    if (params.threadId === "thread-unmaterialized" || (params.threadId === "thread-created" && createdThreadNeedsFirstTurn)) {
+      return send({ jsonrpc: "2.0", id, error: { code: -32600, message: "thread thread-created is not materialized yet; includeTurns is unavailable before first user message" } });
+    }
+    return send({ jsonrpc: "2.0", id, result: { thread: { id: params.threadId, turns: [] } } });
+  }
   if (method === "turn/start") {
+    if (params.threadId === "thread-created") createdThreadNeedsFirstTurn = false;
+    if (process.env.WPS_CONNECTOR_E2E_AGENT_CAPTURE) {
+      appendFileSync(
+        process.env.WPS_CONNECTOR_E2E_AGENT_CAPTURE,
+        `${String(params.input?.[0]?.text || "")}\n---PROMPT---\n`,
+      );
+    }
     send({ jsonrpc: "2.0", id, result: { turn: { id: "turn-live", status: "inProgress", items: [] } } });
     setTimeout(() => send({ jsonrpc: "2.0", method: "item/agentMessage/delta", params: { threadId: params.threadId, turnId: "turn-live", itemId: "agent-live", delta: "模拟" } }), 15);
     setTimeout(() => send({ jsonrpc: "2.0", method: "item/agentMessage/delta", params: { threadId: params.threadId, turnId: "turn-live", itemId: "agent-live", delta: "回复" } }), 30);

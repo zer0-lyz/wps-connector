@@ -1,0 +1,166 @@
+{
+  "productVersion": "0.2.1",
+  "sharedVersion": "0.2.0",
+  "source": "@connector-platform/shared",
+  "modules": [
+    {
+      "id": "connection-binding",
+      "version": "0.2.0",
+      "status": "active",
+      "manifestSha256": "188bdfd279ed5e0ee7af8874cca1bc6ee6f2236ae82cc196a2263869337bae3f",
+      "packageSha256": "7a9e3e602fef240fbf7f2bdb2db8c05eca767f7715aeb60fbf88fcb9fd22ad80",
+      "files": [
+        {
+          "file": "state.js",
+          "sha256": "bc20d27cc2420dbf909ab80274d72212a30db93e0082de591576f22055e7ffc2"
+        }
+      ]
+    },
+    {
+      "id": "agent-chat",
+      "version": "0.2.0",
+      "status": "active",
+      "manifestSha256": "61ab3a41e6d835aa1bb1c7b37349144d534c303c9765d7595e28f16c7b074b86",
+      "packageSha256": "7b7a476b3ef0369d8848c76363a461a50d6a388ff3b29fea64209aac7c29c264",
+      "files": [
+        {
+          "file": "state.js",
+          "sha256": "55616ca37518992737e968ef8d907d71bfc8727c991d635d1295094ea7569400"
+        },
+        {
+          "file": "desktopSync.js",
+          "sha256": "31af0f15b4f95a7e525f2f18ed12c45cc0b35452615acb63e68143a4e5a4fb9f"
+        }
+      ]
+    },
+    {
+      "id": "table-sync",
+      "version": "0.2.0",
+      "status": "active",
+      "manifestSha256": "86bac5b8ba3b8a374d8c626460f76660ace4a20f961ce412e28b19375f399e11",
+      "packageSha256": "c380066025705aa806c2f1942c39d444c0c7f2f86fc98cb73eaf501cf278cb88",
+      "files": [
+        {
+          "file": "state.js",
+          "sha256": "287feea99f59a4a1bb81eb09e4679137310c7f23c57985332a24af14b6090c75"
+        },
+        {
+          "file": "tableSyncCore.js",
+          "sha256": "bf9f924350f03467b26e83e459eeb398ca8e1463d192ad829034e6edda40b17a"
+        }
+      ]
+    },
+    {
+      "id": "table-format-template",
+      "version": "0.2.0",
+      "status": "active",
+      "manifestSha256": "53bb5710f328ef8b8c70ddc3171830b5c0aeb08df55f34b0d21933aa24cb2d41",
+      "packageSha256": "fa854801f3e2fe93a9142356790f85c729d37686c1014bdb493d4a4a6b53266f",
+      "files": [
+        {
+          "file": "state.js",
+          "sha256": "afd8b836749364b100f6f71ed173d0241e8f542ee491b6250591874b670af0bb"
+        },
+        {
+          "file": "templateCore.js",
+          "sha256": "d35033eda08a8d682f1e7a146d4a7cf5d1e916747f1ddd5a63c6c9c7fe82f21a"
+        },
+        {
+          "file": "tableFormatPanel.js",
+          "sha256": "db4c5e6c125825783a319b26ee7adef2532af3eceb1622ab9f44f5e24b94190c"
+        }
+      ]
+    },
+    {
+      "id": "product-updater",
+      "version": "0.2.0",
+      "status": "active",
+      "manifestSha256": "d5a357faa3264c6696c05b12029bb270836773fd50ac32373f28b2f6a19c686e",
+      "packageSha256": "ca7561e2a056666dcad2e3b3159f6f7395578923e3894ad394a09d836dd84ec8",
+      "files": [
+        {
+          "file": "updateCheckCore.js",
+          "sha256": "7f6c0cb94b407b14aff1d35423a52fc44ef4a25ed7dbcf0bbc47081e4e6ce3e2"
+        },
+        {
+          "file": "state.js",
+          "sha256": "2954ed6be210fed639ba9f00011205a6a431d2fadeaaf97a3ef23af03e1d61b7"
+        }
+      ]
+    }
+  ],
+  "files": [
+    {
+      "file": "browserUiModel.js",
+      "sha256": "4e55c1d60d6d6ab0660eb6b97c4a1eb98d1fcb2b27e4a937afb82382831b28ad"
+    },
+    {
+      "file": "connectorStateClient.js",
+      "sha256": "9c5305ef021ada3c945dde5f479bd10ff3f883cb13c71d4ff9e131d6ca646304"
+    },
+    {
+      "file": "featureRegistry.js",
+      "sha256": "d637de8392631f34ed8777e7d0b4358df4977fefa2bf5bc3bc0688d114858d45"
+    },
+    {
+      "file": "moduleCatalog.js",
+      "sha256": "3f943b9bdb41c10e8c6abf7e479be39daca581d7052c6b5291095720cc25ebdd"
+    },
+    {
+      "file": "sourceMetadata.js",
+      "sha256": "870037d989d38f18ded684adb638ac11de46ec9de4c5c938127197fe01b7f804"
+    },
+    {
+      "file": "sqliteStore.js",
+      "sha256": "f7244c7a2cdc031261eb3ca99cebfa6cdb4a3f27df5e682d65f00e62a131b055"
+    },
+    {
+      "file": "stateMerge.js",
+      "sha256": "9a4b47a9c00b97deececb3b65c74cd6c329450588f7db0ef9e3b82442814efed"
+    },
+    {
+      "file": "tableSyncCore.js",
+      "sha256": "68f831a52a8f9f7eb8a72084593db00ba9eda32ea34118175bdd3dbe1d146905"
+    },
+    {
+      "file": "modules/connection-binding/state.js",
+      "sha256": "bc20d27cc2420dbf909ab80274d72212a30db93e0082de591576f22055e7ffc2"
+    },
+    {
+      "file": "modules/agent-chat/state.js",
+      "sha256": "55616ca37518992737e968ef8d907d71bfc8727c991d635d1295094ea7569400"
+    },
+    {
+      "file": "modules/agent-chat/desktopSync.js",
+      "sha256": "31af0f15b4f95a7e525f2f18ed12c45cc0b35452615acb63e68143a4e5a4fb9f"
+    },
+    {
+      "file": "modules/table-sync/state.js",
+      "sha256": "287feea99f59a4a1bb81eb09e4679137310c7f23c57985332a24af14b6090c75"
+    },
+    {
+      "file": "modules/table-sync/tableSyncCore.js",
+      "sha256": "7eb461eebfb4a01e05ecad0e115a147a5cf60e085bc2ae74004a16489d3a8673"
+    },
+    {
+      "file": "modules/table-format-template/state.js",
+      "sha256": "afd8b836749364b100f6f71ed173d0241e8f542ee491b6250591874b670af0bb"
+    },
+    {
+      "file": "modules/table-format-template/templateCore.js",
+      "sha256": "d35033eda08a8d682f1e7a146d4a7cf5d1e916747f1ddd5a63c6c9c7fe82f21a"
+    },
+    {
+      "file": "modules/table-format-template/tableFormatPanel.js",
+      "sha256": "db4c5e6c125825783a319b26ee7adef2532af3eceb1622ab9f44f5e24b94190c"
+    },
+    {
+      "file": "modules/product-updater/updateCheckCore.js",
+      "sha256": "7f6c0cb94b407b14aff1d35423a52fc44ef4a25ed7dbcf0bbc47081e4e6ce3e2"
+    },
+    {
+      "file": "modules/product-updater/state.js",
+      "sha256": "2954ed6be210fed639ba9f00011205a6a431d2fadeaaf97a3ef23af03e1d61b7"
+    }
+  ]
+}

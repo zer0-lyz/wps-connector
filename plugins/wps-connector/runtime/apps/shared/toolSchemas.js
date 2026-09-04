@@ -52,6 +52,57 @@ export const tools = [
     },
   },
   {
+    name: "wps.open_pane",
+    description: "Open the WPS Connector task pane for the selected Writer or Spreadsheet session.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, host: { type: "string" }, view: { type: "string" }, documentKey: { type: "string" } }, additionalProperties: false },
+  },
+
+  {
+    name: "wps.create_et_wpp_data_source",
+    description: "Create or refresh a local WPS Spreadsheet data source for WPS Writer table synchronization. This does not require Codex project binding.",
+    inputSchema: { type: "object", properties: { etSessionId: { type: "string" }, sessionId: { type: "string" }, sourceId: { type: "string" }, name: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, refreshSelection: { type: "boolean" }, headerRowCount: { type: "number" }, preserveFormatting: { type: "boolean" }, formatReadMode: { type: "string", enum: ["full", "profile"] } }, additionalProperties: false },
+  },
+  {
+    name: "wps.list_et_wpp_data_sources",
+    description: "List pending and bound WPS Spreadsheet data sources for WPS Writer table synchronization.",
+    inputSchema: { type: "object", properties: { status: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "wps.delete_et_wpp_data_source",
+    description: "Delete an unbound WPS Spreadsheet data source.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" } }, required: ["sourceId"], additionalProperties: false },
+  },
+  {
+    name: "wps.unbind_et_wpp_data_source",
+    description: "Unbind a WPS Spreadsheet data source from one or more WPS Writer tables while preserving the source definition.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" } }, required: ["sourceId"], additionalProperties: false },
+  },
+  {
+    name: "wps.unbind_et_wpp_data_sources",
+    description: "Unbind selected WPS Spreadsheet to WPS Writer binding relations across multiple sources in one persisted operation.",
+    inputSchema: { type: "object", properties: { bindings: { type: "array", items: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" } }, required: ["sourceId", "syncId"], additionalProperties: false } } }, required: ["bindings"], additionalProperties: false },
+  },
+  {
+    name: "wps.create_et_wpp_table_sync",
+    description: "Bind a WPS Spreadsheet range/source to an existing WPS Writer table for repeatable synchronization.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" }, name: { type: "string" }, etSessionId: { type: "string" }, wppSessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, wppTableIndex: { type: "number" }, tableIndex: { type: "number" }, allowStructuralChanges: { type: "boolean" }, allowCachedSource: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, columnMapping: { type: "array", items: { type: "number" } }, refreshFormatting: { type: "boolean" } }, additionalProperties: false },
+  },
+  {
+    name: "wps.insert_et_wpp_data_source",
+    description: "Insert a WPS Spreadsheet data source into the active WPS Writer document as a table and create the sync binding.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, wppSessionId: { type: "string" }, operationId: { type: "string" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, border: { type: "boolean" }, preserveFormatting: { type: "boolean" }, formatReadMode: { type: "string", enum: ["full", "profile"] }, refreshFormatting: { type: "boolean" }, allowCachedSource: { type: "boolean" } }, required: ["sourceId"], additionalProperties: false },
+  },
+  {
+    name: "wps.list_et_wpp_table_syncs",
+    description: "List saved WPS Spreadsheet to WPS Writer table sync bindings.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "wps.sync_et_wpp_table",
+    description: "Synchronize one WPS Writer table from its bound WPS Spreadsheet source.",
+    inputSchema: { type: "object", properties: { syncId: { type: "string" }, previewOnly: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, allowStructuralChanges: { type: "boolean" }, preserveFormatting: { type: "boolean" }, refreshFormatting: { type: "boolean" }, config: { type: "object", additionalProperties: true } }, required: ["syncId"], additionalProperties: false },
+  },
+  {
     name: "et.read_selection",
     description: "Read the current WPS Spreadsheet selection.",
     inputSchema: {
@@ -59,6 +110,21 @@ export const tools = [
       properties: { sessionId: { type: "string" } },
       additionalProperties: false,
     },
+  },
+  {
+    name: "et.select_range",
+    description: "Select and reveal a WPS Spreadsheet range for table sync source navigation.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" } }, required: ["address"], additionalProperties: false },
+  },
+  {
+    name: "et.inspect_sheet_overlays",
+    description: "Inspect WPS Spreadsheet floating shapes, comments, and data validation input messages on a worksheet.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, maxItems: { type: "number" }, includeValidation: { type: "boolean" }, maxRows: { type: "number" }, maxColumns: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "et.delete_sheet_overlays",
+    description: "Delete WPS Spreadsheet floating shapes, comments, or validation input messages matching a text query.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, query: { type: "string" }, text: { type: "string" }, dryRun: { type: "boolean" }, deleteAll: { type: "boolean" }, maxRows: { type: "number" }, maxColumns: { type: "number" } }, additionalProperties: false },
   },
   {
     name: "et.list_worksheets",
@@ -99,7 +165,7 @@ export const tools = [
     description: "Read a specific WPS Spreadsheet range.",
     inputSchema: {
       type: "object",
-      properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, includeFormulas: { type: "boolean" }, includeFormats: { type: "boolean" } },
+      properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, includeFormulas: { type: "boolean" }, includeFormats: { type: "boolean" }, includeCellFormats: { type: "boolean" }, includeDisplayText: { type: "boolean" }, formatMode: { type: "string", enum: ["full", "profile"] }, formatProfileHeaderRows: { type: "number" } },
       required: ["address"],
       additionalProperties: false,
     },
@@ -135,6 +201,12 @@ export const tools = [
         fontName: { type: "string" },
         fontSize: { type: "number" },
         bold: { type: "boolean" },
+        italic: { type: "boolean" },
+        underline: { type: ["boolean", "number", "string"] },
+        indentLevel: { type: "number" },
+        leftIndent: { type: "number" },
+        firstLineIndent: { type: "number" },
+        rightIndent: { type: "number" },
         fontColor: { type: "string" },
         fillColor: { type: "string" },
         numberFormat: { type: "string" },
@@ -226,6 +298,76 @@ export const tools = [
     inputSchema: {
       type: "object",
       properties: { sessionId: { type: "string" }, checksum: { type: "boolean" }, readback: { type: "boolean" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.create_chart",
+    description: "Create or insert a chart in a WPS Spreadsheet worksheet as a floating object anchored to a cell.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        sheetName: { type: "string" },
+        bindingId: { type: "string" },
+        projectId: { type: "string" },
+        threadId: { type: "string" },
+        address: { type: "string" },
+        chartType: { type: "string", enum: ["column", "bar", "line", "pie", "combo", "area", "scatter"] },
+        dataRange: { type: "string" },
+        categoryRange: { type: "string" },
+        seriesRanges: { type: "array", items: { type: "string" } },
+        title: { type: "string" },
+        legendPosition: { type: "string", enum: ["top", "bottom", "left", "right", "none"] },
+        width: { type: "number" },
+        height: { type: "number" }
+      },
+      required: ["sessionId", "sheetName", "address", "chartType", "dataRange"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.insert_picture",
+    description: "Insert a local or remote picture into a WPS Spreadsheet worksheet as a floating object anchored to a cell.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        sheetName: { type: "string" },
+        bindingId: { type: "string" },
+        projectId: { type: "string" },
+        threadId: { type: "string" },
+        address: { type: "string" },
+        imagePath: { type: "string" },
+        imageUrl: { type: "string" },
+        width: { type: "number" },
+        height: { type: "number" },
+        lockAspectRatio: { type: "boolean" }
+      },
+      required: ["sessionId", "sheetName", "address"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.insert_shape",
+    description: "Insert a floating shape such as a text box, rectangle, arrow, line, or oval into a WPS Spreadsheet worksheet.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        sheetName: { type: "string" },
+        bindingId: { type: "string" },
+        projectId: { type: "string" },
+        threadId: { type: "string" },
+        address: { type: "string" },
+        shapeType: { type: "string", enum: ["textBox", "rectangle", "arrow", "line", "oval"] },
+        text: { type: "string" },
+        width: { type: "number" },
+        height: { type: "number" },
+        fillColor: { type: "string" },
+        lineColor: { type: "string" }
+      },
+      required: ["sessionId", "sheetName", "address", "shapeType"],
       additionalProperties: false,
     },
   },
@@ -398,12 +540,111 @@ export const tools = [
     description: "Compare paragraph formatting between a source paragraph and target paragraphs, returning per-target differing fields.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, includeFont: { type: "boolean" }, fields: { type: "array", items: { type: "string" } }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, required: ["sourceParagraphIndex"], additionalProperties: false },
   },
+
+  {
+    name: "wpp.list_tables",
+    description: "List WPS Writer tables with 0-based table indexes for sync workflows.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, includeValues: { type: "boolean" }, maxTables: { type: "number" }, maxRows: { type: "number" }, maxColumns: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_table_settings",
+    description: "Apply the shared default batch table settings to selected WPS Writer tables and verify the changed table formats by reading them back.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        target: { type: "string", enum: ["All", "Selection", "tableIndexes", "ExceptSelection"] },
+        tableIndexes: { type: "array", items: { type: "number" } },
+        selectedTableIndex: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.select_table",
+    description: "Select and reveal a WPS Writer table by 0-based tableIndex for table sync navigation.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.replace_table_values",
+    description: "Replace WPS Writer table cell values while preserving existing table formatting where possible.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, values: matrixSchema, allowStructuralChanges: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" } }, required: ["tableIndex", "values"], additionalProperties: false },
+  },
+  {
+    name: "wpp.ensure_table_sync_anchor",
+    description: "Return a stable sync anchor descriptor for a WPS Writer table. WPS currently uses table-index fallback anchors.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, anchorTag: { type: "string" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.resolve_table_sync_anchor",
+    description: "Resolve a WPS Writer table sync anchor and optionally include table values.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, anchorTag: { type: "string" }, includeValues: { type: "boolean" } }, additionalProperties: false },
+  },
   {
     name: "wpp.read_table",
     description: "Read a WPS Writer table by one-based index.",
     inputSchema: {
       type: "object",
       properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.capture_table_format",
+    description: "Capture the structured formatting of a selected or indexed WPS Writer table for reuse as a template. New template APIs use 0-based tableIndex.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        target: { type: "string", enum: ["Selection", "First", "tableIndex"] },
+        tableIndex: { type: "number" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.save_table_format_template",
+    description: "Capture a WPS Writer table format and save it as a reusable named template.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        target: { type: "string", enum: ["Selection", "First", "tableIndex"] },
+        tableIndex: { type: "number" },
+        name: { type: "string" },
+        templateId: { type: "string" },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.list_table_format_templates",
+    description: "List saved WPS Writer table format templates.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "wpp.apply_table_format_template",
+    description: "Apply a saved WPS Writer table format template to one or more document tables and verify the result by reading them back. Target indexes are 0-based.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" },
+        templateId: { type: "string" },
+        target: { type: "string", enum: ["All", "Selection", "tableIndexes", "ExceptSelection"] },
+        tableIndexes: { type: "array", items: { type: "number" } },
+      },
+      required: ["templateId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "wpp.delete_table_format_template",
+    description: "Delete a saved WPS Writer table format template.",
+    inputSchema: {
+      type: "object",
+      properties: { templateId: { type: "string" } },
+      required: ["templateId"],
       additionalProperties: false,
     },
   },

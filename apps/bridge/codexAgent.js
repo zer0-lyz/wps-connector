@@ -5,19 +5,94 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import net from "node:net";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import WebSocket from "ws";
+import { displayTextFromPrompt, sourceLabelFromPrompt } from "../../vendor/connector-shared/sourceMetadata.js";
 
 const bundledCodex = "/Applications/ChatGPT.app/Contents/Resources/codex";
 const execFileAsync = promisify(execFile);
 
 function agentPath() {
-  const parts = String(process.env.PATH || "").split(":").filter(Boolean);
-  for (const path of ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"]) {
+  const separator = process.platform === "win32" ? delimiter : ":";
+  const inherited = process.platform === "win32"
+    ? [process.env.PATH, process.env.Path, process.env.CONNECTOR_SUITE_MACHINE_PATH, process.env.CONNECTOR_SUITE_USER_PATH]
+    : [process.env.PATH];
+  const parts = inherited.flatMap((value) => String(value || "").split(separator)).filter(Boolean);
+  const defaults = process.platform === "win32"
+    ? [
+        join(process.env.LOCALAPPDATA || "", "Microsoft", "WindowsApps"),
+        join(process.env.APPDATA || "", "npm"),
+        join(process.env.LOCALAPPDATA || "", "Programs", "ChatGPT"),
+        join(process.env.ProgramFiles || "", "ChatGPT"),
+      ]
+    : ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"];
+  for (const path of defaults.filter(Boolean)) {
     if (!parts.includes(path)) parts.push(path);
   }
-  return parts.join(":");
+  return parts.join(separator);
+}
+
+function commandCandidates(command) {
+  const raw = String(command || "").trim();
+  if (!raw) return [];
+  if (process.platform !== "win32") return [raw];
+  const names = [raw];
+  if (!/\.(?:exe|cmd|bat)$/i.test(raw)) names.push(`${raw}.exe`, `${raw}.cmd`, `${raw}.bat`);
+  return [...new Set(names)];
+}
+
+function knownWindowsCodexPaths() {
+  const localAppData = process.env.LOCALAPPDATA || "";
+  const appData = process.env.APPDATA || "";
+  const programFiles = process.env.ProgramFiles || "";
+  const userProfile = process.env.USERPROFILE || homedir();
+  return [
+    join(localAppData, "Microsoft", "WindowsApps", "codex.exe"),
+    join(appData, "npm", "codex.cmd"),
+    join(localAppData, "Programs", "ChatGPT", "resources", "codex.exe"),
+    join(localAppData, "Programs", "ChatGPT", "resources", "codex.cmd"),
+    join(programFiles, "ChatGPT", "resources", "codex.exe"),
+    join(programFiles, "ChatGPT", "resources", "codex.cmd"),
+    join(userProfile, ".local", "bin", "codex.exe"),
+  ].filter(Boolean);
+}
+
+async function resolveCommand(command) {
+  const candidates = commandCandidates(command);
+  for (const candidate of [...candidates, ...knownWindowsCodexPaths()]) {
+    if ((isAbsolute(candidate) || process.platform === "win32") && existsSync(candidate)) return candidate;
+  }
+  if (process.platform === "win32") {
+    for (const candidate of candidates) {
+      try {
+        const { stdout } = await execFileAsync("where.exe", [candidate], {
+          env: { ...process.env, PATH: agentPath() },
+          windowsHide: true,
+          timeout: 2500,
+        });
+        const match = String(stdout || "").split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+        if (match && existsSync(match)) return match;
+      } catch {
+        // Try the next candidate and report an unavailable warning if none run.
+      }
+    }
+  }
+  return command;
+}
+
+function spawnFailure(error, command) {
+  const originalCode = String(error?.code || "UNKNOWN").toUpperCase();
+  const code = originalCode === "ENOENT"
+    ? "AGENT_CODEX_EXECUTABLE_NOT_FOUND"
+    : originalCode === "EPERM" || originalCode === "EACCES"
+      ? "AGENT_CODEX_EXECUTION_BLOCKED"
+      : "AGENT_CODEX_SPAWN_FAILED";
+  return Object.assign(new Error(`Codex executable could not start (${originalCode}): ${command}`), {
+    code,
+    cause: error,
+    details: { command, originalCode },
+  });
 }
 
 function textFromUserItem(item) {
@@ -28,13 +103,28 @@ function textFromUserItem(item) {
     .trim();
 }
 
+function displayTextFromAgentPanelPrompt(text = "") {
+  return displayTextFromPrompt(text);
+}
+
+function metaFromAgentPanelPrompt(text = "") {
+  return sourceLabelFromPrompt(text);
+}
+
 export function threadToMessages(thread, limit = 200) {
   const messages = [];
   for (const [turnIndex, turn] of (thread?.turns || []).entries()) {
     for (const item of turn?.items || []) {
       if (item?.type === "userMessage") {
         const text = textFromUserItem(item);
-        if (text) messages.push({ id: item.id, turnId: turn.id, turnIndex, role: "user", text });
+        if (text) messages.push({
+          id: item.id,
+          turnId: turn.id,
+          turnIndex,
+          role: "user",
+          text: displayTextFromAgentPanelPrompt(text),
+          sourceMeta: metaFromAgentPanelPrompt(text),
+        });
       }
       if (item?.type === "agentMessage") {
         const text = String(item.text || "").trim();
@@ -43,6 +133,18 @@ export function threadToMessages(thread, limit = 200) {
     }
   }
   return messages.slice(-Math.max(1, Number(limit) || 200));
+}
+
+function isNotMaterializedError(error) {
+  return /not materialized yet/i.test(String(error?.message || error || ""));
+}
+
+function emptyThreadState(threadId, run) {
+  return {
+    thread: { id: threadId, turns: [] },
+    messages: [],
+    run,
+  };
 }
 
 function parseArgs(value) {
@@ -58,7 +160,13 @@ function parseArgs(value) {
 export class CodexAgentClient extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.command = options.command || process.env.WPS_CONNECTOR_CODEX_BIN || (existsSync(bundledCodex) ? bundledCodex : "codex");
+    this.configuredCommand = options.command
+      || process.env.CONNECTOR_SUITE_CODEX_COMMAND
+      || process.env.CODEX_COMMAND
+      || process.env.WPS_CONNECTOR_CODEX_BIN
+      || (existsSync(bundledCodex) ? bundledCodex : "codex");
+    this.command = this.configuredCommand;
+    this.resolvedCommand = "";
     const configuredArgs = options.args || parseArgs(process.env.WPS_CONNECTOR_CODEX_ARGS);
     this.args = configuredArgs || ["-c", "features.code_mode_host=true", "app-server"];
     this.sharedTransport = options.sharedTransport ?? !configuredArgs;
@@ -72,13 +180,66 @@ export class CodexAgentClient extends EventEmitter {
     this.pending = new Map();
     this.runs = new Map();
     this.subscribedThreads = new Set();
+    // A thread/start response arrives before Codex persists its first user turn.
+    // Keep that short-lived state so a new conversation is never resumed/read too early.
+    this.unmaterializedThreads = new Map();
+    this.sharedTransportState = {
+      status: this.sharedTransport ? "pending" : "unavailable",
+      required: process.env.WPS_CONNECTOR_AGENT_SHARED_TRANSPORT_REQUIRED === "1",
+      warning: "",
+      code: "",
+      command: this.command,
+    };
+  }
+
+  sharedTransportStatus() {
+    return { ...this.sharedTransportState, command: this.resolvedCommand || this.command };
+  }
+
+  markSharedTransportUnavailable(error) {
+    const warning = `Codex shared transport unavailable: ${error.message || error}`;
+    this.sharedTransportState = {
+      ...this.sharedTransportState,
+      status: "unavailable",
+      warning,
+      code: error.code || "AGENT_SHARED_SERVER_UNAVAILABLE",
+      command: this.resolvedCommand || this.command,
+    };
+    this.emit("warning", { message: warning, code: this.sharedTransportState.code, details: error.details || {} });
+  }
+
+  markSharedTransportAvailable() {
+    this.sharedTransportState = {
+      ...this.sharedTransportState,
+      status: "available",
+      warning: "",
+      code: "",
+      command: this.resolvedCommand || this.command,
+    };
+  }
+
+  async resolveCodexCommand() {
+    if (this.resolvedCommand) return this.resolvedCommand;
+    const resolved = await resolveCommand(this.configuredCommand);
+    this.resolvedCommand = resolved;
+    this.command = resolved;
+    if (process.platform === "win32" && !existsSync(resolved) && !commandCandidates(resolved).some((candidate) => existsSync(candidate))) {
+      throw Object.assign(new Error(`Codex executable was not found: ${this.configuredCommand}`), {
+        code: "AGENT_CODEX_EXECUTABLE_NOT_FOUND",
+        details: { configuredCommand: this.configuredCommand, resolvedCommand: resolved, path: agentPath() },
+      });
+    }
+    return resolved;
   }
 
   async ensureStarted() {
     if (this.starting) return this.starting;
     if (this.socket?.readyState === WebSocket.OPEN) return;
     if (this.child && !this.child.killed) return;
-    this.starting = this.start();
+    this.starting = this.start().catch((error) => {
+      this.markSharedTransportUnavailable(error);
+      throw error;
+    });
     try {
       await this.starting;
     } finally {
@@ -92,31 +253,34 @@ export class CodexAgentClient extends EventEmitter {
   }
 
   async startStdio() {
-    const child = spawn(this.command, this.args, {
+    const command = await this.resolveCodexCommand();
+    const child = spawn(command, this.args, {
       env: { ...process.env, PATH: agentPath() },
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;
+    child.on("error", (error) => this.emit("warning", { message: `Codex App Server process error: ${error.message}`, code: error.code || "AGENT_CODEX_SPAWN_FAILED" }));
     await new Promise((resolve, reject) => {
       child.once("spawn", resolve);
-      child.once("error", reject);
+      child.once("error", (error) => reject(spawnFailure(error, command)));
     });
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => this.onData(chunk));
     child.stderr.on("data", (chunk) => this.emit("log", String(chunk)));
-    child.on("error", (error) => this.emit("log", `Codex App Server process error: ${error.message}`));
     child.on("exit", (code, signal) => this.onExit(code, signal));
     await this.request("initialize", {
-      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.4" },
+      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "0.2.1" },
       capabilities: { experimentalApi: true },
     }, true);
     this.notify("initialized", {});
+    this.markSharedTransportAvailable();
   }
 
   async daemonVersion() {
     try {
-      const { stdout } = await execFileAsync(this.command, ["app-server", "daemon", "version"], {
+      const command = await this.resolveCodexCommand();
+      const { stdout } = await execFileAsync(command, ["app-server", "daemon", "version"], {
         env: { ...process.env, PATH: agentPath() },
         timeout: 2500,
       });
@@ -128,21 +292,37 @@ export class CodexAgentClient extends EventEmitter {
   }
 
   async ensureSharedServer() {
+    const command = await this.resolveCodexCommand();
     const running = await this.daemonVersion();
     if (running?.socketPath === this.socketPath) return running;
     await mkdir(dirname(this.socketPath), { recursive: true });
-    const child = spawn(this.command, ["-c", "features.code_mode_host=true", "app-server", "--listen", `unix://${this.socketPath}`], {
+    const child = spawn(command, ["-c", "features.code_mode_host=true", "app-server", "--listen", `unix://${this.socketPath}`], {
       detached: true,
       env: { ...process.env, PATH: agentPath() },
       stdio: "ignore",
     });
+    child.on("error", (error) => this.emit("warning", { message: `Codex shared server process error: ${error.message}`, code: error.code || "AGENT_CODEX_SPAWN_FAILED" }));
+    const spawnError = await new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      child.once("spawn", () => finish(null));
+      child.once("error", (error) => finish(spawnFailure(error, command)));
+    });
+    if (spawnError) throw spawnError;
     child.unref();
     for (let attempt = 0; attempt < 30; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       const status = await this.daemonVersion();
       if (status?.socketPath === this.socketPath) return status;
     }
-    throw Object.assign(new Error("无法启动 Codex 共享会话服务。"), { code: "AGENT_SHARED_SERVER_UNAVAILABLE" });
+    throw Object.assign(new Error("无法启动 Codex 共享会话服务。"), {
+      code: "AGENT_SHARED_SERVER_UNAVAILABLE",
+      details: { command, socketPath: this.socketPath },
+    });
   }
 
   async startShared() {
@@ -152,6 +332,7 @@ export class CodexAgentClient extends EventEmitter {
       perMessageDeflate: false,
     });
     this.socket = socket;
+    socket.on("error", (error) => this.emit("warning", { message: `Codex shared App Server socket error: ${error.message}`, code: error.code || "AGENT_SHARED_SOCKET_FAILED" }));
     try {
       await new Promise((resolve, reject) => {
         socket.once("open", resolve);
@@ -163,13 +344,13 @@ export class CodexAgentClient extends EventEmitter {
       throw error;
     }
     socket.on("message", (data) => this.onMessageData(String(data)));
-    socket.on("error", (error) => this.emit("log", `Codex shared App Server socket error: ${error.message}`));
     socket.on("close", (code, reason) => this.onExit(code, String(reason || "")));
     await this.request("initialize", {
-      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.4" },
+      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "0.2.1" },
       capabilities: { experimentalApi: true },
     }, true);
     this.notify("initialized", {});
+    this.markSharedTransportAvailable();
   }
 
   onMessageData(data) {
@@ -305,21 +486,41 @@ export class CodexAgentClient extends EventEmitter {
   }
 
   async readThread(threadId, limit = 200) {
-    if (!this.subscribedThreads.has(threadId)) {
-      await this.request("thread/resume", { threadId, excludeTurns: true });
-      this.subscribedThreads.add(threadId);
+    const pendingThread = this.unmaterializedThreads.get(threadId);
+    if (pendingThread) {
+      return {
+        thread: { ...pendingThread, id: threadId, turns: [] },
+        messages: [],
+        run: this.getRun(threadId),
+      };
     }
     let thread;
     try {
+      if (!this.subscribedThreads.has(threadId)) {
+        await this.request("thread/resume", { threadId, excludeTurns: true });
+        this.subscribedThreads.add(threadId);
+      }
       const turnLimit = Math.max(10, Math.min(100, Math.ceil((Number(limit) || 80) / 2)));
       const [metadata, turns] = await Promise.all([
         this.request("thread/read", { threadId, includeTurns: false }),
         this.request("thread/turns/list", { threadId, limit: turnLimit, sortDirection: "desc", itemsView: "full" }),
       ]);
       thread = { ...metadata.thread, turns: [...(turns.data || [])].reverse() };
-    } catch {
-      const result = await this.request("thread/read", { threadId, includeTurns: true });
-      thread = result.thread;
+    } catch (error) {
+      if (isNotMaterializedError(error)) {
+        this.unmaterializedThreads.set(threadId, { id: threadId });
+        return emptyThreadState(threadId, this.getRun(threadId));
+      }
+      try {
+        const result = await this.request("thread/read", { threadId, includeTurns: true });
+        thread = result.thread;
+      } catch (fallbackError) {
+        if (isNotMaterializedError(fallbackError)) {
+          this.unmaterializedThreads.set(threadId, { id: threadId });
+          return emptyThreadState(threadId, this.getRun(threadId));
+        }
+        throw fallbackError;
+      }
     }
     return {
       thread,
@@ -328,12 +529,40 @@ export class CodexAgentClient extends EventEmitter {
     };
   }
 
+  async startThread(options = {}) {
+    const result = await this.request("thread/start", {
+      cwd: options.cwd || null,
+    });
+    const thread = result?.thread || result;
+    const threadId = String(thread?.id || thread?.threadId || "").trim();
+    if (!threadId) {
+      throw Object.assign(new Error("Codex App Server did not return a new thread id."), {
+        code: "AGENT_THREAD_CREATE_FAILED",
+        details: { result },
+      });
+    }
+    this.subscribedThreads.add(threadId);
+    this.unmaterializedThreads.set(threadId, thread);
+    return {
+      threadId,
+      thread,
+    };
+  }
+
   async startTurn(threadId, text, options = {}) {
     const current = this.runs.get(threadId);
     if (current && (current.status === "starting" || current.status === "running")) {
       throw Object.assign(new Error("The bound Codex conversation already has an active Agent turn."), { code: "AGENT_TURN_ACTIVE" });
     }
-    await this.request("thread/resume", { threadId, excludeTurns: true });
+    const unmaterialized = this.unmaterializedThreads.has(threadId);
+    if (!unmaterialized) {
+      try {
+        await this.request("thread/resume", { threadId, excludeTurns: true });
+      } catch (error) {
+        if (!isNotMaterializedError(error)) throw error;
+        this.unmaterializedThreads.set(threadId, { id: threadId });
+      }
+    }
     this.subscribedThreads.add(threadId);
     const now = new Date().toISOString();
     const run = {
@@ -356,6 +585,7 @@ export class CodexAgentClient extends EventEmitter {
         approvalPolicy: "never",
         cwd: options.cwd || null,
       });
+      this.unmaterializedThreads.delete(threadId);
       run.turnId = result.turn?.id || "";
       run.status = "running";
       run.updatedAt = new Date().toISOString();
@@ -389,6 +619,7 @@ export class CodexAgentClient extends EventEmitter {
       socketPath: this.sharedTransport ? this.socketPath : "",
       connected: this.socket?.readyState === WebSocket.OPEN || Boolean(this.child && !this.child.killed),
       desktopSyncRequired: this.sharedTransport,
+      sharedTransportStatus: this.sharedTransportStatus(),
     };
   }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-import { existsSync, copyFileSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, readdirSync, renameSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { join, basename } from "node:path";
 import { homedir } from "node:os";
 
 const jsaddonsDir = process.env.WPS_JSADDONS_DIR || join(
@@ -11,11 +12,35 @@ const stamp = new Date().toISOString().replace(/[-:T]/g, "").slice(0, 12);
 const connectorUrl = "http://127.0.0.1:3891";
 const connectorNamePrefix = "wps_connector_";
 const connectorIconUrl = `${connectorUrl}/images/connector.svg`;
+const backupDir = join(
+  process.env.WPS_JSADDONS_BACKUP_ROOT || join(homedir(), "Library/Application Support/Connector Suite/backups/wps-jsaddons"),
+  stamp,
+);
+const connectorDefinitions = {
+  wps: { name: "wps_connector_wps_binding_v7", type: "wps" },
+  et: { name: "wps_connector_et_binding_v7", type: "et" },
+};
 
 function backup(path) {
   if (!existsSync(path)) return;
-  const backupPath = `${path}.bak-${stamp}-no-js-debug`;
+  mkdirSync(backupDir, { recursive: true });
+  const backupPath = join(backupDir, basename(path));
   if (!existsSync(backupPath)) copyFileSync(path, backupPath);
+}
+
+function moveLegacyBackups() {
+  if (!existsSync(jsaddonsDir)) return 0;
+  mkdirSync(backupDir, { recursive: true });
+  let moved = 0;
+  for (const name of readdirSync(jsaddonsDir)) {
+    if (!/^(publish\.xml|authaddin\.json|jsaddinblockhost\.ini)\.bak-/.test(name) && !name.startsWith("wps-connector-disabled-")) continue;
+    const source = join(jsaddonsDir, name);
+    const target = join(backupDir, name);
+    if (existsSync(target)) continue;
+    renameSync(source, target);
+    moved += 1;
+  }
+  return moved;
 }
 
 function normalizeUrl(value) {
@@ -23,68 +48,84 @@ function normalizeUrl(value) {
 }
 
 function isConnectorItem(item) {
-  return item && typeof item === "object" && String(item.name || "").startsWith(connectorNamePrefix) && normalizeUrl(item.path || item.url) === connectorUrl;
-}
-
-function escapeXmlAttr(value) {
-  return String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-}
-
-function setXmlAttr(tag, name, value) {
-  const attr = `${name}="${escapeXmlAttr(value)}"`;
-  const pattern = new RegExp(`\\s${name}="[^"]*"`);
-  if (pattern.test(tag)) return tag.replace(pattern, ` ${attr}`);
-  if (/\/>\s*$/.test(tag)) return tag.replace(/\/>\s*$/, ` ${attr}/>`);
-  return tag.replace(/>\s*$/, ` ${attr}>`);
+  return item && typeof item === "object" && String(item.name || "").startsWith(connectorNamePrefix);
 }
 
 function normalizePublishXml() {
   const path = join(jsaddonsDir, "publish.xml");
-  if (!existsSync(path)) return false;
-  backup(path);
-  const before = readFileSync(path, "utf8");
-  let after = before.replace(/enable="enable_dev"/g, 'enable="enable"').replace(/debug="code"/g, 'debug=""');
-  after = after.replace(/<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")(?=[^>]*url="http:\/\/127\.0\.0\.1:3891\/?")[^>]*\/?>(?:<\/jspluginonline>)?/g, (tag) => {
-    let next = tag.replace(/<\/jspluginonline>$/, "");
-    next = setXmlAttr(next, "debug", "");
-    next = setXmlAttr(next, "enable", "enable");
-    next = setXmlAttr(next, "icon", connectorIconUrl);
-    next = setXmlAttr(next, "image", connectorIconUrl);
-    next = setXmlAttr(next, "imageUrl", connectorIconUrl);
-    return next;
-  });
+  const before = existsSync(path)
+    ? readFileSync(path, "utf8")
+    : '<?xml version="1.0" encoding="UTF-8"?>\n<jsplugins>\n</jsplugins>\n';
+  if (existsSync(path)) backup(path);
+  let after = before
+    .replace(/enable="enable_dev"/g, 'enable="enable"')
+    .replace(/debug="code"/g, 'debug=""')
+    .replace(/\s*<jspluginonline\b(?=[^>]*name="wps_connector_[^"]+")[^>]*\/?>(?:<\/jspluginonline>)?/g, "");
+  const entries = Object.values(connectorDefinitions).map((definition) =>
+    `    <jspluginonline type="${definition.type}" image="${connectorIconUrl}" name="${definition.name}" debug="" icon="${connectorIconUrl}" enable="enable" install="null" imageUrl="${connectorIconUrl}" url="${connectorUrl}/"/>`,
+  ).join("\n");
+  if (/<\/jsplugins>\s*$/.test(after)) {
+    after = after.replace(/\s*<\/jsplugins>\s*$/, `\n${entries}\n</jsplugins>\n`);
+  } else {
+    after = `<?xml version="1.0" encoding="UTF-8"?>\n<jsplugins>\n${entries}\n</jsplugins>\n`;
+  }
   if (after !== before) writeFileSync(path, after);
   return after !== before;
 }
 
 function normalizeAuthAddin() {
   const path = join(jsaddonsDir, "authaddin.json");
-  if (!existsSync(path)) return false;
-  backup(path);
-  const data = JSON.parse(readFileSync(path, "utf8"));
+  if (existsSync(path)) backup(path);
+  let data = { et: { namelist: "" }, wps: { namelist: "" } };
+  if (existsSync(path)) {
+    try {
+      data = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      const corruptBackup = `${path}.bak-${stamp}-invalid-json`;
+      copyFileSync(path, corruptBackup);
+    }
+  }
   let changed = false;
   for (const sectionName of ["et", "wps"]) {
-    const section = data[sectionName];
-    if (!section || typeof section !== "object") continue;
-    for (const [key, item] of Object.entries(section)) {
-      if (!isConnectorItem(item)) continue;
-      if (item.enable !== true) { item.enable = true; changed = true; }
-      if (item.mode === 1 && item.isload !== false) { item.isload = false; changed = true; }
-      if (item.icon !== connectorIconUrl) { item.icon = connectorIconUrl; changed = true; }
-      if (item.image !== connectorIconUrl) { item.image = connectorIconUrl; changed = true; }
-      if (item.imageUrl !== connectorIconUrl) { item.imageUrl = connectorIconUrl; changed = true; }
+    if (!data[sectionName] || typeof data[sectionName] !== "object") {
+      data[sectionName] = { namelist: "" };
+      changed = true;
     }
-    const keys = Object.entries(section).filter(([, item]) => isConnectorItem(item)).map(([key]) => key);
+    const section = data[sectionName];
+    for (const [key, item] of Object.entries(section)) {
+      if (key !== "namelist" && isConnectorItem(item)) {
+        delete section[key];
+        changed = true;
+      }
+    }
+    const definition = connectorDefinitions[sectionName];
+    const key = createHash("sha256").update(`${definition.name}|${connectorUrl}`).digest("hex").slice(0, 32);
+    section[key] = {
+      enable: true,
+      icon: connectorIconUrl,
+      image: connectorIconUrl,
+      imageUrl: connectorIconUrl,
+      isload: false,
+      md5: "",
+      mode: 1,
+      name: definition.name,
+      path: connectorUrl,
+    };
     const current = String(section.namelist || "").split(";").filter(Boolean);
-    const others = current.filter((key) => !isConnectorItem(section[key]));
-    const nextNameList = [...new Set([...others, ...keys])].join(";");
+    const others = current.filter((existingKey) => section[existingKey] && !isConnectorItem(section[existingKey]));
+    const nextNameList = [...new Set([...others, key])].join(";");
     if (section.namelist !== nextNameList) { section.namelist = nextNameList; changed = true; }
   }
-  if (changed) writeFileSync(path, `${JSON.stringify(data, null, 4)}\n`);
+  const serialized = `${JSON.stringify(data, null, 4)}\n`;
+  if (!existsSync(path) || serialized !== readFileSync(path, "utf8")) {
+    writeFileSync(path, serialized);
+    changed = true;
+  }
   return changed;
 }
 
 mkdirSync(jsaddonsDir, { recursive: true });
+const legacyBackupsMoved = moveLegacyBackups();
 const publishChanged = normalizePublishXml();
 const authChanged = normalizeAuthAddin();
-console.log(JSON.stringify({ ok: true, jsaddonsDir, connectorIconUrl, publishChanged, authChanged }, null, 2));
+console.log(JSON.stringify({ ok: true, jsaddonsDir, backupDir, legacyBackupsMoved, connectorIconUrl, publishChanged, authChanged }, null, 2));
