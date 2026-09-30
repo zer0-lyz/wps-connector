@@ -34,7 +34,7 @@ process.on("unhandledRejection", (reason) => {
 async function sendAsset(res, relPath) {
   const isBinary = relPath.endsWith(".png");
   const body = await readFile(join(rootDir, relPath), isBinary ? undefined : "utf8");
-  res.writeHead(200, { "content-type": contentType(relPath), "access-control-allow-origin": "*" });
+  res.writeHead(200, { "content-type": contentType(relPath), "access-control-allow-origin": "*", "cache-control": "no-cache" });
   if (res.req?.method === "HEAD") return res.end();
   res.end(body);
 }

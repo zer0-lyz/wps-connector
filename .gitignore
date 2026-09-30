@@ -9,3 +9,6 @@ plugins/wps-connector/runtime/logs/
 plugins/wps-connector/runtime/test_logs/
 plugins/wps-connector/runtime/project-bindings.local.json
 plugins/wps-connector/runtime/codex-catalog.snapshot.json
+
+*.local.json
+项目管理/

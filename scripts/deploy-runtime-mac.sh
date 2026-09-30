@@ -33,9 +33,10 @@ rsync -a --delete \
   --exclude 'et-wpp-table-syncs.local.json' \
   --exclude 'et-wpp-source-cache.local.json' \
   --exclude 'table-format-templates.local.json' \
+  --exclude 'agent-provider-state.local.json' \
   "$SOURCE_DIR/" "$STAGE_ROOT/" >&2
 
-for file in project-bindings.local.json codex-catalog.snapshot.json et-wpp-table-syncs.local.json et-wpp-source-cache.local.json table-format-templates.local.json; do
+for file in project-bindings.local.json codex-catalog.snapshot.json et-wpp-table-syncs.local.json et-wpp-source-cache.local.json table-format-templates.local.json agent-provider-state.local.json; do
   [[ -f "$RUNTIME_ROOT/$file" ]] && cp -p "$RUNTIME_ROOT/$file" "$STAGE_ROOT/$file"
 done
 

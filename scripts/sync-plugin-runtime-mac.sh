@@ -16,6 +16,7 @@ rsync -a --delete \
   --exclude 'et-wpp-table-syncs.local.json' \
   --exclude 'et-wpp-source-cache.local.json' \
   --exclude 'table-format-templates.local.json' \
+  --exclude 'agent-provider-state.local.json' \
   "$SOURCE_DIR/" "$TARGET_DIR/"
 
 printf 'Synchronized WPS plugin runtime: %s\n' "$TARGET_DIR"

@@ -1,0 +1,33 @@
+{
+  "name": "wps-connector",
+  "version": "1.1.5",
+  "description": "WPS Connector: automate WPS Writer and Spreadsheet through a local MCP bridge (133 tools: read/write ranges, paragraphs, comments, tables, formatting, and table sync).",
+  "description_i18n": {
+    "en": "WPS Connector: automate WPS Writer and Spreadsheet through a local MCP bridge (133 tools: read/write ranges, paragraphs, comments, tables, formatting, and table sync).",
+    "zh-CN": "WPS 连接器：通过本地 MCP 桥接自动化操作 WPS 文字与表格（133 个工具：读写选区、段落、批注、表格、格式与表格同步）。"
+  },
+  "author": {
+    "name": "zer0-lyz",
+    "url": "https://github.com/zer0-lyz/wps-connector"
+  },
+  "keywords": [
+    "wps",
+    "writer",
+    "spreadsheet",
+    "mcp",
+    "office",
+    "documents"
+  ],
+  "skills": "skills",
+  "mcpServers": {
+    "wps-connector": {
+      "type": "stdio",
+      "command": "/usr/local/bin/node",
+      "args": ["/Users/lin/.local/share/wps-connector/runtime/apps/mcp/server.js"],
+      "env": {
+        "WPS_CONNECTOR_BRIDGE_URL": "http://127.0.0.1:40215",
+        "CODEX_THREAD_ID": "zcode"
+      }
+    }
+  }
+}
