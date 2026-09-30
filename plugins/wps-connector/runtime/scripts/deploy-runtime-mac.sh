@@ -14,6 +14,8 @@ rsync -a --delete \
   --exclude 'test_logs/' \
   --exclude 'project-bindings.local.json' \
   --exclude 'codex-catalog.snapshot.json' \
+  --exclude 'et-wpp-table-syncs.local.json' \
+  --exclude 'wpp-table-style-templates.local.json' \
   "$SOURCE_DIR/" "$RUNTIME_ROOT/"
 
 npm install --omit=dev --ignore-scripts --no-audit --no-fund --prefix "$RUNTIME_ROOT"

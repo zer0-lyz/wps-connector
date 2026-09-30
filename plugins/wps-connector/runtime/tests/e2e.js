@@ -134,7 +134,15 @@ async function main() {
     const source = readFileSync(deployScript, "utf8");
     assert(source.includes("--exclude 'project-bindings.local.json'"), `${deployScript} may delete saved bindings during deployment.`);
     assert(source.includes("--exclude 'codex-catalog.snapshot.json'"), `${deployScript} may delete the local catalog snapshot during deployment.`);
+    assert(source.includes("--exclude 'et-wpp-table-syncs.local.json'"), `${deployScript} may delete saved WPS table sync mappings during deployment.`);
   }
+  const paneHtml = readFileSync("apps/wps-addin/pane.html", "utf8");
+  assert(paneHtml.includes('id="connectorStatus"') && paneHtml.includes('id="agentView"') && paneHtml.includes('id="syncView"'), "pane.html must keep connector-view / agent-view / sync-view surfaces.");
+  assert(paneHtml.includes("agent-view") && paneHtml.includes("sync-view") && paneHtml.includes("loadSyncView"), "pane.html missed Agent or table sync UI wiring.");
+  assert(paneHtml.includes("currentSyncHost") && paneHtml.includes('setSyncPanelVisible("etSourceManager",mode!=="wpp")') && paneHtml.includes('setSyncPanelVisible("wppSyncManager",mode==="wpp")'), "pane.html must split WPS ET source UI from WPP sync UI.");
+  assert(paneHtml.includes("allowInsert:false") && paneHtml.includes("refreshActiveEtSelection({render:true})") && paneHtml.includes("jump-source") && paneHtml.includes("表 ${next}-${sheet}：${addr}"), "pane.html missed ET-only source list behavior, Office-style naming, source jump, or live selection refresh.");
+  const ribbonXml = readFileSync("apps/wps-addin/ribbon.xml", "utf8");
+  for (const id of ["btnShowConnectorPane", "btnShowAgentChat", "btnShowTableSync"]) assert(ribbonXml.includes(id), `Ribbon missed ${id}.`);
   const updateServer = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
     res.end('const WPS_CONNECTOR_CLIENT_VERSION = "9.9.9";\nconst WPS_CONNECTOR_CLIENT_BUILD = "2099.01.01-test-update.1";\n');
@@ -143,13 +151,13 @@ async function main() {
   servers.push(updateServer);
   await once(updateServer, "listening");
 
-  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: JSON.stringify(["tests/fixtures/fake-codex-app-server.js"]) });
+  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-table-syncs-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: JSON.stringify(["tests/fixtures/fake-codex-app-server.js"]) });
   bridge.on("exit", (code) => {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
   await waitForHealth();
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.1.4", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.1.5", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true && remoteUpdateCheck.versionState === "update_available", "Update check did not discover a newer remote version.");
 
@@ -158,6 +166,7 @@ async function main() {
   startNode(["apps/bridge/server.js"], {
     WPS_CONNECTOR_PORT: String(stalePort),
     WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-stale-bindings-${process.pid}.json`,
+    WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-stale-table-syncs-${process.pid}.json`,
     WPS_CONNECTOR_SESSION_OFFLINE_MS: "100",
     WPS_CONNECTOR_SESSION_RETAIN_OFFLINE_MS: "250",
     WPS_CONNECTOR_MAX_OFFLINE_SESSIONS: "5",
@@ -220,6 +229,8 @@ async function main() {
   assert(savedPaneView.view === "agent" && savedPaneView.updatedAt, "Pane view endpoint did not return the cross-context view state.");
   const connectorPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "connector" }) });
   assert(connectorPaneView.view === "connector", "Pane view endpoint did not switch back to the connector view.");
+  const syncPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "sync" }) });
+  assert(syncPaneView.view === "sync", "Pane view endpoint did not save the table sync view.");
 
   const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, WPS_CONNECTOR_MCP_EXPOSE_DOTTED: "true", CODEX_THREAD_ID: "", CODEX_THREAD: "" });
   const mcpClient = createMcpClient(mcp);
@@ -227,6 +238,8 @@ async function main() {
   assert(init.serverInfo?.name === "wps-connector", "MCP initialize returned unexpected server name.");
   const listedTools = await mcpClient.request("tools/list", {});
   assert(listedTools.tools.some((tool) => tool.name === "et.read_selection"), "MCP tools/list missed et.read_selection.");
+  assert(listedTools.tools.some((tool) => tool.name === "et.select_range"), "MCP tools/list missed et.select_range.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.select_table"), "MCP tools/list missed wpp.select_table.");
   assert(listedTools.tools.some((tool) => tool.name === "et.read_range"), "MCP tools/list missed et.read_range.");
   assert(listedTools.tools.some((tool) => tool.name === "et.save_workbook"), "MCP tools/list missed et.save_workbook.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
@@ -249,6 +262,7 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.duplicate_table_appearance"), "MCP tools/list missed wpp.duplicate_table_appearance.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_with_layout"), "MCP tools/list missed wpp.insert_table_with_layout.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.reset_table_layout"), "MCP tools/list missed wpp.reset_table_layout.");
+  for (const name of ["wps.create_et_wpp_data_source", "wps.list_et_wpp_data_sources", "wps.delete_et_wpp_data_source", "wps.unbind_et_wpp_data_source", "wps.create_et_wpp_table_sync", "wps.insert_et_wpp_data_source", "wps.list_et_wpp_table_syncs", "wps.sync_et_wpp_table", "et.select_range", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wps.connection_status"), "MCP tools/list missed wps.connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_connection_status"), "MCP tools/list missed underscore alias wps_connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_list_sessions"), "MCP tools/list missed underscore alias wps_list_sessions.");
@@ -926,6 +940,40 @@ async function main() {
     body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1, columnIndex: 2, count: 1 }),
   });
   assert(wppDeleteColumns.columnCount === 2, "WPP delete_table_columns did not update column count.");
+
+  await request("/api/tools/et/write_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", address: "A1:B3", values: [["Name", "Amount"], ["C", 300], ["E", 500]] }),
+  });
+  const tableSyncSource = await request("/api/tools/wps/create_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ etSessionId: "test-et-session", name: "测试同步源", sheetName: "Sheet1", address: "A1:B3" }),
+  });
+  assert(tableSyncSource.created === true && tableSyncSource.source?.status === "pending", "WPS ET-WPP data source was not created as pending.");
+  const tableSyncSources = await request("/api/tools/wps/list_et_wpp_data_sources", { method: "POST", body: JSON.stringify({}) });
+  assert(tableSyncSources.sources.some((source) => source.sourceId === tableSyncSource.source.sourceId), "WPS ET-WPP source list missed the created source.");
+  const tableSyncJump = await request("/api/tools/et/select_range", { method: "POST", body: JSON.stringify({ sessionId: "test-et-session", sheetName: "Sheet1", address: "A1:B3" }) });
+  assert(tableSyncJump.selected === true && tableSyncJump.address === "A1:B3", "WPS ET source jump did not select the saved source range.");
+  const tableSyncMapping = await request("/api/tools/wps/create_et_wpp_table_sync", {
+    method: "POST",
+    body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId, etSessionId: "test-et-session", wppSessionId: "test-wpp-session", wppTableIndex: 0, headerRowCount: 1, syncHeader: false, allowStructuralChanges: true }),
+  });
+  assert(tableSyncMapping.mapping?.syncId && tableSyncMapping.mapping.target?.fallbackTableIndex === 0, "WPS ET-WPP mapping was not created for the existing WPP table.");
+  const tableSyncList = await request("/api/tools/wps/list_et_wpp_table_syncs", { method: "POST", body: JSON.stringify({}) });
+  assert(tableSyncList.syncs.some((sync) => sync.syncId === tableSyncMapping.mapping.syncId), "WPS ET-WPP sync list missed the mapping.");
+  const tableSyncApplied = await request("/api/tools/wps/sync_et_wpp_table", { method: "POST", body: JSON.stringify({ syncId: tableSyncMapping.mapping.syncId }) });
+  assert(tableSyncApplied.synced === true && tableSyncApplied.rowMerge?.matchedCount >= 1 && tableSyncApplied.rowMerge?.appendedExcelRowCount >= 1, "WPS ET-WPP sync did not perform smart row matching and append new ET rows.");
+  const tableSyncWppJump = await request("/api/tools/wpp/select_table", { method: "POST", body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 0 }) });
+  assert(tableSyncWppJump.selected === true && tableSyncWppJump.tableIndex === 0, "WPS Writer table jump did not select the saved target table.");
+  const syncedWppTable = await request("/api/tools/wpp/read_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1 }),
+  });
+  assert(syncedWppTable.values.some((row) => row[0] === "E" && Number(row[1]) === 500), "WPS ET-WPP sync did not append the new ET key row into WPP table.");
+  const tableSyncUnbound = await request("/api/tools/wps/unbind_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId }) });
+  assert(tableSyncUnbound.unbound === true && tableSyncUnbound.removedCount === 1, "WPS ET-WPP unbind did not remove the saved mapping.");
+  const tableSyncDeleted = await request("/api/tools/wps/delete_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId }) });
+  assert(tableSyncDeleted.deleted === true, "WPS ET-WPP delete data source did not delete the unbound source.");
 
   const wppMergeCells = await request("/api/tools/wpp/merge_table_cells", {
     method: "POST",

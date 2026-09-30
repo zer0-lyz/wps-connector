@@ -66,17 +66,25 @@ function normalizeAuthAddin() {
   for (const sectionName of ["et", "wps"]) {
     const section = data[sectionName];
     if (!section || typeof section !== "object") continue;
-    for (const [key, item] of Object.entries(section)) {
+    const expectedName = `wps_connector_${sectionName}_binding_v7`;
+    const entries = Object.entries(section).filter(([key]) => key !== "namelist");
+    const candidates = entries.filter(([, item]) => isConnectorItem(item) && item.name === expectedName);
+    const selected = candidates.find(([, item]) => item.mode === 1 && item.isload === false) || candidates[0];
+    for (const [key, item] of entries) {
       if (!isConnectorItem(item)) continue;
-      if (item.enable !== true) { item.enable = true; changed = true; }
-      if (item.mode === 1 && item.isload !== false) { item.isload = false; changed = true; }
-      if (item.icon !== connectorIconUrl) { item.icon = connectorIconUrl; changed = true; }
-      if (item.image !== connectorIconUrl) { item.image = connectorIconUrl; changed = true; }
-      if (item.imageUrl !== connectorIconUrl) { item.imageUrl = connectorIconUrl; changed = true; }
+      if (!selected || key !== selected[0] || item.name !== expectedName) {
+        delete section[key];
+        changed = true;
+      }
+    }
+    if (selected) {
+      const item = section[selected[0]];
+      const normalized = { ...item, enable: true, isload: false, mode: 1, md5: "", name: expectedName, path: connectorUrl, icon: connectorIconUrl, image: connectorIconUrl, imageUrl: connectorIconUrl };
+      if (JSON.stringify(item) !== JSON.stringify(normalized)) { section[selected[0]] = normalized; changed = true; }
     }
     const keys = Object.entries(section).filter(([, item]) => isConnectorItem(item)).map(([key]) => key);
     const current = String(section.namelist || "").split(";").filter(Boolean);
-    const others = current.filter((key) => !isConnectorItem(section[key]));
+    const others = current.filter((key) => section[key] && !isConnectorItem(section[key]));
     const nextNameList = [...new Set([...others, ...keys])].join(";");
     if (section.namelist !== nextNameList) { section.namelist = nextNameList; changed = true; }
   }

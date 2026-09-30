@@ -4,6 +4,42 @@ const tableFormatSchema = { type: "object", additionalProperties: true };
 const tableCellAddressSchema = { type: "object", properties: { row: { type: "number" }, col: { type: "number" }, column: { type: "number" } }, required: ["row"], additionalProperties: false };
 const tableFieldsSchema = { type: "array", items: { type: "string" } };
 const batchOperationSchema = { type: "object", properties: { operationId: { type: "string" }, tool: { type: "string" }, input: { type: "object", additionalProperties: true } }, required: ["tool"], additionalProperties: false };
+export const tableFormatPolicySchema = {
+  type: "object",
+  properties: {
+    mode: { type: "string", enum: ["preserve_target", "saved_template", "template_table", "preset", "custom"] },
+    preset: { type: "string", enum: ["formal", "simple", "report"] },
+    templateId: { type: "string" },
+    templateTableIndex: { type: "number" },
+    templateScope: { type: "array", items: { type: "string" } },
+    fontName: { type: "string" },
+    fontSize: { type: "number" },
+    headerBold: { type: "boolean" },
+    headerShading: { type: ["string", "object"] },
+    headerAlignment: { type: ["string", "number"] },
+    bodyTextAlignment: { type: ["string", "number"] },
+    bodyNumericAlignment: { type: ["string", "number"] },
+    bodyTextColumns: { type: "array", items: { type: "number" } },
+    bodyNumericColumns: { type: "array", items: { type: "number" } },
+    border: { type: ["boolean", "object"] },
+    verticalAlignment: { type: ["string", "number"] },
+    padding: { type: "object", additionalProperties: true },
+    indent: { type: ["number", "object"] },
+    fitToPageWidth: { type: "boolean" },
+    preferredWidthPercent: { type: "number" },
+    firstColumnWidth: { type: "number" },
+    equalDataColumnWidths: { type: ["number", "boolean"] },
+    rowHeightRule: { type: ["string", "boolean"] },
+    textDirection: { type: "string" },
+    applyOnInsert: { type: "boolean" },
+    applyOnSync: { type: "boolean" },
+    applyToNewRowsOnly: { type: "boolean" },
+    customFormat: { type: "object", additionalProperties: true },
+    format: { type: "object", additionalProperties: true },
+    name: { type: "string" },
+  },
+  additionalProperties: false,
+};
 const textFormatSchema = { type: "object", properties: { fontName: { type: "string" }, fontSize: { type: "number" }, bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" }, color: { type: "string" }, highlightColor: { type: "string" } }, additionalProperties: false };
 const paragraphFormatSchema = { type: "object", properties: { alignment: { type: "string" }, lineSpacing: { type: "number" }, lineSpacingRule: { type: ["string", "number"] }, lineSpacingValue: { type: "number" }, spaceBefore: { type: "number" }, spaceAfter: { type: "number" }, firstLineIndent: { type: "number" }, leftIndent: { type: "number" }, rightIndent: { type: "number" }, keepWithNext: { type: "boolean" }, pageBreakBefore: { type: "boolean" } }, additionalProperties: false };
 const fontFormatSchema = { type: "object", properties: { fontName: { type: "string" }, fontSize: { type: "number" }, bold: { type: "boolean" }, italic: { type: "boolean" }, underline: { type: "boolean" }, color: { type: "string" } }, additionalProperties: false };
@@ -51,6 +87,77 @@ export const tools = [
       additionalProperties: false
     },
   },
+
+  {
+    name: "wps.create_et_wpp_data_source",
+    description: "Create or refresh a local WPS Spreadsheet data source for WPS Writer table synchronization. This does not require Codex project binding.",
+    inputSchema: { type: "object", properties: { etSessionId: { type: "string" }, sessionId: { type: "string" }, sourceId: { type: "string" }, name: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, refreshSelection: { type: "boolean" } }, additionalProperties: false },
+  },
+  {
+    name: "wps.list_et_wpp_data_sources",
+    description: "List pending and bound WPS Spreadsheet data sources for WPS Writer table synchronization.",
+    inputSchema: { type: "object", properties: { status: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "wps.delete_et_wpp_data_source",
+    description: "Delete an unbound WPS Spreadsheet data source.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" } }, required: ["sourceId"], additionalProperties: false },
+  },
+  {
+    name: "wps.unbind_et_wpp_data_source",
+    description: "Unbind a WPS Spreadsheet data source from one or more WPS Writer tables while preserving the source definition.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" } }, required: ["sourceId"], additionalProperties: false },
+  },
+  {
+    name: "wps.create_et_wpp_table_sync",
+    description: "Bind a WPS Spreadsheet range/source to an existing WPS Writer table for repeatable synchronization.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, syncId: { type: "string" }, name: { type: "string" }, etSessionId: { type: "string" }, wppSessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, wppTableIndex: { type: "number" }, tableIndex: { type: "number" }, allowStructuralChanges: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, columnMapping: { type: "array", items: { type: "number" } }, formatPolicy: tableFormatPolicySchema, applyFormatNow: { type: "boolean" }, verifyFormat: { type: "boolean" } }, additionalProperties: false },
+  },
+  {
+    name: "wps.insert_et_wpp_data_source",
+    description: "Insert a WPS Spreadsheet data source into the active WPS Writer document as a table and create the sync binding.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" }, wppSessionId: { type: "string" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, border: { type: "boolean" }, formatPolicy: tableFormatPolicySchema, verifyFormat: { type: "boolean" } }, required: ["sourceId"], additionalProperties: false },
+  },
+  {
+    name: "wps.list_et_wpp_table_syncs",
+    description: "List saved WPS Spreadsheet to WPS Writer table sync bindings.",
+    inputSchema: { type: "object", properties: { sourceId: { type: "string" } }, additionalProperties: false },
+  },
+  {
+    name: "wps.sync_et_wpp_table",
+    description: "Synchronize one WPS Writer table from its bound WPS Spreadsheet source.",
+    inputSchema: { type: "object", properties: { syncId: { type: "string" }, wppSessionId: { type: "string" }, previewOnly: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" }, rowMatchEnabled: { type: "boolean" }, rowMatchKeyColumn: { type: "number" }, preserveUnmatchedWordRows: { type: "boolean" }, appendNewExcelRows: { type: "boolean" }, allowStructuralChanges: { type: "boolean" }, config: { type: "object", additionalProperties: true }, formatPolicy: tableFormatPolicySchema, persistFormatPolicy: { type: "boolean" }, verifyFormat: { type: "boolean" } }, required: ["syncId"], additionalProperties: false },
+  },
+  {
+    name: "wps.update_et_wpp_table_sync_format",
+    description: "Update one saved ET to WPS Writer table format policy, optionally apply it now, or dry-run the policy without changing Writer content.",
+    inputSchema: { type: "object", properties: { syncId: { type: "string" }, wppSessionId: { type: "string" }, formatPolicy: tableFormatPolicySchema, dryRun: { type: "boolean" }, preview: { type: "boolean" }, applyNow: { type: "boolean" }, verifyFormat: { type: "boolean" }, summaryOnly: { type: "boolean" } }, required: ["syncId", "formatPolicy"], additionalProperties: false },
+  },
+  {
+    name: "wps.preview_et_wpp_table_sync_format",
+    description: "Preview the format commands for one ET to WPS Writer table sync without persisting or changing Writer content.",
+    inputSchema: { type: "object", properties: { syncId: { type: "string" }, wppSessionId: { type: "string" }, formatPolicy: tableFormatPolicySchema, verifyFormat: { type: "boolean" }, summaryOnly: { type: "boolean" } }, required: ["syncId"], additionalProperties: false },
+  },
+  {
+    name: "wps.capture_wpp_table_style_template",
+    description: "Capture the complete appearance of the selected or specified WPS Writer table as a reusable local named template.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, name: { type: "string" }, scope: { type: ["string", "array"], items: { type: "string" } } }, required: ["name"], additionalProperties: false },
+  },
+  {
+    name: "wps.list_wpp_table_style_templates",
+    description: "List saved local WPS Writer table style templates without returning their heavy format payloads.",
+    inputSchema: { type: "object", properties: { templateId: { type: "string" }, sourceDocumentKey: { type: "string" }, includeFormat: { type: "boolean" } }, additionalProperties: false },
+  },
+  {
+    name: "wps.apply_wpp_table_style_template",
+    description: "Apply one saved WPS Writer table style template to multiple target tables while preserving target text by default.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, templateId: { type: "string" }, targetTableIndexes: { type: "array", items: { type: "number" } }, tableIndexes: { type: "array", items: { type: "number" } }, scope: { type: ["string", "array"], items: { type: "string" } }, preserveContent: { type: "boolean" }, allowMergedCells: { type: "boolean" }, verify: { type: "boolean" }, saveAfter: { type: "boolean" } }, required: ["templateId"], additionalProperties: false },
+  },
+  {
+    name: "wps.delete_wpp_table_style_template",
+    description: "Delete one saved local WPS Writer table style template.",
+    inputSchema: { type: "object", properties: { templateId: { type: "string" } }, required: ["templateId"], additionalProperties: false },
+  },
   {
     name: "et.read_selection",
     description: "Read the current WPS Spreadsheet selection.",
@@ -59,6 +166,21 @@ export const tools = [
       properties: { sessionId: { type: "string" } },
       additionalProperties: false,
     },
+  },
+  {
+    name: "et.select_range",
+    description: "Select and reveal a WPS Spreadsheet range for table sync source navigation.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" } }, required: ["address"], additionalProperties: false },
+  },
+  {
+    name: "et.inspect_sheet_overlays",
+    description: "Inspect WPS Spreadsheet floating shapes, comments, and data validation input messages on a worksheet.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, maxItems: { type: "number" }, includeValidation: { type: "boolean" }, maxRows: { type: "number" }, maxColumns: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "et.delete_sheet_overlays",
+    description: "Delete WPS Spreadsheet floating shapes, comments, or validation input messages matching a text query.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, query: { type: "string" }, text: { type: "string" }, dryRun: { type: "boolean" }, deleteAll: { type: "boolean" }, maxRows: { type: "number" }, maxColumns: { type: "number" } }, additionalProperties: false },
   },
   {
     name: "et.list_worksheets",
@@ -398,6 +520,32 @@ export const tools = [
     description: "Compare paragraph formatting between a source paragraph and target paragraphs, returning per-target differing fields.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" }, sourceParagraphIndex: { type: "number" }, targetParagraphIndexes: { type: "array", items: { type: "number" } }, startParagraphIndex: { type: "number" }, endParagraphIndex: { type: "number" }, includeFont: { type: "boolean" }, fields: { type: "array", items: { type: "string" } }, summaryOnly: { type: "boolean" }, includeText: { type: "boolean" }, includeRanges: { type: "boolean" } }, required: ["sourceParagraphIndex"], additionalProperties: false },
   },
+
+  {
+    name: "wpp.list_tables",
+    description: "List WPS Writer tables with 0-based table indexes for sync workflows.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, includeValues: { type: "boolean" }, maxTables: { type: "number" }, maxRows: { type: "number" }, maxColumns: { type: "number" } }, additionalProperties: false },
+  },
+  {
+    name: "wpp.select_table",
+    description: "Select and reveal a WPS Writer table by 0-based tableIndex for table sync navigation.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.replace_table_values",
+    description: "Replace WPS Writer table cell values while preserving existing table formatting where possible.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, values: matrixSchema, allowStructuralChanges: { type: "boolean" }, headerRowCount: { type: "number" }, syncHeader: { type: "boolean" } }, required: ["tableIndex", "values"], additionalProperties: false },
+  },
+  {
+    name: "wpp.ensure_table_sync_anchor",
+    description: "Return a stable sync anchor descriptor for a WPS Writer table. WPS currently uses table-index fallback anchors.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, anchorTag: { type: "string" } }, required: ["tableIndex"], additionalProperties: false },
+  },
+  {
+    name: "wpp.resolve_table_sync_anchor",
+    description: "Resolve a WPS Writer table sync anchor and optionally include table values.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, tableIndex: { type: "number" }, anchorTag: { type: "string" }, includeValues: { type: "boolean" } }, additionalProperties: false },
+  },
   {
     name: "wpp.read_table",
     description: "Read a WPS Writer table by one-based index.",
@@ -544,7 +692,7 @@ export const tools = [
   {
     name: "wpp.insert_table_with_layout",
     description: "Insert a real WPS Writer table and immediately normalize page-width layout, horizontal text, auto row height, borders, font, header, padding, and optional column widths.",
-    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, rowCount: { type: "number" }, columnCount: { type: "number" }, values: matrixSchema, headerRowBold: { type: "boolean" }, border: { type: "boolean" }, fitToPageWidth: { type: "boolean" }, preferredWidthPercent: { type: "number" }, firstColumnWidth: { type: "number" }, equalDataColumnWidths: { type: "number" }, columnWidths: { type: "array", items: { type: "object", additionalProperties: true } }, columns: { type: "array", items: { type: "object", additionalProperties: true } }, fontName: { type: "string" }, fontSize: { type: "number" }, horizontalText: { type: "boolean" }, rowHeightRule: { type: "string" }, cellPadding: { type: "object", additionalProperties: true }, alignment: { type: "string" }, disableAutoFitForWidths: { type: "boolean" }, widthTolerance: { type: "number" } }, required: ["rowCount", "columnCount"], additionalProperties: false },
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, rowCount: { type: "number" }, columnCount: { type: "number" }, values: matrixSchema, headerRowBold: { type: "boolean" }, border: { type: "boolean" }, fitToPageWidth: { type: "boolean" }, preferredWidthPercent: { type: "number" }, firstColumnWidth: { type: "number" }, equalDataColumnWidths: { type: "number" }, columnWidths: { type: "array", items: { type: "object", additionalProperties: true } }, columns: { type: "array", items: { type: "object", additionalProperties: true } }, fontName: { type: "string" }, fontSize: { type: "number" }, horizontalText: { type: "boolean" }, rowHeightRule: { type: ["string", "boolean"] }, cellPadding: { type: "object", additionalProperties: true }, alignment: { type: "string" }, preserveUnspecified: { type: "boolean" }, releaseSelection: { type: "boolean" }, ensureTrailingParagraph: { type: "boolean" }, disableAutoFitForWidths: { type: "boolean" }, widthTolerance: { type: "number" } }, required: ["rowCount", "columnCount"], additionalProperties: false },
   },
   {
     name: "wpp.reset_table_layout",

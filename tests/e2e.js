@@ -2,9 +2,12 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { CodexAgentClient } from "../apps/bridge/codexAgent.js";
+import { buildInsertTableInput, buildTableFormatCommands, migrateTableSyncStore, normalizeFormatPolicy } from "../apps/shared/tableFormatProfiles.js";
 
 const port = 40216;
 const updatePort = 40218;
@@ -123,6 +126,17 @@ function assert(condition, message) {
 }
 
 async function main() {
+  const migratedSyncStore = migrateTableSyncStore({ sources: [{ sourceId: "legacy-source" }], syncs: [{ syncId: "legacy-sync", modelVersion: 2 }] });
+  assert(migratedSyncStore.syncs[0].modelVersion === 3 && migratedSyncStore.syncs[0].formatPolicy.mode === "preserve_target", "Legacy table sync records were not migrated to preserve_target.");
+  const preservePlan = buildTableFormatCommands(normalizeFormatPolicy({ mode: "preserve_target" }), { tableIndex: 0, rowCount: 3, columnCount: 2 });
+  assert(preservePlan.commands.length === 0, "preserve_target generated Writer format commands.");
+  const presetInsertInput = buildInsertTableInput({ mode: "preset", preset: "report" }, { rowCount: 3, columnCount: 2, values: [["H1", "H2"], ["A", 1], ["B", 2]] });
+  assert(presetInsertInput.preserveUnspecified === true && presetInsertInput.fontName === "仿宋_GB2312" && presetInsertInput.fitToPageWidth === true, "Preset insert input missed explicit layout fields or strict preservation.");
+  const customInsertInput = buildInsertTableInput({ mode: "custom", fontName: "宋体", fontSize: 9, headerBold: false, applyOnInsert: true }, { rowCount: 2, columnCount: 2, values: [["H1", "H2"], ["A", 1]] });
+  assert(customInsertInput.preserveUnspecified === true && customInsertInput.fontName === "宋体" && customInsertInput.fontSize === 9 && customInsertInput.headerRowBold === false && customInsertInput.fitToPageWidth === undefined, "Custom insert input changed unspecified layout fields.");
+  const templatePlan = buildTableFormatCommands(normalizeFormatPolicy({ mode: "template_table", templateTableIndex: 1 }), { tableIndex: 1, rowCount: 3, columnCount: 2 });
+  assert(templatePlan.commands.length === 1 && templatePlan.commands[0].tool === "wpp.copy_table_style", "template_table did not generate one safe style copy.");
+  assert(!templatePlan.commands[0].input.scope.some((field) => ["col_width", "row_height", "merged_cells", "textDirection"].includes(field)), "template_table default scope copied unsafe layout fields.");
   const externalTurnProbe = new CodexAgentClient({ sharedTransport: false });
   externalTurnProbe.onNotification("turn/started", { threadId: "external-thread", turn: { id: "external-turn" } });
   externalTurnProbe.onNotification("item/agentMessage/delta", { threadId: "external-thread", turnId: "external-turn", delta: "外部回复" });
@@ -130,11 +144,70 @@ async function main() {
   assert(externalTurnProbe.getRun("external-thread")?.delta === "外部回复" && externalTurnProbe.getRun("external-thread")?.status === "completed", "Agent client did not surface a turn started by Codex Desktop.");
   const pluginSkill = readFileSync("plugins/wps-connector/skills/wps-connector/SKILL.md", "utf8");
   assert(pluginSkill.includes("Two-Path Routing") && pluginSkill.includes("unsupported call") && pluginSkill.includes("restart WPS"), "Plugin skill missed mandatory automatic MCP fallback guidance.");
+  const catalogSyncScript = readFileSync("scripts/sync-codex-catalog.js", "utf8");
+  assert(catalogSyncScript.includes("pinned-project-ids") && catalogSyncScript.includes("project-order") && catalogSyncScript.includes("sidebar-project-thread-orders"), "Catalog sync must preserve Codex project and conversation sidebar order.");
+  assert(catalogSyncScript.includes("from threads where cwd<>'' and archived=0") && !catalogSyncScript.includes("for (const project of existing.projects"), "Catalog sync must exclude archived threads and stale projects from previous snapshots.");
   for (const deployScript of ["scripts/deploy-runtime-mac.sh", "plugins/wps-connector/runtime/scripts/deploy-runtime-mac.sh"]) {
     const source = readFileSync(deployScript, "utf8");
     assert(source.includes("--exclude 'project-bindings.local.json'"), `${deployScript} may delete saved bindings during deployment.`);
     assert(source.includes("--exclude 'codex-catalog.snapshot.json'"), `${deployScript} may delete the local catalog snapshot during deployment.`);
+    assert(source.includes("--exclude 'et-wpp-table-syncs.local.json'"), `${deployScript} may delete saved WPS table sync mappings during deployment.`);
+    assert(source.includes("--exclude 'wpp-table-style-templates.local.json'"), `${deployScript} may delete saved WPS Writer table style templates during deployment.`);
   }
+  const paneHtml = readFileSync("apps/wps-addin/pane.html", "utf8");
+  assert(paneHtml.includes('id="connectorStatus"') && paneHtml.includes('id="agentView"') && paneHtml.includes('id="syncView"') && paneHtml.includes('id="styleView"'), "pane.html must keep connector, Agent, table sync, and table style surfaces.");
+  assert(paneHtml.includes("agent-view") && paneHtml.includes("sync-view") && paneHtml.includes("loadSyncView"), "pane.html missed Agent or table sync UI wiring.");
+  assert(paneHtml.includes("user-select:text") && paneHtml.includes("copyTextToClipboard") && paneHtml.includes("navigator.clipboard") && paneHtml.includes('execCommand("copy")'), "pane.html must support selectable Agent messages and a WPS CEF clipboard fallback.");
+  assert(paneHtml.includes('id="agentPaste"') && paneHtml.includes("pasteAgentClipboard") && paneHtml.includes("/api/clipboard"), "pane.html must provide a bridge-backed paste action when WPS intercepts Cmd+V.");
+  assert(paneHtml.includes("currentSyncHost") && paneHtml.includes('setSyncPanelVisible("etSourceManager",mode!=="wpp")') && paneHtml.includes('setSyncPanelVisible("wppSyncManager",mode==="wpp")'), "pane.html must split WPS ET source UI from WPP sync UI.");
+  assert(paneHtml.includes("allowInsert:false") && paneHtml.includes("refreshActiveEtSelection") && paneHtml.includes("jump-source") && paneHtml.includes("表 ${next}-${sheet}：${addr}"), "pane.html missed ET-only source list behavior, Office-style naming, source jump, or on-demand selection refresh.");
+  assert(paneHtml.includes("wakeCommandPumpFor") && paneHtml.includes("wpsConnectorWakeCommandPump"), "pane.html must wake the WPS command pump only around explicit user actions.");
+  assert(paneHtml.includes("readContextForScope") && paneHtml.includes("force:true") && paneHtml.includes("读取并确认"), "Agent scope confirmation must read the current WPS selection on demand.");
+  assert(paneHtml.includes("loadSyncBindingsOnly") && paneHtml.includes("绑定状态已更新"), "Insert-and-bind must refresh local binding/source status without requiring a full WPP table scan.");
+  assert(!paneHtml.includes('refreshActiveEtSelection({render:true}).catch'), "pane.html must not continuously poll ET selection because it can stall WPS Writer input.");
+  assert(paneHtml.includes('else if(paneView==="sync"){await fetchSessions();await loadSyncView();}'), "Ribbon transitions to table sync must load the sync and format-policy UI immediately.");
+  assert(paneHtml.includes('if(paneView==="sync")await loadSyncView();'), "A pane opened directly in table-sync mode must load the sync and format-policy UI.");
+  assert(paneHtml.includes('id="syncFormatEditor">') && paneHtml.includes("暂无当前文档同步关系") && paneHtml.includes("请先在上方建立表格同步关系"), "Table-sync format settings must remain visible with a clear empty state before binding.");
+  assert(paneHtml.includes("保存当前表格样式") && paneHtml.includes("应用到所选表格") && paneHtml.includes("/api/wpp-table-style-templates/capture") && paneHtml.includes("/api/wpp-table-style-templates/apply"), "WPS Writer table style UI missed capture or multi-target apply.");
+  assert(paneHtml.includes('id="syncFormatSavedTemplate"') && paneHtml.includes("saved_template") && paneHtml.includes("手工字段位于高级设置"), "Table sync must prefer saved style templates and keep manual fields in advanced settings.");
+  assert(paneHtml.includes('e.code==="SESSION_DOCUMENT_NOT_FOUND"&&!options.retried') && paneHtml.includes("原文字文档已关闭，正在切换到当前文档"), "Table sync must retire a closed Writer target and retry against the current document.");
+  const wpsMain = readFileSync("apps/wps-addin/main.js", "utf8");
+  assert(wpsMain.includes("preserveUnspecified") && wpsMain.includes("input.headerRowBold !== undefined"), "WPP layout insertion must honor strict unspecified-field preservation.");
+  assert(wpsMain.includes("WPS_CONNECTOR_WPP_IDLE_POLL_INTERVAL_MS = 15000") && wpsMain.includes("WPS_CONNECTOR_WPP_HEARTBEAT_INTERVAL_MS = 30000"), "WPP command listener must be very low-frequency when idle.");
+  assert(wpsMain.includes("transport-only") && wpsMain.includes("do not re-read"), "WPP heartbeat must not touch Writer document objects while idle.");
+  assert(wpsMain.includes('host === "et"') && wpsMain.includes("Writer is sensitive after table insertion"), "WPP polling must not enumerate all Writer sessions or touch document identity on every poll.");
+  assert(wpsMain.includes("targetHasStableIdentity") && wpsMain.includes("await wpsConnectorRegister();"), "WPP must recover once from an empty document identity after bridge or add-in restart.");
+  assert(wpsMain.includes("await wpsConnectorEnsureSession();") && wpsMain.includes("const docKey = encodeURIComponent(scope.documentKey);"), "Ribbon pane routing must resolve the foreground document before opening a pane.");
+  assert(!wpsMain.includes("wpsConnectorCurrentDocumentKey || scope.documentKey"), "Ribbon pane routing must not reuse a stale document key.");
+  assert(wpsMain.includes('details.code === "SESSION_DOCUMENT_NOT_FOUND"') && wpsMain.includes("if (app?.ActiveDocument) await wpsConnectorRegister();"), "Writer must register the current document after a stale target is detected.");
+  const wpsServer = readFileSync("apps/bridge/server.js", "utf8");
+  assert(wpsServer.includes("【Connector 来源元数据】") && wpsServer.includes("buildAgentPrompt") && wpsServer.includes("SessionId:"), "WPS Agent messages must carry connector source metadata.");
+  assert(wpsServer.includes('pathname === "/api/clipboard"') && wpsServer.includes("/usr/bin/pbpaste") && wpsServer.includes("/usr/bin/pbcopy"), "WPS bridge must provide a local macOS clipboard fallback.");
+  assert(wpsServer.includes('command.error?.code === "SESSION_DOCUMENT_NOT_FOUND"') && wpsServer.includes('staleSession.status = "offline"'), "Bridge must immediately retire a session whose target document has closed.");
+  const wpsAgent = readFileSync("apps/bridge/codexAgent.js", "utf8");
+  assert(wpsAgent.includes("【Connector 来源元数据】") && wpsAgent.includes("sourceMeta"), "WPS Agent history must strip metadata from visible text while preserving sourceMeta.");
+  const ribbonXml = readFileSync("apps/wps-addin/ribbon.xml", "utf8");
+  for (const id of ["btnShowConnectorPane", "btnShowAgentChat", "btnShowTableSync", "btnShowTableStyle"]) assert(ribbonXml.includes(id), `Ribbon missed ${id}.`);
+  const registrationDir = join(tmpdir(), `wps-connector-registration-${process.pid}`);
+  mkdirSync(registrationDir, { recursive: true });
+  writeFileSync(join(registrationDir, "publish.xml"), '<?xml version="1.0"?><jsplugins><jspluginonline type="wps" url="http://127.0.0.1:3891/" name="wps_connector_wps_binding_v7" enable="enable_dev"/><jspluginonline type="et" url="http://127.0.0.1:3891/" name="wps_connector_et_binding_v7" enable="enable_dev"/></jsplugins>');
+  writeFileSync(join(registrationDir, "authaddin.json"), JSON.stringify({
+    wps: {
+      stale: { enable: true, isload: true, mode: 2, name: "wps_connector_wps_binding_v7", path: "http://127.0.0.1:3891" },
+      current: { enable: true, isload: false, mode: 1, name: "wps_connector_wps_binding_v7", path: "http://127.0.0.1:3891" },
+      namelist: "stale;current",
+    },
+    et: {
+      stale: { enable: true, isload: true, mode: 2, name: "wps_connector_et_binding_v7", path: "http://127.0.0.1:3891" },
+      current: { enable: true, isload: false, mode: 1, name: "wps_connector_et_binding_v7", path: "http://127.0.0.1:3891" },
+      namelist: "stale;current",
+    },
+  }));
+  await runNode(["scripts/disable-wps-js-debug-mac.js"], { WPS_JSADDONS_DIR: registrationDir });
+  const normalizedPublish = readFileSync(join(registrationDir, "publish.xml"), "utf8");
+  const normalizedAuth = readFileSync(join(registrationDir, "authaddin.json"), "utf8");
+  assert(!normalizedPublish.includes("enable_dev") && normalizedPublish.includes('enable="enable"'), "Registration cleanup left publish.xml in development mode.");
+  assert(!normalizedAuth.includes('"mode": 2') && !normalizedAuth.includes('"isload": true') && !normalizedAuth.includes('"stale"'), "Registration cleanup left duplicate eager-load connector entries.");
   const updateServer = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
     res.end('const WPS_CONNECTOR_CLIENT_VERSION = "9.9.9";\nconst WPS_CONNECTOR_CLIENT_BUILD = "2099.01.01-test-update.1";\n');
@@ -143,13 +216,15 @@ async function main() {
   servers.push(updateServer);
   await once(updateServer, "listening");
 
-  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: JSON.stringify(["tests/fixtures/fake-codex-app-server.js"]) });
+  const bridge = startNode(["apps/bridge/server.js"], { WPS_CONNECTOR_PORT: String(port), WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-bindings-${process.pid}.json`, WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-table-syncs-${process.pid}.json`, WPS_CONNECTOR_WPP_TABLE_STYLE_TEMPLATES_PATH: `/tmp/wps-connector-e2e-table-style-templates-${process.pid}.json`, WPS_CONNECTOR_UPDATE_CHECK_URL: updateUrl, WPS_CONNECTOR_UPDATE_CHECK_FALLBACK_URL: "", WPS_CONNECTOR_CODEX_BIN: process.execPath, WPS_CONNECTOR_CODEX_ARGS: JSON.stringify(["tests/fixtures/fake-codex-app-server.js"]), CONNECTOR_PLATFORM_URL: "http://127.0.0.1:43998" });
   bridge.on("exit", (code) => {
     if (code !== null && code !== 0) process.stderr.write(`bridge exited with code ${code}\n`);
   });
   await waitForHealth();
+  const commandDebugInitial = await requestAt(bridgeUrl, "/api/debug/commands");
+  assert(commandDebugInitial.ok === true && Array.isArray(commandDebugInitial.active) && Array.isArray(commandDebugInitial.recent), "Command debug endpoint did not return a safe command summary.");
   const updateCheck = await requestAt(bridgeUrl, "/api/update/check?skipRemote=true");
-  assert(updateCheck.ok === true && updateCheck.current?.version === "1.1.4", "Update check did not return the current connector version.");
+  assert(updateCheck.ok === true && updateCheck.current?.version === "1.1.9", "Update check did not return the current connector version.");
   const remoteUpdateCheck = await requestAt(bridgeUrl, "/api/update/check?refresh=true");
   assert(remoteUpdateCheck.ok === true && remoteUpdateCheck.latest?.version === "9.9.9" && remoteUpdateCheck.updateAvailable === true && remoteUpdateCheck.versionState === "update_available", "Update check did not discover a newer remote version.");
 
@@ -158,6 +233,7 @@ async function main() {
   startNode(["apps/bridge/server.js"], {
     WPS_CONNECTOR_PORT: String(stalePort),
     WPS_CONNECTOR_BINDINGS_PATH: `/tmp/wps-connector-e2e-stale-bindings-${process.pid}.json`,
+    WPS_CONNECTOR_TABLE_SYNCS_PATH: `/tmp/wps-connector-e2e-stale-table-syncs-${process.pid}.json`,
     WPS_CONNECTOR_SESSION_OFFLINE_MS: "100",
     WPS_CONNECTOR_SESSION_RETAIN_OFFLINE_MS: "250",
     WPS_CONNECTOR_MAX_OFFLINE_SESSIONS: "5",
@@ -220,6 +296,10 @@ async function main() {
   assert(savedPaneView.view === "agent" && savedPaneView.updatedAt, "Pane view endpoint did not return the cross-context view state.");
   const connectorPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "connector" }) });
   assert(connectorPaneView.view === "connector", "Pane view endpoint did not switch back to the connector view.");
+  const syncPaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "sync" }) });
+  assert(syncPaneView.view === "sync", "Pane view endpoint did not save the table sync view.");
+  const stylePaneView = await request("/api/sessions/test-wpp-session/pane-view", { method: "POST", body: JSON.stringify({ view: "style" }) });
+  assert(stylePaneView.view === "style", "Pane view endpoint did not save the table style view.");
 
   const mcp = startNode(["apps/mcp/server.js"], { WPS_CONNECTOR_BRIDGE_URL: bridgeUrl, WPS_CONNECTOR_MCP_EXPOSE_DOTTED: "true", CODEX_THREAD_ID: "", CODEX_THREAD: "" });
   const mcpClient = createMcpClient(mcp);
@@ -227,6 +307,8 @@ async function main() {
   assert(init.serverInfo?.name === "wps-connector", "MCP initialize returned unexpected server name.");
   const listedTools = await mcpClient.request("tools/list", {});
   assert(listedTools.tools.some((tool) => tool.name === "et.read_selection"), "MCP tools/list missed et.read_selection.");
+  assert(listedTools.tools.some((tool) => tool.name === "et.select_range"), "MCP tools/list missed et.select_range.");
+  assert(listedTools.tools.some((tool) => tool.name === "wpp.select_table"), "MCP tools/list missed wpp.select_table.");
   assert(listedTools.tools.some((tool) => tool.name === "et.read_range"), "MCP tools/list missed et.read_range.");
   assert(listedTools.tools.some((tool) => tool.name === "et.save_workbook"), "MCP tools/list missed et.save_workbook.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table"), "MCP tools/list missed wpp.insert_table.");
@@ -246,9 +328,18 @@ async function main() {
   assert(listedTools.tools.some((tool) => tool.name === "wpp.read_table_format"), "MCP tools/list missed wpp.read_table_format.");
   for (const name of ["wps.batch", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "et.read_format_sample", "et.verify_range"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
   assert(listedTools.tools.some((tool) => tool.name === "wpp.copy_table_style"), "MCP tools/list missed wpp.copy_table_style.");
+  for (const name of ["wps.capture_wpp_table_style_template", "wps.list_wpp_table_style_templates", "wps.apply_wpp_table_style_template", "wps.delete_wpp_table_style_template"]) {
+    assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
+  }
   assert(listedTools.tools.some((tool) => tool.name === "wpp.duplicate_table_appearance"), "MCP tools/list missed wpp.duplicate_table_appearance.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.insert_table_with_layout"), "MCP tools/list missed wpp.insert_table_with_layout.");
   assert(listedTools.tools.some((tool) => tool.name === "wpp.reset_table_layout"), "MCP tools/list missed wpp.reset_table_layout.");
+  for (const name of ["wps.create_et_wpp_data_source", "wps.list_et_wpp_data_sources", "wps.delete_et_wpp_data_source", "wps.unbind_et_wpp_data_source", "wps.create_et_wpp_table_sync", "wps.insert_et_wpp_data_source", "wps.list_et_wpp_table_syncs", "wps.sync_et_wpp_table", "wps.update_et_wpp_table_sync_format", "wps.preview_et_wpp_table_sync_format", "et.select_range", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values"]) assert(listedTools.tools.some((tool) => tool.name === name), `MCP tools/list missed ${name}.`);
+  const formatUpdateTool = listedTools.tools.find((tool) => tool.name === "wps.update_et_wpp_table_sync_format");
+  const formatPreviewTool = listedTools.tools.find((tool) => tool.name === "wps.preview_et_wpp_table_sync_format");
+  const layoutInsertTool = listedTools.tools.find((tool) => tool.name === "wpp.insert_table_with_layout");
+  assert(formatUpdateTool?.inputSchema?.properties?.formatPolicy?.properties?.applyOnInsert && formatUpdateTool.inputSchema.properties.formatPolicy.properties.applyOnSync, "MCP update schema missed formatPolicy timing fields.");
+  assert(formatUpdateTool?.inputSchema?.properties?.dryRun && formatUpdateTool.inputSchema.properties.preview && formatPreviewTool?.inputSchema?.properties?.formatPolicy && layoutInsertTool?.inputSchema?.properties?.preserveUnspecified, "MCP update/preview/layout schema missed dryRun, preview, formatPolicy, or strict insertion.");
   assert(listedTools.tools.some((tool) => tool.name === "wps.connection_status"), "MCP tools/list missed wps.connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_connection_status"), "MCP tools/list missed underscore alias wps_connection_status.");
   assert(listedTools.tools.some((tool) => tool.name === "wps_list_sessions"), "MCP tools/list missed underscore alias wps_list_sessions.");
@@ -927,6 +1018,94 @@ async function main() {
   });
   assert(wppDeleteColumns.columnCount === 2, "WPP delete_table_columns did not update column count.");
 
+  await request("/api/tools/et/write_range", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-et-session", projectId: "project-a", threadId: "thread-a", address: "A1:B3", values: [["Name", "Amount"], ["C", 300], ["E", 500]] }),
+  });
+  const tableSyncSource = await request("/api/tools/wps/create_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ etSessionId: "test-et-session", name: "测试同步源", sheetName: "Sheet1", address: "A1:B3" }),
+  });
+  assert(tableSyncSource.created === true && tableSyncSource.source?.status === "pending", "WPS ET-WPP data source was not created as pending.");
+  const tableSyncSources = await request("/api/tools/wps/list_et_wpp_data_sources", { method: "POST", body: JSON.stringify({}) });
+  assert(tableSyncSources.sources.some((source) => source.sourceId === tableSyncSource.source.sourceId), "WPS ET-WPP source list missed the created source.");
+  const tableSyncJump = await request("/api/tools/et/select_range", { method: "POST", body: JSON.stringify({ sessionId: "test-et-session", sheetName: "Sheet1", address: "A1:B3" }) });
+  assert(tableSyncJump.selected === true && tableSyncJump.address === "A1:B3", "WPS ET source jump did not select the saved source range.");
+  const tableSyncMapping = await request("/api/tools/wps/create_et_wpp_table_sync", {
+    method: "POST",
+    body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId, etSessionId: "test-et-session", wppSessionId: "test-wpp-session", wppTableIndex: 0, headerRowCount: 1, syncHeader: false, allowStructuralChanges: true }),
+  });
+  assert(tableSyncMapping.mapping?.syncId && tableSyncMapping.mapping.target?.fallbackTableIndex === 0, "WPS ET-WPP mapping was not created for the existing WPP table.");
+  assert(tableSyncMapping.mapping.modelVersion === 3 && tableSyncMapping.mapping.formatPolicy?.mode === "preserve_target", "New table sync mapping did not default to preserve_target.");
+  const preserveSync = await request("/api/tools/wps/sync_et_wpp_table", { method: "POST", body: JSON.stringify({ syncId: tableSyncMapping.mapping.syncId }) });
+  assert(preserveSync.synced === true && preserveSync.dataResult?.ok === true && preserveSync.formatResult?.skipped === true && preserveSync.formatResult?.commandCount === 0 && preserveSync.accepted?.length === 0, "Default preserve_target sync issued or reported Writer format commands.");
+  const tableSyncFormatPreview = await request("/api/tools/wps/preview_et_wpp_table_sync_format", {
+    method: "POST",
+    body: JSON.stringify({ syncId: tableSyncMapping.mapping.syncId, wppSessionId: "test-wpp-session", formatPolicy: { mode: "preset", preset: "report" } }),
+  });
+  assert(tableSyncFormatPreview.previewOnly === true && tableSyncFormatPreview.persisted === false && tableSyncFormatPreview.formatResult.commandCount > 0, "Table format preview did not return a non-persisting command plan.");
+  const tableSyncFormatDryRun = await request("/api/tools/wps/update_et_wpp_table_sync_format", {
+    method: "POST",
+    body: JSON.stringify({ syncId: tableSyncMapping.mapping.syncId, wppSessionId: "test-wpp-session", formatPolicy: { mode: "custom", fontName: "仿宋_GB2312", fontSize: 10.5, headerBold: true, bodyTextAlignment: "left", bodyNumericAlignment: "right", applyOnSync: true }, dryRun: true }),
+  });
+  assert(tableSyncFormatDryRun.previewOnly === true && tableSyncFormatDryRun.persisted === false, "Table format dryRun unexpectedly persisted the policy.");
+  const tableSyncFormatUpdate = await request("/api/tools/wps/update_et_wpp_table_sync_format", {
+    method: "POST",
+    body: JSON.stringify({ syncId: tableSyncMapping.mapping.syncId, wppSessionId: "test-wpp-session", formatPolicy: { mode: "custom", fontName: "仿宋_GB2312", fontSize: 10.5, headerBold: true, bodyTextAlignment: "left", bodyNumericAlignment: "right", applyOnSync: true }, applyNow: true }),
+  });
+  assert(tableSyncFormatUpdate.updated === true && tableSyncFormatUpdate.persisted === true && tableSyncFormatUpdate.formatResult.applied === true, "Table format policy was not persisted and applied.");
+  const tableSyncList = await request("/api/tools/wps/list_et_wpp_table_syncs", { method: "POST", body: JSON.stringify({}) });
+  assert(tableSyncList.syncs.some((sync) => sync.syncId === tableSyncMapping.mapping.syncId && sync.formatPolicy?.mode === "custom"), "WPS ET-WPP sync list missed the persisted format policy.");
+  const tableSyncApplied = await request("/api/tools/wps/sync_et_wpp_table", { method: "POST", body: JSON.stringify({ syncId: tableSyncMapping.mapping.syncId }) });
+  assert(tableSyncApplied.synced === true && tableSyncApplied.formatResult?.applied === true && tableSyncApplied.rowMerge?.matchedCount >= 1 && tableSyncApplied.rowMerge?.appendedExcelRowCount >= 1, "WPS ET-WPP sync did not apply data and the saved format policy.");
+  const tableSyncFormatFailure = await rawRequest("/api/tools/wps/sync_et_wpp_table", {
+    method: "POST",
+    body: JSON.stringify({ syncId: tableSyncMapping.mapping.syncId, formatPolicy: { mode: "template_table" } }),
+  });
+  assert(tableSyncFormatFailure.ok === false && tableSyncFormatFailure.synced === true && tableSyncFormatFailure.dataResult?.ok === true && tableSyncFormatFailure.rejected?.some((item) => item.field === "templateTableIndex") && tableSyncFormatFailure.verification?.status === "not_requested", "Table sync did not separate successful data write from format policy failure.");
+  const presetInsertSource = await request("/api/tools/wps/create_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ etSessionId: "test-et-session", name: "插入预设测试", sheetName: "Sheet1", address: "A1:B3" }),
+  });
+  const presetInsert = await request("/api/tools/wps/insert_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ sourceId: presetInsertSource.source.sourceId, wppSessionId: "test-wpp-session", formatPolicy: { mode: "preset", preset: "report" }, verifyFormat: true }),
+  });
+  assert(presetInsert.insert?.insertedTableWithLayout === true && presetInsert.dataResult?.ok === true && presetInsert.formatResult?.applied === true && presetInsert.accepted?.includes("fontName"), "Insert preset did not use the layout path and apply its format policy.");
+  const customInsertSource = await request("/api/tools/wps/create_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ etSessionId: "test-et-session", name: "插入自定义测试", sheetName: "Sheet1", address: "A1:B3" }),
+  });
+  const customInsert = await request("/api/tools/wps/insert_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ sourceId: customInsertSource.source.sourceId, wppSessionId: "test-wpp-session", formatPolicy: { mode: "custom", fontName: "宋体", fontSize: 9, headerBold: false, bodyTextAlignment: "left", bodyNumericAlignment: "right", applyOnInsert: true, applyOnSync: false }, verifyFormat: true }),
+  });
+  assert(customInsert.insert?.insertedTableWithLayout === true && customInsert.dataResult?.ok === true && customInsert.formatResult?.applied === true && customInsert.formatResult?.verification?.status === "completed", "Insert custom did not apply and verify its format policy.");
+  const delayedInsertSource = await request("/api/tools/wps/create_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ etSessionId: "test-et-session", name: "延后格式测试", sheetName: "Sheet1", address: "A1:B3" }),
+  });
+  const delayedInsert = await request("/api/tools/wps/insert_et_wpp_data_source", {
+    method: "POST",
+    body: JSON.stringify({ sourceId: delayedInsertSource.source.sourceId, wppSessionId: "test-wpp-session", formatPolicy: { mode: "custom", fontName: "宋体", applyOnInsert: false, applyOnSync: true } }),
+  });
+  assert(delayedInsert.insert?.insertedTableWithLayout !== true && delayedInsert.formatResult?.skipped === true && delayedInsert.formatResult?.applied === false, "applyOnInsert:false did not defer formatting until sync.");
+  for (const source of [presetInsertSource, customInsertSource, delayedInsertSource]) {
+    await request("/api/tools/wps/unbind_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: source.source.sourceId }) });
+    await request("/api/tools/wps/delete_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: source.source.sourceId }) });
+  }
+  const tableSyncWppJump = await request("/api/tools/wpp/select_table", { method: "POST", body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 0 }) });
+  assert(tableSyncWppJump.selected === true && tableSyncWppJump.tableIndex === 0, "WPS Writer table jump did not select the saved target table.");
+  const syncedWppTable = await request("/api/tools/wpp/read_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1 }),
+  });
+  assert(syncedWppTable.values.some((row) => row[0] === "E" && Number(row[1]) === 500), "WPS ET-WPP sync did not append the new ET key row into WPP table.");
+  const tableSyncUnbound = await request("/api/tools/wps/unbind_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId }) });
+  assert(tableSyncUnbound.unbound === true && tableSyncUnbound.removedCount === 1, "WPS ET-WPP unbind did not remove the saved mapping.");
+  const tableSyncDeleted = await request("/api/tools/wps/delete_et_wpp_data_source", { method: "POST", body: JSON.stringify({ sourceId: tableSyncSource.source.sourceId }) });
+  assert(tableSyncDeleted.deleted === true, "WPS ET-WPP delete data source did not delete the unbound source.");
+
   const wppMergeCells = await request("/api/tools/wpp/merge_table_cells", {
     method: "POST",
     body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1, startRow: 1, startColumn: 1, endRow: 1, endColumn: 2 }),
@@ -1009,6 +1188,57 @@ async function main() {
   });
   assert(wppSetWidths.appliedColumns?.length === 2, "WPP set_column_widths did not apply widths.");
   assert(wppSetWidths.verifiedColumns?.length === 2 && Array.isArray(wppSetWidths.results), "WPP set_column_widths did not return readback verification.");
+  const wppSetHeights = await request("/api/tools/wpp/set_row_heights", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1, rowHeights: [{ row: 1, height: 44, heightRule: 2 }, { row: 2, height: 46, heightRule: 2 }] }),
+  });
+  assert(wppSetHeights.appliedRows?.length === 2, "WPP set_row_heights did not prepare the template safety fixture.");
+  const wppVerticalSource = await request("/api/tools/wpp/format_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1, textDirection: "vertical" }),
+  });
+  assert(wppVerticalSource.applied?.includes("table.range.orientation"), "WPP format_table did not prepare a text-direction template fixture.");
+  const wppTemplateTarget = await request("/api/tools/wpp/insert_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", rowCount: 2, columnCount: 2, values: [["S1", "S2"], ["S3", "S4"]], border: false }),
+  });
+  const capturedStyleTemplate = await request("/api/wpp-table-style-templates/capture", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", tableIndex: 1, name: "正式底稿表格" }),
+  });
+  assert(capturedStyleTemplate.captured === true && capturedStyleTemplate.template?.summary?.hasLayout === true, "WPP table style template capture did not persist a complete appearance.");
+  const listedStyleTemplates = await request("/api/wpp-table-style-templates");
+  assert(listedStyleTemplates.count === 1 && !listedStyleTemplates.templates[0].format, "WPP table style template listing must stay lightweight.");
+  const appliedStyleTemplate = await request("/api/wpp-table-style-templates/apply", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", templateId: capturedStyleTemplate.template.templateId, targetTableIndexes: [wppTemplateTarget.tableIndex], preserveContent: true, verify: true }),
+  });
+  assert(appliedStyleTemplate.affectedCount === 1 && appliedStyleTemplate.results[0].ok === true && appliedStyleTemplate.mergedCellsApplied === false, "WPP table style template did not apply safely to the selected target.");
+  const wppSafeCopyTarget = await request("/api/tools/wpp/insert_table", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", rowCount: 2, columnCount: 2, values: [["C1", "C2"], ["C3", "C4"]], border: false }),
+  });
+  const safeCopyBefore = await request("/api/tools/wpp/read_table_structure", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: wppSafeCopyTarget.tableIndex, includeMergedCells: true, includeRowHeights: true, includeColumnWidths: true }),
+  });
+  const templateSourceFormat = await request("/api/tools/wpp/read_table_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: 1 }),
+  });
+  const safeTemplateCopy = await request("/api/tools/wpp/copy_table_style", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", sourceTableIndex: 1, targetTableIndex: wppSafeCopyTarget.tableIndex }),
+  });
+  const templateAfter = await request("/api/tools/wpp/read_table_structure", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: wppSafeCopyTarget.tableIndex, includeMergedCells: true, includeRowHeights: true, includeColumnWidths: true }),
+  });
+  const templateAfterFormat = await request("/api/tools/wpp/read_table_format", {
+    method: "POST",
+    body: JSON.stringify({ sessionId: "test-wpp-session", projectId: "project-b", threadId: "thread-b", tableIndex: wppSafeCopyTarget.tableIndex }),
+  });
+  assert(templateSourceFormat.format?.table?.textDirection === "vertical" && safeTemplateCopy.layoutCopied === false && JSON.stringify(templateAfter.columnWidths) === JSON.stringify(safeCopyBefore.columnWidths) && JSON.stringify(templateAfter.rowHeights) === JSON.stringify(safeCopyBefore.rowHeights) && templateAfter.mergedCells?.length === 0 && templateAfterFormat.format?.table?.textDirection !== "vertical", "Template style copy changed target width, height, text direction, or merged structure.");
 
   const wppLayoutTable = await request("/api/tools/wpp/insert_table_with_layout", {
     method: "POST",

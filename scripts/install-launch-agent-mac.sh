@@ -41,6 +41,8 @@ write_agent() {
   <string>$RUNTIME_ROOT</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>WPS_CONNECTOR_SOURCE_ROOT</key>
+    <string>${WPS_CONNECTOR_SOURCE_ROOT:-$HOME/.local/share/wps-connector/source}</string>
     <key>WPS_CONNECTOR_RUNTIME_ROOT</key>
     <string>$RUNTIME_ROOT</string>
     <key>WPS_CONNECTOR_BINDINGS_PATH</key>

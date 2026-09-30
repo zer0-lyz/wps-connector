@@ -28,13 +28,42 @@ function textFromUserItem(item) {
     .trim();
 }
 
+function displayTextFromAgentPanelPrompt(text = "") {
+  const raw = String(text || "").trim();
+  const hasMetadata = raw.includes("【Connector 来源元数据】")
+    || raw.includes("【WPS Connector 来源元数据】")
+    || raw.includes("【Office Connector 来源元数据】");
+  if (!hasMetadata || !raw.includes("【用户需求】")) return raw;
+  return raw.split("【用户需求】").slice(1).join("【用户需求】").trim() || raw;
+}
+
+function metaFromAgentPanelPrompt(text = "") {
+  const raw = String(text || "");
+  const hasMetadata = raw.includes("【Connector 来源元数据】")
+    || raw.includes("【WPS Connector 来源元数据】")
+    || raw.includes("【Office Connector 来源元数据】");
+  if (!hasMetadata) return "";
+  const connector = /^Connector:\s*(.+)$/m.exec(raw)?.[1]?.trim() || "";
+  const host = /^Host:\s*(.+)$/m.exec(raw)?.[1]?.trim() || connector || "WPS";
+  const context = /^Current context:\s*(.+)$/m.exec(raw)?.[1]?.trim() || "";
+  const range = /Range:\s*([^;]+)/.exec(context)?.[1]?.trim() || "";
+  return [host, range].filter(Boolean).join(" · ");
+}
+
 export function threadToMessages(thread, limit = 200) {
   const messages = [];
   for (const [turnIndex, turn] of (thread?.turns || []).entries()) {
     for (const item of turn?.items || []) {
       if (item?.type === "userMessage") {
         const text = textFromUserItem(item);
-        if (text) messages.push({ id: item.id, turnId: turn.id, turnIndex, role: "user", text });
+        if (text) messages.push({
+          id: item.id,
+          turnId: turn.id,
+          turnIndex,
+          role: "user",
+          text: displayTextFromAgentPanelPrompt(text),
+          sourceMeta: metaFromAgentPanelPrompt(text),
+        });
       }
       if (item?.type === "agentMessage") {
         const text = String(item.text || "").trim();
@@ -108,7 +137,7 @@ export class CodexAgentClient extends EventEmitter {
     child.on("error", (error) => this.emit("log", `Codex App Server process error: ${error.message}`));
     child.on("exit", (code, signal) => this.onExit(code, signal));
     await this.request("initialize", {
-      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.4" },
+      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.9" },
       capabilities: { experimentalApi: true },
     }, true);
     this.notify("initialized", {});
@@ -166,7 +195,7 @@ export class CodexAgentClient extends EventEmitter {
     socket.on("error", (error) => this.emit("log", `Codex shared App Server socket error: ${error.message}`));
     socket.on("close", (code, reason) => this.onExit(code, String(reason || "")));
     await this.request("initialize", {
-      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.4" },
+      clientInfo: { name: "wps-connector", title: "WPS Connector", version: "1.1.9" },
       capabilities: { experimentalApi: true },
     }, true);
     this.notify("initialized", {});
