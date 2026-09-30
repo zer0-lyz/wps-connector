@@ -56,6 +56,11 @@ export const tools = [
     description: "Open the WPS Connector task pane for the selected Writer or Spreadsheet session.",
     inputSchema: { type: "object", properties: { sessionId: { type: "string" }, host: { type: "string" }, view: { type: "string" }, documentKey: { type: "string" } }, additionalProperties: false },
   },
+  {
+    name: "wps.save_binding",
+    description: "Save or take over the project/thread binding of a WPS session, equivalent to clicking 保存绑定 in the WPS Connector pane. Lets a new agent thread (for example ZCode with trusted threadId=\"zcode\") adopt a document bound by an older Codex thread without manual pane work. threadId defaults to the caller's trusted identity; the previous thread keeps access by supplying the binding's projectPath/projectId (project-level fallback, enabled by default; disable with WPS_CONNECTOR_ALLOW_PROJECT_FALLBACK=0). Pass clear:true to remove the binding.",
+    inputSchema: { type: "object", properties: { sessionId: { type: "string" }, projectName: { type: "string" }, projectPath: { type: "string" }, projectId: { type: "string" }, threadTitle: { type: "string" }, threadCwd: { type: "string" }, documentRole: { type: "string" }, clear: { type: "boolean" } }, required: ["sessionId"], additionalProperties: false },
+  },
 
   {
     name: "wps.create_et_wpp_data_source",
@@ -269,6 +274,42 @@ export const tools = [
       type: "object",
       properties: { sessionId: { type: "string" }, sheetName: { type: "string" }, address: { type: "string" }, shift: { type: "string" } },
       required: ["address", "shift"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.group_rows",
+    description: "Group one or more contiguous WPS Spreadsheet row ranges into an outline, optionally collapsed after grouping.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" }, sheetName: { type: "string" }, startRow: { type: "number" }, endRow: { type: "number" }, collapsed: { type: "boolean" },
+        ranges: { type: "array", items: { type: "object", properties: { startRow: { type: "number" }, endRow: { type: "number" } }, required: ["startRow", "endRow"], additionalProperties: false } },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.ungroup_rows",
+    description: "Remove outline grouping from one or more contiguous WPS Spreadsheet row ranges and expand them.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" }, sheetName: { type: "string" }, startRow: { type: "number" }, endRow: { type: "number" },
+        ranges: { type: "array", items: { type: "object", properties: { startRow: { type: "number" }, endRow: { type: "number" } }, required: ["startRow", "endRow"], additionalProperties: false } },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "et.read_row_outline",
+    description: "Read WPS Spreadsheet row outline levels and collapsed state without reading cell values.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sessionId: { type: "string" }, sheetName: { type: "string" }, startRow: { type: "number" }, endRow: { type: "number" }, includeRows: { type: "boolean" },
+        ranges: { type: "array", items: { type: "object", properties: { startRow: { type: "number" }, endRow: { type: "number" } }, required: ["startRow", "endRow"], additionalProperties: false } },
+      },
       additionalProperties: false,
     },
   },

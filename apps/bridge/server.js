@@ -22,6 +22,8 @@ import {
   upsertTableFormatTemplate,
 } from "../../vendor/connector-shared/modules/table-format-template/state.js";
 import { CodexAgentClient } from "./codexAgent.js";
+import { ZcodeAgentClient } from "./zcodeAgent.js";
+import { configuredAgentProviders, normalizeAgentProvider, zcodeAccountProviderConfig, zcodeLaunchConfig } from "./agentProviders.js";
 import { connectorPlatformStatus, startConnectorPlatformHeartbeat } from "./connectorPlatform.js";
 import { pushAdapterState, reconcileAdapterState } from "../../vendor/connector-shared/connectorStateClient.js";
 import { deriveDesktopSyncStatus } from "../../vendor/connector-shared/modules/agent-chat/desktopSync.js";
@@ -40,7 +42,8 @@ const sessionOfflineMs = Number(process.env.WPS_CONNECTOR_SESSION_OFFLINE_MS || 
 const sessionRetainOfflineMs = Number(process.env.WPS_CONNECTOR_SESSION_RETAIN_OFFLINE_MS || 300000);
 const maxOfflineSessions = Number(process.env.WPS_CONNECTOR_MAX_OFFLINE_SESSIONS || 200);
 const commandPumpGraceMs = Number(process.env.WPS_CONNECTOR_COMMAND_PUMP_GRACE_MS || 5000);
-const commandPumpStaleMs = Number(process.env.WPS_CONNECTOR_COMMAND_PUMP_STALE_MS || 5000);
+const commandPumpStaleMs = Number(process.env.WPS_CONNECTOR_COMMAND_PUMP_STALE_MS || 30000);
+const sessionInFlightGraceMs = Number(process.env.WPS_CONNECTOR_SESSION_IN_FLIGHT_GRACE_MS || 120000);
 const tableSyncSourceReadTimeoutMs = Number(process.env.WPS_CONNECTOR_TABLE_SYNC_SOURCE_READ_TIMEOUT_MS || 10000);
 const tableSyncSourceMaxCells = Number(process.env.WPS_CONNECTOR_TABLE_SYNC_SOURCE_MAX_CELLS || 100000);
 const tableSyncSourceChunkRows = Number(process.env.WPS_CONNECTOR_TABLE_SYNC_SOURCE_CHUNK_ROWS || 250);
@@ -51,6 +54,7 @@ const bindingsPath = process.env.WPS_CONNECTOR_BINDINGS_PATH || join(runtimeRoot
 const tableSyncsPath = process.env.WPS_CONNECTOR_TABLE_SYNCS_PATH || join(runtimeRoot, "et-wpp-table-syncs.local.json");
 const tableSyncSourceCachePath = process.env.WPS_CONNECTOR_TABLE_SOURCE_CACHE_PATH || join(runtimeRoot, "et-wpp-source-cache.local.json");
 const tableFormatTemplatesPath = process.env.WPS_CONNECTOR_TABLE_FORMAT_TEMPLATES_PATH || join(runtimeRoot, "table-format-templates.local.json");
+const agentProviderStatePath = process.env.WPS_CONNECTOR_AGENT_PROVIDER_STATE_PATH || join(runtimeRoot, "agent-provider-state.local.json");
 const connectorPlatformUrl = (process.env.CONNECTOR_PLATFORM_URL || "http://127.0.0.1:40315").replace(/\/$/, "");
 const defaultEtFormatReadMode = String(process.env.WPS_CONNECTOR_DEFAULT_FORMAT_READ_MODE || "profile").toLowerCase() === "full" ? "full" : "profile";
 
@@ -77,10 +81,12 @@ const execFileAsync = promisify(execFile);
 let bindingsStore = { bindings: [] };
 let tableSyncsStore = { sources: [], syncs: [] };
 let tableFormatTemplatesStore = { templates: [] };
+let agentProviderState = { version: 1, threads: {} };
 let connectorStateStatus = { ok: false, mode: "local", revision: 0, error: "not reconciled" };
 let updateCheckCache = null;
 let catalogRefreshPromise = null;
 const codexAgent = new CodexAgentClient();
+let zcodeAgent = null;
 let desktopSyncCache = { checkedAt: 0, value: null };
 codexAgent.on("log", (message) => {
   const text = String(message || "").trim();
@@ -94,6 +100,71 @@ function warmAgentTransport() {
   void codexAgent.ensureStarted().catch((error) => {
     console.warn(`[codex-agent] WARNING: Shared transport preflight failed: ${error.message || error}`);
   });
+}
+
+function agentClient(provider = "codex") {
+  const normalized = normalizeAgentProvider(provider);
+  if (normalized === "codex") return codexAgent;
+  if (!zcodeAgent) {
+    const launch = zcodeLaunchConfig();
+    if (!launch.available) throw { code: "AGENT_PROVIDER_UNAVAILABLE", message: "本机未检测到可用的 ZCode Agent。", details: { provider: normalized } };
+    if (!launch.standaloneReady) throw { code: "AGENT_PROVIDER_CONFIGURATION_REQUIRED", message: "ZCode 已安装，但尚未配置可供 Connector 独立调用的 Agent 通道。请配置 WPS_CONNECTOR_ZCODE_API_KEY，或在 ZCode 中启用官方外部 Agent 通道。", details: { provider: normalized, status: launch.credentialMode } };
+    zcodeAgent = new ZcodeAgentClient({ command: launch.command, args: launch.args, env: { ...launch.env, WPS_CONNECTOR_ZCODE_API_KEY: process.env.WPS_CONNECTOR_ZCODE_API_KEY || "" }, model: { ...launch.model, options: { reasoningLevel: "low" } }, providerAccountConfig: zcodeAccountProviderConfig(process.env, launch) });
+    zcodeAgent.on("log", (message) => { const text = String(message || "").trim(); if (text) console.error(`[zcode-agent] ${text}`); });
+    zcodeAgent.on("warning", (warning) => console.warn(`[zcode-agent] WARNING: ${warning?.message || warning || "ZCode Agent warning"}`));
+  }
+  return zcodeAgent;
+}
+
+function agentProviderList() { return configuredAgentProviders().map(({ id, label, installed, configured, standaloneReady, available, mode, status, description }) => ({ id, label, installed, configured, standaloneReady, available, mode, status, description })); }
+function agentStateKey(session, provider) { return `${normalizeAgentProvider(provider)}::${canonicalDocumentKey(documentKeyFor(session))}`; }
+function savedAgentThread(session, provider) { return agentProviderState.threads[agentStateKey(session, provider)] || null; }
+function runtimeAgentBinding(session, binding, provider) {
+  const normalized = normalizeAgentProvider(provider);
+  if (normalized === "codex") return binding || null;
+  const saved = savedAgentThread(session, normalized);
+  return saved ? { ...(binding || {}), ...saved, agentProvider: normalized } : { ...(binding || {}), threadId: "", threadTitle: "", agentCwd: binding?.threadCwd || "", agentProvider: normalized };
+}
+async function loadAgentProviderState() { try { const raw = await readFile(agentProviderStatePath, "utf8"); const json = JSON.parse(raw); agentProviderState = { version: 1, threads: json?.threads && typeof json.threads === "object" ? json.threads : {} }; } catch { agentProviderState = { version: 1, threads: {} }; } }
+async function writeAgentProviderState() { await mkdir(dirname(agentProviderStatePath), { recursive: true }); await writeFile(agentProviderStatePath, `${JSON.stringify(agentProviderState, null, 2)}\n`); }
+function savedProviderBinding(session, provider) { return runtimeAgentBinding(session, null, provider); }
+async function saveProviderBinding(session, provider, input) {
+  const normalized = normalizeAgentProvider(provider);
+  const value = {
+    projectName: String(input.projectName || "").trim(),
+    projectPath: String(input.projectPath || "").trim(),
+    projectId: String(input.projectId || "").trim(),
+    threadId: String(input.threadId || "").trim(),
+    threadTitle: String(input.threadTitle || "").trim(),
+    threadCwd: String(input.threadCwd || input.cwd || "").trim(),
+  };
+  if (!value.projectId && !value.projectPath && !value.threadId) {
+    delete agentProviderState.threads[agentStateKey(session, normalized)];
+    await writeAgentProviderState();
+    session.binding = null;
+    return null;
+  }
+  const now = nowIso();
+  const previous = agentProviderState.threads[agentStateKey(session, normalized)] || {};
+  agentProviderState.threads[agentStateKey(session, normalized)] = { ...previous, ...value, agentProvider: normalized, createdAt: previous.createdAt || now, updatedAt: now };
+  await writeAgentProviderState();
+  session.binding = savedProviderBinding(session, normalized);
+  return session.binding;
+}
+async function zcodeCatalog() {
+  const launch = zcodeLaunchConfig();
+  if (!launch.available) return { projects: [], threads: [], updatedAt: nowIso(), source: "zcode-not-installed" };
+  const client = new ZcodeAgentClient({ command: launch.command, args: launch.args, env: launch.env });
+  try {
+    const threads = await client.listSessions();
+    const projects = new Map();
+    for (const thread of threads) {
+      const path = thread.cwd;
+      if (!path) continue;
+      if (!projects.has(path)) projects.set(path, { projectId: path, projectName: path.split("/").filter(Boolean).pop() || path, label: path.split("/").filter(Boolean).pop() || path, path });
+    }
+    return { projects: [...projects.values()].sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN")), threads, updatedAt: nowIso(), source: "zcode-app-server" };
+  } finally { client.child?.kill("SIGTERM"); }
 }
 
 function nowIso() { return new Date().toISOString(); }
@@ -285,6 +356,22 @@ function requestedBinding(input = {}) {
   }
   return Object.keys(requested).length ? requested : null;
 }
+function projectFallbackEnabled() { return !/^(0|false|no|off)$/i.test(String(process.env.WPS_CONNECTOR_ALLOW_PROJECT_FALLBACK ?? "1").trim()); }
+function threadOnlyBindingRequested(requested) { return Boolean(requested) && Object.keys(requested).length > 0 && Object.keys(requested).every((key) => key === "threadId" || key === "conversationId"); }
+function bindingProjectFallbackMatches(session, requested) {
+  return Boolean(
+    (requested.projectPath && String(requested.projectPath) === String(session.binding?.projectPath || ""))
+    || (requested.projectId && String(requested.projectId) === String(session.binding?.projectId || "")),
+  );
+}
+function crossThreadSessionAccessAllowed(session, requested, explicitSessionId) {
+  // 跨线程回退（如 ZCode 受信 threadId="zcode" 访问旧 Codex 线程绑定）：
+  // ① 项目级回退——请求带 projectPath/projectId 且与绑定一致；② 显式 sessionId + 仅 threadId 选择器。
+  if (!projectFallbackEnabled()) return false;
+  if (bindingProjectFallbackMatches(session, requested)) return true;
+  const actualThreadId = String(session?.binding?.threadId || session?.binding?.conversationId || "");
+  return Boolean(explicitSessionId && actualThreadId && threadOnlyBindingRequested(requested));
+}
 function bindingMatches(session, requested) {
   if (!requested) return true;
   if (!session?.binding) return false;
@@ -297,10 +384,11 @@ function bindingMatches(session, requested) {
       || (actualThreadId && requestedThreadId && actualThreadId === requestedThreadId),
     );
   }
+  const projectFallback = projectFallbackEnabled() && bindingProjectFallbackMatches(session, requested);
   return Object.entries(requested).every(([key, value]) => {
     const actual = String(session.binding?.[key] ?? "");
     if (key === "threadId" || key === "conversationId") {
-      if (value) return !actual || actual === String(value);
+      if (value) return !actual || actual === String(value) || String(value) === String(session.binding?.agentProvider || "") || projectFallback;
       return !actual;
     }
     return actual === String(value);
@@ -401,8 +489,19 @@ function agentBindingForSession(sessionId, { requireThread = false } = {}) {
   return { session, binding: session.binding };
 }
 
-async function ensureAgentBinding(session) {
+async function ensureAgentBinding(session, provider = "codex") {
+  const normalizedProvider = normalizeAgentProvider(provider);
   let binding = session.binding || findBindingForSession(session) || null;
+  if (normalizedProvider !== "codex") {
+    const saved = savedAgentThread(session, normalizedProvider);
+    if (saved?.threadId) return runtimeAgentBinding(session, binding, normalizedProvider);
+    const client = agentClient(normalizedProvider);
+    const projectPath = binding?.threadCwd || binding?.projectPath || binding?.projectId || "";
+    const created = await client.startThread({ cwd: projectPath });
+    agentProviderState.threads[agentStateKey(session, normalizedProvider)] = { threadId: created.threadId, threadTitle: created.thread?.name || created.thread?.title || "", threadCwd: projectPath, createdAt: nowIso(), updatedAt: nowIso() };
+    await writeAgentProviderState();
+    return runtimeAgentBinding(session, binding, normalizedProvider);
+  }
   if (binding?.threadId) return binding;
   const projectPath = binding?.threadCwd || binding?.projectPath || binding?.projectId || "";
   const created = await codexAgent.startThread({ cwd: projectPath });
@@ -657,16 +756,27 @@ function applyUpdate() {
   };
 }
 function sessionLastSeenMs(session) { const value = Date.parse(session.lastSeenAt || session.registeredAt || 0); return Number.isFinite(value) ? value : 0; }
+function sessionInFlightCommand(session, options = {}) {
+  const commandId = String(session?.inFlightCommandId || "");
+  if (!commandId) return null;
+  const command = commands.get(commandId);
+  if (!command || !["delivered", "timed_out"].includes(command.status)) return null;
+  const startedAt = Date.parse(command.deliveredAt || command.createdAt || 0);
+  if (!options.ignoreGrace && (!startedAt || Date.now() - startedAt > sessionInFlightGraceMs)) return null;
+  return command;
+}
 function pruneOfflineSessions() {
   const now = Date.now();
   const offline = [];
   for (const [sessionId, session] of sessions.entries()) {
     const age = now - sessionLastSeenMs(session);
-    if (age > sessionRetainOfflineMs) {
+    const inFlight = sessionInFlightCommand(session);
+    if (age > sessionRetainOfflineMs && !inFlight) {
       sessions.delete(sessionId);
       continue;
     }
-    if (age > sessionOfflineMs) session.status = "offline";
+    if (age > sessionOfflineMs && !inFlight) session.status = "offline";
+    if (inFlight && age > sessionOfflineMs) session.status = "online";
     if (session.status !== "online") offline.push(session);
   }
   offline.sort((a, b) => sessionLastSeenMs(b) - sessionLastSeenMs(a));
@@ -687,6 +797,8 @@ function commandPumpStatus(session) {
   const lastPollMs = Date.parse(session?.lastCommandPollAt || 0);
   const registeredMs = Date.parse(session?.sessionStartedAt || session?.registeredAt || 0);
   const now = Date.now();
+  const inFlight = sessionInFlightCommand(session);
+  if (inFlight) return { state: "busy", active: true, lastPollAt: session.lastCommandPollAt || null, pollAgeMs: lastPollMs ? now - lastPollMs : null, inFlightCommandId: inFlight.commandId, reason: "COMMAND_IN_FLIGHT" };
   if (!session?.commandPollSeen && registeredMs && now - registeredMs > commandPumpGraceMs) return { state: "inactive", active: false, lastPollAt: null, pollAgeMs: now - registeredMs, reason: "NO_COMMAND_POLL" };
   if (lastPollMs && now - lastPollMs > commandPumpStaleMs) return { state: "stale", active: false, lastPollAt: session.lastCommandPollAt, pollAgeMs: now - lastPollMs, reason: "COMMAND_POLL_STALE" };
   if (lastPollMs) return { state: "active", active: true, lastPollAt: session.lastCommandPollAt, pollAgeMs: now - lastPollMs, reason: "" };
@@ -730,8 +842,8 @@ function selectSession(input = {}, expectedHostPrefix, toolName = "tool") {
       throw { code: "SESSION_BINDING_REQUIRED", message: "Session " + session.sessionId + " is bound to a Codex project/thread. Provide matching bindingId, projectId/threadId, or binding to use it.", details: { sessionId: session.sessionId, actualBinding: session.binding || null } };
     }
     if (session?.binding && requested && !hasBindingSelector(requested)) throw { code: "PROJECT_BINDING_REQUIRED", message: "请提供项目或对话绑定信息（项目、对话或 bindingId）。", details: { sessionId: session.sessionId } };
-    if (session && requested && !bindingMatches(session, requested)) {
-      throw { code: "SESSION_BINDING_MISMATCH", message: "Session " + session.sessionId + " is not bound to the requested Codex project/thread.", details: { sessionId: session.sessionId, requestedBinding: requested, actualBinding: session.binding || null, aliases: ["BINDING_MISMATCH"] } };
+    if (session && requested && !bindingMatches(session, requested) && !crossThreadSessionAccessAllowed(session, requested, true)) {
+      throw { code: "SESSION_BINDING_MISMATCH", message: "Session " + session.sessionId + " is not bound to the requested Codex project/thread. 可执行任一处理：① 调用 wps.save_binding 以当前身份接管该会话绑定（等同面板“保存绑定”）；② 在参数中携带 actualBinding.projectPath/projectId 走项目级匹配；③ 在 WPS Connector 面板为目标文档重新保存绑定。", details: { sessionId: session.sessionId, requestedBinding: requested, actualBinding: session.binding || null, aliases: ["BINDING_MISMATCH"], nextActions: ["调用 wps.save_binding {sessionId, projectName?, projectPath?, projectId?} 接管绑定", "按 actualBinding.projectPath/projectId 传参走项目级匹配", "或在 WPS Connector 面板重新保存绑定"] } };
     }
     return session;
   }
@@ -970,13 +1082,13 @@ async function connectionStatus(input = {}) {
   if (input.sessionId) {
     const exact = filtered.find((session) => session.sessionId === input.sessionId);
     if (exact && exact.status !== "online") issues.push({ code: exact.bound ? "SESSION_WAITING_FOR_DOCUMENT" : "SESSION_OFFLINE", message: exact.bound ? "The requested session is bound but waiting for you to switch back to that WPS document." : "The requested session is registered but offline.", details: { sessionId: input.sessionId, lastSeenAt: exact.lastSeenAt, documentName: exact.documentName, displayStatus: exact.displayStatus } });
-    if (exact && requested && !bindingMatches(exact, requested)) issues.push({ code: "SESSION_BINDING_MISMATCH", message: "The requested session is bound to a different Codex project/thread.", details: { sessionId: input.sessionId, requestedBinding: requested, actualBinding: exact.binding } });
+    if (exact && requested && !bindingMatches(exact, requested) && !crossThreadSessionAccessAllowed(exact, requested, true)) issues.push({ code: "SESSION_BINDING_MISMATCH", message: "The requested session is bound to a different Codex project/thread.", details: { sessionId: input.sessionId, requestedBinding: requested, actualBinding: exact.binding, nextActions: ["调用 wps.save_binding {sessionId, projectName?, projectPath?, projectId?} 以当前线程身份接管绑定", "或按 actualBinding.projectPath/projectId 传参走项目级匹配", "或在 WPS Connector 面板重新保存绑定"] } });
   }
   const nextActions = [];
   if (!issues.length && recommended) nextActions.push("Use recommendedSession.sessionId for tool calls, or pass the same binding selector to let the bridge route automatically.");
   if (issues.some((issue) => issue.code === "SESSION_WAITING_FOR_DOCUMENT")) nextActions.push("Switch back to the bound WPS document shown in details, wait for it to become 当前可执行, then retry.");
   if (issues.some((issue) => issue.code === "NO_ONLINE_SESSIONS" || issue.code === "SESSION_OFFLINE" || issue.code === "NO_ONLINE_HOST_SESSION")) nextActions.push("Open WPS, show the WPS Connector pane, and confirm the pane version is current before retrying.");
-  if (issues.some((issue) => issue.code === "NO_BOUND_SESSION" || issue.code === "SESSION_BINDING_MISMATCH")) nextActions.push("Save the project/thread binding in the WPS Connector pane for the target document, then retry with the same binding selector.");
+  if (issues.some((issue) => issue.code === "NO_BOUND_SESSION" || issue.code === "SESSION_BINDING_MISMATCH")) nextActions.push("跨线程访问（如 ZCode threadId=\"zcode\" 访问旧 Codex 绑定）可任选：① 调用参数带上目标文档的 projectPath/projectId（项目级回退，默认开启，WPS_CONNECTOR_ALLOW_PROJECT_FALLBACK=0 关闭）；② 直接传目标 sessionId（显式 sessionId 允许跨线程）；③ 调用 wps.save_binding {sessionId, projectName?, projectPath?} 以当前身份接管绑定；④ 在 WPS Connector 面板重新保存绑定。");
   if (issues.some((issue) => issue.code === "AMBIGUOUS_SESSION")) nextActions.push("Use the sessionId from candidates for each spreadsheet, or pass documentKey/documentName; parallel calls with different sessionIds are supported.");
   const bridgeHealth = { ok: true, url: `http://${host}:${port}/api/health`, time: nowIso() };
   const addinHealth = await probeJson(`${addinUrl}/health`);
@@ -2263,6 +2375,28 @@ async function runTool(toolName, input) {
   if (toolName === "wps.list_sessions") return { sessions: listSessions(input) };
   if (toolName === "wps.connection_status") return connectionStatus(input);
   if (toolName === "wps.batch") return runBatch(input);
+  if (toolName === "wps.save_binding") {
+    const session = agentBindingForSession(String(input?.sessionId || "")).session;
+    if (input?.clear) {
+      const removed = clearBinding(session);
+      await saveBindings();
+      return { ok: true, sessionId: session.sessionId, cleared: removed, binding: null, session: publicSession(session) };
+    }
+    const previous = findBindingForSession(session) || {};
+    const takeover = {
+      projectName: String(input?.projectName || previous.projectName || ""),
+      projectPath: String(input?.projectPath || previous.projectPath || ""),
+      projectId: String(input?.projectId || previous.projectId || ""),
+      threadId: String(input?.threadId || ""),
+      threadTitle: String(input?.threadTitle || previous.threadTitle || ""),
+      threadCwd: String(input?.threadCwd || input?.cwd || previous.threadCwd || ""),
+      documentRole: String(input?.documentRole || previous.documentRole || ""),
+    };
+    if (!hasProjectBinding(takeover) && !takeover.threadId) throw { code: "BINDING_TARGET_REQUIRED", message: "至少需要提供项目字段（projectName/projectPath/projectId）或 threadId 之一来保存绑定。", details: { sessionId: session.sessionId } };
+    const binding = upsertBinding(session, takeover);
+    await saveBindings();
+    return { ok: true, sessionId: session.sessionId, binding, takeover: { previousThreadId: String(previous.threadId || ""), newThreadId: String(binding.threadId || ""), semantics: "threadId 已接管为调用方受信身份；原线程仍可在提供 projectPath/projectId 时通过项目级回退访问（WPS_CONNECTOR_ALLOW_PROJECT_FALLBACK，默认开启）。" }, session: publicSession(session) };
+  }
   if (toolName === "wps.create_et_wpp_data_source") return createEtWppDataSource(input || {});
   if (toolName === "wps.list_et_wpp_data_sources") {
     const items = tableSyncsStore.sources.map(publicEtWppDataSource).filter((source) => !input?.status || source.status === input.status);
@@ -2344,25 +2478,46 @@ async function handle(req, res) {
     if (req.method === "GET" && pathname === "/api/catalog") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
     if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
+    if (req.method === "GET" && pathname === "/api/agent/providers") return sendJson(res, 200, { ok: true, providers: agentProviderList(), defaultProvider: "codex" });
+    if (req.method === "GET" && pathname === "/api/agent/catalog") {
+      const provider = normalizeAgentProvider(url.searchParams.get("provider"));
+      if (provider === "zcode") return sendJson(res, 200, { ok: true, provider, ...(await zcodeCatalog()) });
+      const catalog = await catalogSnapshot();
+      return sendJson(res, 200, { ok: true, provider, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source });
+    }
+    const agentProviderBinding = /^\/api\/agent\/([^/]+)\/provider-binding$/.exec(pathname);
+    if (agentProviderBinding && req.method === "POST") {
+      assertAgentOrigin(req);
+      const { session } = agentBindingForSession(agentProviderBinding[1]);
+      const body = await readJson(req);
+      const provider = normalizeAgentProvider(body.provider);
+      if (provider === "codex") return sendError(res, 400, "AGENT_PROVIDER_UNSUPPORTED_BINDING", "Codex 绑定请使用标准 session binding 接口。", { provider });
+      const binding = await saveProviderBinding(session, provider, body.binding || body);
+      return sendJson(res, 200, { ok: true, provider, binding, session: publicSession(session) });
+    }
     const agentHistory = /^\/api\/agent\/([^/]+)\/history$/.exec(pathname);
     if (req.method === "GET" && agentHistory) {
       assertAgentOrigin(req);
       const { session, binding } = agentBindingForSession(agentHistory[1]);
-      if (!binding?.threadId) {
-        warmAgentTransport();
+      const provider = normalizeAgentProvider(url.searchParams.get("provider"));
+      const runtimeBinding = runtimeAgentBinding(session, binding, provider);
+      if (!runtimeBinding?.threadId) {
+        if (provider === "codex") warmAgentTransport();
         return sendJson(res, 200, {
           ok: true,
           sessionId: session.sessionId,
           documentName: session.documentName,
-          binding: null,
+          provider,
+          agentProvider: provider,
+          binding: runtimeBinding,
           thread: null,
           messages: [],
           run: null,
-          sync: await desktopSyncStatus(),
+          sync: provider === "codex" ? await desktopSyncStatus() : { ready: true, provider },
         });
       }
-      const result = await codexAgent.readThread(binding.threadId, Number(url.searchParams.get("limit") || 200));
-      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, documentName: session.documentName, binding, thread: { id: result.thread?.id || binding.threadId, name: result.thread?.name || binding.threadTitle || "" }, messages: result.messages, run: result.run, sync: await desktopSyncStatus() });
+      const result = await agentClient(provider).readThread(runtimeBinding.threadId, Number(url.searchParams.get("limit") || 200));
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, documentName: session.documentName, provider, agentProvider: provider, binding: runtimeBinding, thread: { id: result.thread?.id || runtimeBinding.threadId, name: result.thread?.name || runtimeBinding.threadTitle || "" }, messages: result.messages, run: result.run, sync: provider === "codex" ? await desktopSyncStatus() : { ready: true, provider } });
     }
     const agentMessage = /^\/api\/agent\/([^/]+)\/message$/.exec(pathname);
     if (req.method === "POST" && agentMessage) {
@@ -2371,24 +2526,32 @@ async function handle(req, res) {
       const body = await readJson(req);
       const text = String(body.text || "").trim();
       if (!text) return sendError(res, 400, "AGENT_MESSAGE_REQUIRED", "请输入要发送给 Agent 的内容。");
-      const sync = await assertAgentSyncReady();
-      const binding = await ensureAgentBinding(session);
+      const provider = normalizeAgentProvider(body.provider);
+      const sync = provider === "codex" ? await assertAgentSyncReady() : { ready: true, provider };
+      const binding = await ensureAgentBinding(session, provider);
       const prompt = buildAgentPrompt(session, binding, text);
-      const run = await codexAgent.startTurn(binding.threadId, prompt, { cwd: binding.threadCwd || binding.projectPath || binding.projectId || "" });
-      return sendJson(res, 202, { ok: true, sessionId: session.sessionId, documentName: session.documentName, threadId: binding.threadId, binding, thread: { id: binding.threadId, name: binding.threadTitle || "" }, run, sync });
+      const run = await agentClient(provider).startTurn(binding.threadId, prompt, { cwd: binding.threadCwd || binding.projectPath || binding.projectId || "" });
+      return sendJson(res, 202, { ok: true, sessionId: session.sessionId, documentName: session.documentName, provider, agentProvider: provider, threadId: binding.threadId, binding, thread: { id: binding.threadId, name: binding.threadTitle || "" }, run, sync });
     }
     const agentStatus = /^\/api\/agent\/([^/]+)\/status$/.exec(pathname);
     if (req.method === "GET" && agentStatus) {
       assertAgentOrigin(req);
-      const { session, binding } = agentBindingForSession(agentStatus[1], { requireThread: true });
-      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run: codexAgent.getRun(binding.threadId), sync: await desktopSyncStatus() });
+      const { session, binding } = agentBindingForSession(agentStatus[1]);
+      const provider = normalizeAgentProvider(url.searchParams.get("provider"));
+      const runtimeBinding = runtimeAgentBinding(session, binding, provider);
+      if (!runtimeBinding?.threadId) return sendError(res, 404, "AGENT_THREAD_NOT_FOUND", "当前 Agent 尚未创建对话。", { provider });
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, provider, agentProvider: provider, threadId: runtimeBinding.threadId, run: agentClient(provider).getRun(runtimeBinding.threadId), sync: provider === "codex" ? await desktopSyncStatus() : { ready: true, provider } });
     }
     const agentInterrupt = /^\/api\/agent\/([^/]+)\/interrupt$/.exec(pathname);
     if (req.method === "POST" && agentInterrupt) {
       assertAgentOrigin(req);
-      const { session, binding } = agentBindingForSession(agentInterrupt[1], { requireThread: true });
-      const run = await codexAgent.interrupt(binding.threadId);
-      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, threadId: binding.threadId, run });
+      const { session, binding } = agentBindingForSession(agentInterrupt[1]);
+      const body = await readJson(req).catch(() => ({}));
+      const provider = normalizeAgentProvider(body.provider || url.searchParams.get("provider"));
+      const runtimeBinding = runtimeAgentBinding(session, binding, provider);
+      if (!runtimeBinding?.threadId) return sendError(res, 404, "AGENT_THREAD_NOT_FOUND", "当前 Agent 尚未创建对话。", { provider });
+      const run = await agentClient(provider).interrupt(runtimeBinding.threadId);
+      return sendJson(res, 200, { ok: true, sessionId: session.sessionId, provider, agentProvider: provider, threadId: runtimeBinding.threadId, run });
     }
     if (req.method === "GET" && pathname === "/api/sessions") {
       const input = Object.fromEntries(url.searchParams.entries());
@@ -2446,9 +2609,9 @@ async function handle(req, res) {
     const heartbeat = /^\/api\/sessions\/([^/]+)\/heartbeat$/.exec(pathname);
     if (req.method === "POST" && heartbeat) { const session = sessions.get(heartbeat[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${heartbeat[1]}`); const body = await readJson(req); session.status = "online"; session.lastSeenAt = nowIso(); session.activeContext = body.activeContext || session.activeContext; session.clientVersion = body.clientVersion || session.clientVersion || ""; session.clientBuild = body.clientBuild || session.clientBuild || ""; if (body.documentIdentity || body.documentName || body.documentPath || body.host) { session.documentIdentity = body.documentIdentity || session.documentIdentity; session.documentName = body.documentName || session.documentName; session.host = normalizeHost(body.host || session.host); session.documentKey = documentKeyFor(session); } session.binding = findBindingForSession(session) || session.binding || null; return sendJson(res, 200, { ok: true, session: publicSession(session) }); }
     const nextCommand = /^\/api\/sessions\/([^/]+)\/commands\/next$/.exec(pathname);
-    if (req.method === "GET" && nextCommand) { const session = sessions.get(nextCommand[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${nextCommand[1]}`); session.status = "online"; session.commandPollSeen = true; session.lastCommandPollAt = nowIso(); session.lastSeenAt = nowIso(); const commandId = session.queue.shift(); if (!commandId) return sendJson(res, 200, { ok: true, command: null }); const command = commands.get(commandId); command.status = "delivered"; command.deliveredAt = nowIso(); return sendJson(res, 200, { ok: true, command: { commandId, toolName: command.toolName, input: command.input } }); }
+    if (req.method === "GET" && nextCommand) { const session = sessions.get(nextCommand[1]); if (!session) return sendError(res, 404, "SESSION_NOT_FOUND", `Session not found: ${nextCommand[1]}`); session.status = "online"; session.commandPollSeen = true; session.lastCommandPollAt = nowIso(); session.lastSeenAt = nowIso(); if (sessionInFlightCommand(session, { ignoreGrace: true })) return sendJson(res, 200, { ok: true, command: null, busy: true }); const commandId = session.queue.shift(); if (!commandId) return sendJson(res, 200, { ok: true, command: null }); const command = commands.get(commandId); command.status = "delivered"; command.deliveredAt = nowIso(); session.inFlightCommandId = command.commandId; return sendJson(res, 200, { ok: true, command: { commandId, toolName: command.toolName, input: command.input } }); }
     const commandResult = /^\/api\/commands\/([^/]+)\/result$/.exec(pathname);
-    if (req.method === "POST" && commandResult) { const command = commands.get(commandResult[1]); if (!command) return sendError(res, 404, "COMMAND_NOT_FOUND", `Command not found: ${commandResult[1]}`); const body = await readJson(req); command.completedAt = nowIso(); const session = sessions.get(command.sessionId); if (session) session.lastCommandCompletedAt = command.completedAt; if (command.cancelRequested || command.status === "cancelled") { command.status = "cancelled"; command.error = command.error || { code: "TABLE_SYNC_CANCELLED", message: "命令所属的表格插入已取消。" }; command.reject?.(command.error); return sendJson(res, 200, { ok: true, commandId: command.commandId, status: command.status }); } if (body.ok === false) { command.status = "failed"; command.error = body.error || { code: "COMMAND_FAILED", message: "Command failed." }; command.reject?.(command.error); } else { command.status = "completed"; command.result = body.result || {}; command.resolve?.(command.result); } return sendJson(res, 200, { ok: true, commandId: command.commandId, status: command.status }); }
+    if (req.method === "POST" && commandResult) { const command = commands.get(commandResult[1]); if (!command) return sendError(res, 404, "COMMAND_NOT_FOUND", `Command not found: ${commandResult[1]}`); const body = await readJson(req); command.completedAt = nowIso(); const session = sessions.get(command.sessionId); if (session) { session.lastCommandCompletedAt = command.completedAt; if (session.inFlightCommandId === command.commandId) session.inFlightCommandId = ""; session.status = "online"; session.lastSeenAt = command.completedAt; } if (command.cancelRequested || command.status === "cancelled") { command.status = "cancelled"; command.error = command.error || { code: "TABLE_SYNC_CANCELLED", message: "命令所属的表格插入已取消。" }; command.reject?.(command.error); return sendJson(res, 200, { ok: true, commandId: command.commandId, status: command.status }); } if (body.ok === false) { command.status = "failed"; command.error = body.error || { code: "COMMAND_FAILED", message: "Command failed." }; command.reject?.(command.error); } else { command.status = "completed"; command.result = body.result || {}; command.resolve?.(command.result); } return sendJson(res, 200, { ok: true, commandId: command.commandId, status: command.status }); }
     const toolCall = /^\/api\/tools\/([^/]+)\/([^/]+)$/.exec(pathname);
     if (req.method === "POST" && toolCall) { const toolName = `${toolCall[1]}.${toolCall[2]}`; if (!tools.some((tool) => tool.name === toolName)) return sendError(res, 404, "TOOL_NOT_FOUND", `Unknown tool: ${toolName}`); const input = await readJson(req); const isTableSync = ["wps.insert_et_wpp_data_source", "wps.create_et_wpp_table_sync", "wps.sync_et_wpp_table"].includes(toolName); if (isTableSync) logTableSyncEvent("request", { toolName, sourceId: input?.sourceId || "", syncId: input?.syncId || "", wppSessionId: input?.wppSessionId || input?.wordSessionId || "" }); try { const result = await runTool(toolName, input); if (isTableSync) logTableSyncEvent("completed", { toolName, sourceId: input?.sourceId || "", syncId: result?.binding?.mapping?.syncId || result?.mapping?.syncId || input?.syncId || "", wppSessionId: input?.wppSessionId || input?.wordSessionId || "" }); return sendJson(res, 200, { ok: true, ...result }); } catch (error) { if (isTableSync) logTableSyncEvent("failed", { toolName, sourceId: input?.sourceId || "", syncId: input?.syncId || "", code: error?.code || "TOOL_FAILED", message: error?.message || String(error) }); return sendError(res, statusForError(error), error.code || "TOOL_FAILED", error.message || String(error), error.details || {}); } }
     return sendError(res, 404, "NOT_FOUND", `Route not found: ${req.method} ${pathname}`);
@@ -2458,8 +2621,9 @@ await loadBindings();
 await loadTableSyncs();
 await loadTableSyncSourceCache();
 await loadTableFormatTemplates();
+await loadAgentProviderState();
 await reconcileConnectorState();
-process.on("exit", () => codexAgent.close());
+process.on("exit", () => { codexAgent.close(); zcodeAgent?.close(); });
 startConnectorPlatformHeartbeat({ version: "0.2.1" });
 const server = createServer(handle);
 server.listen(port, host, () => {

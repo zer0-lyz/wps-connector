@@ -1,0 +1,38 @@
+{
+  "name": "wps-connector-local",
+  "owner": {
+    "name": "lin"
+  },
+  "metadata": {
+    "description": "Personal local marketplace for the WPS Connector plugin.",
+    "description_i18n": {
+      "en": "Personal local marketplace for the WPS Connector plugin.",
+      "zh-CN": "WPS 连接器插件的本地个人市场源。"
+    }
+  },
+  "plugins": [
+    {
+      "name": "wps-connector",
+      "source": "./wps-connector",
+      "description": "WPS Connector: automate WPS Writer and Spreadsheet through a local MCP bridge (133 tools: read/write ranges, paragraphs, comments, tables, formatting, and table sync).",
+      "description_i18n": {
+        "en": "WPS Connector: automate WPS Writer and Spreadsheet through a local MCP bridge (133 tools: read/write ranges, paragraphs, comments, tables, formatting, and table sync).",
+        "zh-CN": "WPS 连接器：通过本地 MCP 桥接自动化操作 WPS 文字与表格（133 个工具：读写选区、段落、批注、表格、格式与表格同步）。"
+      },
+      "version": "1.1.5",
+      "author": {
+        "name": "zer0-lyz",
+        "url": "https://github.com/zer0-lyz/wps-connector"
+      },
+      "icon": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAAAAXNSR0IArs4c6QAAAERlWElmTU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAgKADAAQAAAABAAAAgAAAAABIjgR3AAAEtUlEQVR4Ae2d0WrUQBSGEzcpaK19hIJLoXinfToRKhXEp6tX3khRn2Fb60WTbfy3C6elmT3rrHvOGe2/oExnTP7J92Uzkc4k9cH0qOInjsCTuGgmLwhQQPB5QAEUEEwgOJ7fAAoIJhAcz28ABQQTCI5v9Px5VQ1VvfiLn00I1HU1TNQNNQGg/3b38rDp+gEO+Mkm0NTDed9+utpTHGgCcNofTvrX7fU1BWTDX2ywUw/VgD/aRxOA7fqqAv2OAjSGWhsA6h/eBel8zFspwByxHrDmEjTeGMY4Io+xLGtwub9Z1baiPk8A6H+4evFt3uRttiL7P6vG5X466U92L7Ic5JHEuQ/6X/qdlv8zGJ0+3e2lIffykCcAodgA9ClgxH9RkU2Tv5BJcvSs5F2QJ+1EFgUkoHhWUYAn7UQWBSSgeFZRgCftRBYFJKB4VlGAJ+1EFgUkoHhWUYAn7UQWBSSgeFZRgCftRBYFJKB4VlGAJ+1EFgUkoHhWUYAn7UQWBSSgeFZRgCftRBYFJKB4Vm3wW8wtdA+zTkub7ohphMoMzi0c84pdBAjA9I2Xk/4N5vyu6JN/NSh87tvvEdNtAgRgpinof9yb/Spmyumzenh3uf+1bzGf2Vl/gAAcIc590C9HwLJLzuiXcRyEQ7DfhVLAHYuQUswlaHyo6EfreP3FOFTILUARAtCJ83lz1mEMHKvZfk0/VMdth8U/JTgoQgDO/bO+ff9zH3cj2+c92iMG/9O92asy1r4VIQCI0A/Q9xGwjBt5iangIBzDXVIpQFDEFCgghrukUoCgiClQQAx3SaUAQRFToIAY7pJKAYIipkABMdwllQIERUyBAmK4SyoFCIqYAgXEcJdUChAUMQUKiOEuqRQgKGIKFBDDXVIpQFDEFCgghrukUoCgiClQQAx3SaUAQRFToIAY7pJKAYIipkABMdwllQIERUyBAmK4SyoFCIqYAgXEcJdUChAUMQUKiOEuqRQgKGIKFBDDXVJLWSGzXDks3TItYIlSCavDlsdYhACsWTxuutPnM79Fek1XyKuhihCA8xFrFrFqzvTEv79zLlO9T2NRhoPH+b4+DsIPTwXnnynAGfjDuJgxAKluS4IfHnHqZ3QmBsRG7/1JHUFOHdbF4+lIeD5PUfeC6JLnwyoEWIB4RP6YN3g6knSihAIeWRbAIuQbANx4OttTl8dClKBW7wMHYZ2PeSsFmCPWAyhA52PeSgHmiPUACtD5mLdSgDliPYACdD7mrRRgjlgPoACdj3krBZgj1gMoQOdj3koB5oj1AArQ+Zi3UoA5Yj2AAnQ+5q0UYI5YD6AAnY95KwWYI9YDKEDnY96a/YtoTGXoKpf3LJgf+5YDgGWDeR55AvB6helkkZK32ZaPtNDdgQvg5L6BIo/kTVWd7F7w/F91CoA+EGV98gRg17kBWb15hP+Yg3CwdAoIFrDmEoRmzNkL7uM/G/8n0x01ARhs8Xqvqhse59KJv/eOV4MCoH7PUh9Mj5QkvPh3WNz180ugQFKa6rpa85pi7RuAHd++45j0FcR603p0HIR1guatFGCOWA+gAJ2PeSsFmCPWAyhA52PeSgHmiPUACtD5mLdSgDliPeA3PoGxktudhlUAAAAASUVORK5CYII=",
+      "category": "productivity",
+      "keywords": [
+        "wps",
+        "writer",
+        "spreadsheet",
+        "mcp",
+        "office"
+      ]
+    }
+  ]
+}
