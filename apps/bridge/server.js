@@ -23,6 +23,7 @@ import {
 } from "../../vendor/connector-shared/modules/table-format-template/state.js";
 import { CodexAgentClient } from "./codexAgent.js";
 import { ZcodeAgentClient } from "./zcodeAgent.js";
+import { deepseekCatalog } from "../../deepseek/catalog.js";
 import { configuredAgentProviders, normalizeAgentProvider, zcodeAccountProviderConfig, zcodeLaunchConfig } from "./agentProviders.js";
 import { connectorPlatformStatus, startConnectorPlatformHeartbeat } from "./connectorPlatform.js";
 import { pushAdapterState, reconcileAdapterState } from "../../vendor/connector-shared/connectorStateClient.js";
@@ -105,6 +106,7 @@ function warmAgentTransport() {
 function agentClient(provider = "codex") {
   const normalized = normalizeAgentProvider(provider);
   if (normalized === "codex") return codexAgent;
+  if (normalized === "deepseek") throw { code: "AGENT_PROVIDER_UNAVAILABLE", message: "DeepSeek 项目与对话目录可用，Agent 对话发送尚未接入。", details: { provider: normalized } };
   if (!zcodeAgent) {
     const launch = zcodeLaunchConfig();
     if (!launch.available) throw { code: "AGENT_PROVIDER_UNAVAILABLE", message: "本机未检测到可用的 ZCode Agent。", details: { provider: normalized } };
@@ -141,15 +143,16 @@ async function saveProviderBinding(session, provider, input) {
   if (!value.projectId && !value.projectPath && !value.threadId) {
     delete agentProviderState.threads[agentStateKey(session, normalized)];
     await writeAgentProviderState();
-    session.binding = null;
+    if (normalized !== "deepseek") session.binding = null;
     return null;
   }
   const now = nowIso();
   const previous = agentProviderState.threads[agentStateKey(session, normalized)] || {};
   agentProviderState.threads[agentStateKey(session, normalized)] = { ...previous, ...value, agentProvider: normalized, createdAt: previous.createdAt || now, updatedAt: now };
   await writeAgentProviderState();
-  session.binding = savedProviderBinding(session, normalized);
-  return session.binding;
+  const saved = savedProviderBinding(session, normalized);
+  if (normalized !== "deepseek") session.binding = saved;
+  return saved;
 }
 async function zcodeCatalog() {
   const launch = zcodeLaunchConfig();
@@ -374,6 +377,8 @@ function crossThreadSessionAccessAllowed(session, requested, explicitSessionId) 
 }
 function bindingMatches(session, requested) {
   if (!requested) return true;
+  const deepseek = savedAgentThread(session, "deepseek");
+  if (deepseek?.threadId && requested.threadId === deepseek.threadId && Object.keys(requested).every((key) => key === "threadId")) return true;
   if (!session?.binding) return false;
   if (!hasBindingSelector(requested)) return false;
   const actualThreadId = String(session.binding.threadId || session.binding.conversationId || "");
@@ -835,7 +840,7 @@ function selectSession(input = {}, expectedHostPrefix, toolName = "tool") {
   const requested = requestedBinding(input);
   if (input.sessionId) {
     const session = sessions.get(input.sessionId);
-    if (session && !session.binding) {
+    if (session && !session.binding && !(requested && bindingMatches(session, requested))) {
       throw { code: "PROJECT_BINDING_REQUIRED", message: "当前 WPS 文档尚未绑定 Codex 项目，不能执行 " + toolName + "。请先在 WPS Connector 面板保存项目绑定。", details: { sessionId: session.sessionId, documentName: session.documentName } };
     }
     if (session?.binding && !requested) {
@@ -2478,14 +2483,45 @@ async function handle(req, res) {
     if (req.method === "GET" && pathname === "/api/catalog") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
     if (req.method === "GET" && pathname === "/api/catalog/projects") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, projects: catalog.projects, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
     if (req.method === "GET" && pathname === "/api/catalog/threads") { const catalog = queryBool(url.searchParams.get("refresh"), false) ? await refreshCatalog() : await catalogSnapshot(); return sendJson(res, 200, { ok: true, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source, cached: !queryBool(url.searchParams.get("refresh"), false) }); }
+    if (req.method === "POST" && pathname === "/api/deepseek/sessions") {
+      assertAgentOrigin(req);
+      const body = await readJson(req);
+      const threadId = String(body.threadId || "");
+      if (!threadId) throw { code: "DEEPSEEK_INVALID_REQUEST", message: "缺少 DeepSeek 对话身份。" };
+      pruneOfflineSessions();
+      const matches = [...sessions.values()].filter((session) => session.status === "online" && savedAgentThread(session, "deepseek")?.threadId === threadId);
+      return sendJson(res, 200, { ok: true, sessions: matches.map((session) => ({ sessionId: session.sessionId, host: session.host, documentName: session.documentName, documentKey: session.documentKey, availability: sessionAvailability(session).availability })), count: matches.length });
+    }
+    if (req.method === "POST" && pathname === "/api/deepseek/tool") {
+      assertAgentOrigin(req);
+      const body = await readJson(req);
+      const threadId = String(body.threadId || "");
+      const toolName = String(body.tool || "");
+      const allowed = new Set(["et.read_selection", "et.list_worksheets", "et.read_range", "et.write_range", "et.write_blocks", "et.format_range", "et.verify_range", "et.save_workbook", "wpp.read_selection", "wpp.read_document_text", "wpp.find_text", "wpp.replace_text", "wpp.read_table", "wpp.write_table_cell", "wpp.save_document"]);
+      if (!threadId || !allowed.has(toolName) || !body.input || typeof body.input !== "object" || Array.isArray(body.input)) throw { code: "DEEPSEEK_INVALID_REQUEST", message: "DeepSeek 工具请求无效或不受支持。" };
+      if (["threadId", "conversationId", "projectId", "projectPath", "binding", "documentKey"].some((key) => Object.hasOwn(body.input, key))) throw { code: "DEEPSEEK_IDENTITY_OVERRIDE", message: "不能覆盖当前 DeepSeek 对话或文档绑定。" };
+      pruneOfflineSessions();
+      const candidates = [...sessions.values()].filter((session) => session.status === "online" && savedAgentThread(session, "deepseek")?.threadId === threadId && String(session.host || "").startsWith(expectedHostForTool(toolName)));
+      const matches = body.input.sessionId ? candidates.filter((session) => session.sessionId === body.input.sessionId) : candidates;
+      if (matches.length !== 1) throw { code: matches.length ? "AMBIGUOUS_SESSION" : "DEEPSEEK_BOUND_SESSION_NOT_FOUND", message: matches.length ? "多个文档绑定了当前对话，请指定文档。" : "没有找到绑定当前 DeepSeek 对话的在线文档。", details: { count: matches.length } };
+      const result = await runTool(toolName, { ...body.input, sessionId: matches[0].sessionId, threadId });
+      return sendJson(res, 200, { ok: result?.ok !== false, result });
+    }
     if (req.method === "GET" && pathname === "/api/agent/providers") return sendJson(res, 200, { ok: true, providers: agentProviderList(), defaultProvider: "codex" });
     if (req.method === "GET" && pathname === "/api/agent/catalog") {
       const provider = normalizeAgentProvider(url.searchParams.get("provider"));
       if (provider === "zcode") return sendJson(res, 200, { ok: true, provider, ...(await zcodeCatalog()) });
+      if (provider === "deepseek") return sendJson(res, 200, { ok: true, provider, ...(await deepseekCatalog()) });
       const catalog = await catalogSnapshot();
       return sendJson(res, 200, { ok: true, provider, projects: catalog.projects, threads: catalog.threads, updatedAt: catalog.updatedAt, source: catalog.source });
     }
     const agentProviderBinding = /^\/api\/agent\/([^/]+)\/provider-binding$/.exec(pathname);
+    if (agentProviderBinding && req.method === "GET") {
+      assertAgentOrigin(req);
+      const { session } = agentBindingForSession(agentProviderBinding[1]);
+      const provider = normalizeAgentProvider(url.searchParams.get("provider"));
+      return sendJson(res, 200, { ok: true, provider, binding: savedAgentThread(session, provider) });
+    }
     if (agentProviderBinding && req.method === "POST") {
       assertAgentOrigin(req);
       const { session } = agentBindingForSession(agentProviderBinding[1]);
@@ -2624,7 +2660,7 @@ await loadTableFormatTemplates();
 await loadAgentProviderState();
 await reconcileConnectorState();
 process.on("exit", () => { codexAgent.close(); zcodeAgent?.close(); });
-startConnectorPlatformHeartbeat({ version: "0.2.1" });
+startConnectorPlatformHeartbeat({ version: "0.2.2" });
 const server = createServer(handle);
 server.listen(port, host, () => {
   console.error(`wps-connector bridge listening on http://${host}:${port}`);

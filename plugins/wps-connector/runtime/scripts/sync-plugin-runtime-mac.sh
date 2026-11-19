@@ -9,6 +9,7 @@ rsync -a --delete \
   --exclude '.git/' \
   --exclude 'node_modules/' \
   --exclude 'plugins/' \
+  --exclude '项目管理/' \
   --exclude '.DS_Store' \
   --exclude 'test_logs/' \
   --exclude 'project-bindings.local.json' \
@@ -16,6 +17,7 @@ rsync -a --delete \
   --exclude 'et-wpp-table-syncs.local.json' \
   --exclude 'et-wpp-source-cache.local.json' \
   --exclude 'table-format-templates.local.json' \
+  --exclude 'agent-provider-state.local.json' \
   "$SOURCE_DIR/" "$TARGET_DIR/"
 
 printf 'Synchronized WPS plugin runtime: %s\n' "$TARGET_DIR"

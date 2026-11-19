@@ -24,7 +24,7 @@ const encryptedOnly = zcodeLaunchConfig({ ...testEnv, WPS_CONNECTOR_ZCODE_API_KE
 assert.equal(encryptedOnly.credentialMode, "encrypted-gui-store");
 assert.equal(encryptedOnly.standaloneReady, false);
 const providers = configuredAgentProviders(testEnv);
-assert.deepEqual(providers.map((item) => item.id), ["codex", "zcode"]);
+assert.deepEqual(providers.map((item) => item.id), ["codex", "deepseek", "zcode"]);
 assert.equal(providers.find((item) => item.id === "zcode")?.available, true);
 const client = new ZcodeAgentClient({ command: process.execPath, args: [join(process.cwd(), "tests/fixtures/fake-zcode-app-server.js")], model: { providerId: "fake", modelId: "test-model", options: { reasoningLevel: "low" } }, providerAccountConfig: { revision: "test-revision", basedOnZCodeBuiltinRevision: "28", providers: { fake: {} }, states: { fake: { availability: "available", entitled: true, current: true } } } });
 const runtimeHeaderWrites = [];

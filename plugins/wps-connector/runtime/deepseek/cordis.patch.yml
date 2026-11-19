@@ -1,0 +1,4 @@
+- insert:
+    - id: wps-connector-deepseek
+      name: '@local/wps-connector-deepseek'
+      config: {}

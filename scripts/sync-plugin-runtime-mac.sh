@@ -9,6 +9,7 @@ rsync -a --delete \
   --exclude '.git/' \
   --exclude 'node_modules/' \
   --exclude 'plugins/' \
+  --exclude '项目管理/' \
   --exclude '.DS_Store' \
   --exclude 'test_logs/' \
   --exclude 'project-bindings.local.json' \

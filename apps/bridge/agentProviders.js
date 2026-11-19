@@ -116,7 +116,7 @@ function zcodeCredentialStatus(env = process.env, providerId = zcodeModelSelecti
 
 export function normalizeAgentProvider(value) {
   const provider = String(value || "").trim().toLowerCase();
-  return provider === "zcode" ? "zcode" : "codex";
+  return ["zcode", "deepseek"].includes(provider) ? provider : "codex";
 }
 
 export function zcodeLaunchConfig(env = process.env) {
@@ -175,8 +175,12 @@ export function zcodeAccountProviderConfig(env = process.env, launch = zcodeLaun
 
 export function configuredAgentProviders(env = process.env) {
   const zcode = zcodeLaunchConfig(env);
+  const deepseekSocket = String(env.WPS_DSH_SOCKET || join(String(env.HOME || homedir()), ".dsh/wps-connector.sock"));
+  let deepseekReady = false;
+  try { deepseekReady = statSync(deepseekSocket).isSocket(); } catch {}
   return [
     { id: "codex", label: "Codex", configured: true, available: true, mode: "desktop-shared", description: "使用当前 Codex Desktop 对话" },
+    { id: "deepseek", label: "DeepSeek Harness", available: deepseekReady, configured: deepseekReady, mode: "desktop-catalog", status: deepseekReady ? "document-tools" : "not-connected", description: deepseekReady ? "可选择 DeepSeek 项目和对话；支持从 DeepSeek 操作文档" : "等待 DeepSeek 桌面连接器启动" },
     { id: "zcode", label: "ZCode", installed: zcode.available, configured: zcode.configured, standaloneReady: zcode.standaloneReady, executable: zcode.standaloneReady, available: zcode.available, mode: "app-server", status: zcode.standaloneReady ? "ready" : zcode.configured ? "gui-configured" : zcode.available ? "needs-configuration" : "not-installed", description: zcode.standaloneReady ? "使用本机 ZCode Agent；可选择项目和对话" : zcode.configured ? "可选择项目和对话；发送前需配置独立 Agent 凭据" : zcode.available ? "已检测到 ZCode，但尚未检测到可用模型登录态" : "未检测到本机 ZCode Agent" },
   ];
 }

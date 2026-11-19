@@ -19,6 +19,7 @@ const state = {
     shapes: [],
     comments: [],
     validations: [],
+    outlines: {},
   },
   wpp: {
     documentName: "simulated-writer.docx",
@@ -155,6 +156,7 @@ function activeContext() {
 
 async function register() {
   const capabilities = host === "et" ? ["et.read_selection", "et.select_range", "et.inspect_sheet_overlays", "et.delete_sheet_overlays", "et.list_worksheets", "et.add_worksheet", "et.rename_worksheet", "et.delete_worksheet", "et.read_range", "et.write_range", "et.format_range", "et.read_format_sample", "et.verify_range", "et.clear_range", "et.find_cells", "et.write_blocks", "et.save_workbook", "et.create_chart", "et.insert_picture", "et.insert_shape"] : ["wpp.read_selection", "wpp.read_document_identity", "wpp.read_document_text", "wpp.select_range", "wpp.select_paragraph", "wpp.select_current_paragraph", "wpp.get_selection_range", "wpp.list_paragraphs", "wpp.get_paragraph_range", "wpp.find_block", "wpp.find_text", "wpp.replace_text", "wpp.replace_between_anchors", "wpp.replace_paragraph", "wpp.replace_current_paragraph", "wpp.replace_block", "wpp.insert_after_paragraph", "wpp.insert_before_paragraph", "wpp.insert_table_after_paragraph", "wpp.insert_table_before_paragraph", "wpp.read_format", "wpp.read_text_format", "wpp.apply_text_format", "wpp.read_paragraph_format", "wpp.apply_paragraph_format_by_indexes", "wpp.copy_paragraph_format", "wpp.copy_selected_paragraph_format_to_indexes", "wpp.compare_paragraph_format", "wpp.list_tables", "wpp.select_table", "wpp.replace_table_values", "wpp.ensure_table_sync_anchor", "wpp.resolve_table_sync_anchor", "wpp.read_table", "wpp.read_table_cell", "wpp.write_table_cell", "wpp.insert_table_rows", "wpp.delete_table_rows", "wpp.insert_table_columns", "wpp.delete_table_columns", "wpp.merge_table_cells", "wpp.format_table", "wpp.format_table_range", "wpp.format_table_rows", "wpp.format_table_columns", "wpp.read_table_format_sample", "wpp.read_table_format_range", "wpp.read_table_structure", "wpp.read_table_cell_styles", "wpp.read_table_format", "wpp.capture_table_format", "wpp.save_table_format_template", "wpp.list_table_format_templates", "wpp.apply_table_format_template", "wpp.delete_table_format_template", "wpp.apply_table_format", "wpp.copy_table_style", "wpp.duplicate_table_appearance", "wpp.insert_table_with_layout", "wpp.reset_table_layout", "wpp.read_cell_format", "wpp.apply_cell_format", "wpp.read_row_heights", "wpp.set_row_heights", "wpp.read_column_widths", "wpp.set_column_widths", "wpp.read_merged_cells", "wpp.apply_merged_cells", "wpp.insert_image", "wpp.read_images", "wpp.format_image", "wpp.delete_image", "wpp.add_comment", "wpp.add_comment_by_text", "wpp.add_comments_batch", "wpp.read_comments", "wpp.delete_comment", "wpp.set_track_changes", "wpp.read_revisions", "wpp.accept_revision", "wpp.reject_revision", "wpp.accept_all_revisions", "wpp.reject_all_revisions", "wpp.list_styles", "wpp.apply_style", "wpp.insert_page_break", "wpp.insert_paragraph_break", "wpp.delete_extra_blank_paragraphs", "wpp.save_document", "wpp.insert_text", "wpp.format_selection", "wpp.set_paragraph", "wpp.insert_table"];
+  if (host === "et") capabilities.push("et.group_rows", "et.ungroup_rows", "et.read_row_outline");
   await request("/api/sessions/register", {
     method: "POST",
     body: JSON.stringify({
@@ -331,6 +333,39 @@ function execute(command) {
     };
   }
   if (command.toolName === "et.format_range") { requireSheet(command.input.sheetName); const address = requireAddress(command.input.address); state.et.formats[address] = { ...(state.et.formats[address] || {}), ...command.input }; return { host: "et", address, formatted: true }; }
+  if (["et.group_rows", "et.ungroup_rows", "et.read_row_outline"].includes(command.toolName)) {
+    requireSheet(command.input.sheetName);
+    const requested = Array.isArray(command.input.ranges) && command.input.ranges.length ? command.input.ranges : [{ startRow: command.input.startRow, endRow: command.input.endRow }];
+    const ranges = requested.map((item) => {
+      const startRow = Number(item.startRow); const endRow = Number(item.endRow);
+      if (!Number.isInteger(startRow) || !Number.isInteger(endRow) || startRow < 1 || endRow < startRow) fail("INVALID_ARGUMENT", "startRow and endRow must be valid Spreadsheet row numbers.", { startRow, endRow });
+      return { startRow, endRow, rowCount: endRow - startRow + 1, address: `${startRow}:${endRow}` };
+    });
+    if (command.toolName === "et.read_row_outline") {
+      return { host: "et", sheetName: command.input.sheetName || state.et.sheetName, count: ranges.length, ranges: ranges.map((range) => {
+        const outline = state.et.outlines[range.address] || { outlineLevel: 1, hidden: false, showDetail: true };
+        const result = { ...range, ...outline };
+        if (command.input.includeRows === true && range.rowCount <= 200) result.rows = Array.from({ length: range.rowCount }, (_, index) => {
+          const row = range.startRow + index;
+          return { row, ...(state.et.outlines[`${row}:${row}`] || outline) };
+        });
+        return result;
+      }) };
+    }
+    const grouping = command.toolName === "et.group_rows";
+    const results = ranges.map((range) => {
+      if (grouping) {
+        const outline = { outlineLevel: 2, hidden: command.input.collapsed === true, showDetail: command.input.collapsed !== true };
+        state.et.outlines[range.address] = outline;
+        for (let row = range.startRow; row <= range.endRow; row += 1) state.et.outlines[`${row}:${row}`] = outline;
+      } else {
+        delete state.et.outlines[range.address];
+        for (let row = range.startRow; row <= range.endRow; row += 1) delete state.et.outlines[`${row}:${row}`];
+      }
+      return { ...range, method: grouping ? "Group()" : "Ungroup()", verification: state.et.outlines[range.address] || { outlineLevel: 1, hidden: false, showDetail: true }, verified: true };
+    });
+    return { host: "et", sheetName: command.input.sheetName || state.et.sheetName, action: grouping ? "group" : "ungroup", ranges: results, affectedRowCount: results.reduce((sum, item) => sum + item.rowCount, 0), verified: true };
+  }
   if (command.toolName === "et.read_format_sample") {
     requireSheet(command.input.sheetName);
     const cells = Array.isArray(command.input.cells) && command.input.cells.length ? command.input.cells : [{ address: command.input.address }];

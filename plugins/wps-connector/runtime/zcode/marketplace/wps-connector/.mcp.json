@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "wps-connector": {
+      "type": "stdio",
+      "command": "/usr/local/bin/node",
+      "args": ["/Users/lin/.local/share/wps-connector/runtime/apps/mcp/server.js"],
+      "env": {
+        "WPS_CONNECTOR_BRIDGE_URL": "http://127.0.0.1:40215",
+        "CODEX_THREAD_ID": "zcode"
+      }
+    }
+  }
+}

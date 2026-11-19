@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/zer0-lyz/wps-connector/main/scripts
 The installer will:
 
 - clone or update the repo at `$HOME/.local/share/wps-connector/source`;
-- install the Codex plugin into `$HOME/.codex/plugins/cache/personal/wps-connector/0.2.1`;
+- install the Codex plugin into `$HOME/.codex/plugins/cache/personal/wps-connector/0.2.2`;
 - deploy runtime files to `$HOME/.local/share/wps-connector/runtime`;
 - install LaunchAgents for the bridge and add-in server;
 - configure the WPS jsaddons files for the current macOS user;
@@ -53,7 +53,7 @@ No `/Users/<name>` path is hard-coded. Override paths with environment variables
 ```bash
 WPS_CONNECTOR_SOURCE_ROOT="$HOME/Code/wps-connector" \
 WPS_CONNECTOR_RUNTIME_ROOT="$HOME/.local/share/wps-connector/runtime" \
-WPS_CONNECTOR_PLUGIN_INSTALL_DIR="$HOME/.codex/plugins/cache/personal/wps-connector/0.2.1" \
+WPS_CONNECTOR_PLUGIN_INSTALL_DIR="$HOME/.codex/plugins/cache/personal/wps-connector/0.2.2" \
 bash scripts/install-mac.sh
 ```
 
@@ -81,6 +81,10 @@ For MCP visibility, Codex should expose both dotted and underscore tool names, i
 4. Return to Codex and ask it to confirm the WPS connection before writing.
 
 WPS add-in loading is version-dependent. If WPS keeps an old WebView script after an upgrade, reopen the Connector Pane or restart WPS so it loads the current `main.js`.
+
+## DeepSeek Harness
+
+See [DeepSeek setup](deepseek/README.md) to connect DeepSeek Desktop to WPS.
 
 ## Agent Connection Flow
 
@@ -110,7 +114,7 @@ $HOME/.local/share/wps-connector/source
 Codex plugin install:
 
 ```text
-$HOME/.codex/plugins/cache/personal/wps-connector/0.2.1
+$HOME/.codex/plugins/cache/personal/wps-connector/0.2.2
 ```
 
 WPS jsaddons:
@@ -132,8 +136,8 @@ npm run runtime:stop
 
 ## Current Version
 
-- UI/clientVersion: `v0.2.1`
-- clientBuild: `2026.07.19-pane-width-collapse.1`
+- UI/clientVersion: `v0.2.2`
+- clientBuild: `2026.11.19-deepseek-binding.1`
 
 ## Current Tool Surface
 

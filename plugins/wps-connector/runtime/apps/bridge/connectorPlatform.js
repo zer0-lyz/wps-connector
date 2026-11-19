@@ -29,7 +29,7 @@ export async function registerConnectorPlatform(adapter = {}) {
         id: adapter.id || `wps-connector:${process.pid}`,
         connector: "WPS",
         name: "wps-connector",
-        version: adapter.version || "0.2.1",
+        version: adapter.version || "0.2.2",
         protocolVersion: ADAPTER_PROTOCOL_VERSION,
         productVersion: PRODUCT_VERSION,
         sharedVersion: SHARED_VERSION,
