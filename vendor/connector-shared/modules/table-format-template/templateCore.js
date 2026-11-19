@@ -38,8 +38,7 @@ const PARAGRAPH_KEYS = new Set([
   "keepWithNext", "keepTogether", "pageBreakBefore",
 ]);
 const SHADING_KEYS = new Set(["backgroundColor", "foregroundColor", "texture", "color", "shadingColor", "pattern"]);
-const BORDER_KEYS = new Set(["enable", "items", "edges", "top", "left", "bottom", "right", "insideH", "insideV", "start", "end", "lineStyle", "lineWidth", "color", "type", "width", "rawSize", "space", "ooxml"]);
-const BORDER_EDGE_KEYS = new Set(["top", "left", "bottom", "right", "insideH", "insideV", "start", "end"]);
+const BORDER_KEYS = new Set(["enable", "items", "edges", "top", "left", "bottom", "right", "insideH", "insideV", "start", "end", "lineStyle", "lineWidth", "lineWidthPoints", "color", "type", "width", "rawSize", "space", "ooxml"]);
 const DIMENSION_KEYS = new Set(["row", "column", "index", "height", "width", "heightRule", "unit", "columnWidth", "rowHeight"]);
 const MERGE_KEYS = new Set(["startRow", "startColumn", "endRow", "endColumn", "row", "column", "rowSpan", "columnSpan"]);
 
@@ -52,8 +51,14 @@ export const TABLE_FORMAT_FIELD_WHITELIST = Object.freeze([
 /**
  * First-release table settings preset. Values are host-neutral; adapters map
  * alignment names, font properties and the point-based row height to their
- * native WPS/Word APIs. Number display format is deliberately excluded: this
- * feature changes appearance, not cell values or their displayed text.
+ * native WPS/Word APIs. Border widths are expressed in points; the shared
+ * builder emits them both as the semantic `type`/`width`/`color` edges that
+ * the shipped WPS/Office adapters already persist and apply, and as
+ * host-neutral `lineStyle`/`lineWidthPoints` hints for newer hosts. The
+ * preset deliberately contains no number display format: this feature
+ * changes appearance, not cell values. Its border geometry follows the
+ * approved Writer layout: thick top/bottom rules, thin internal horizontal
+ * and vertical rules, and no outer side borders.
  */
 export const TABLE_SETTINGS_DEFAULT_PRESET = Object.freeze({
   id: "default",
@@ -136,7 +141,7 @@ function normalizeObject(value, allowed, context = "") {
       continue;
     }
     if (raw && typeof raw === "object") {
-      const nestedAllowed = key === "font" ? FONT_KEYS : key === "paragraph" ? PARAGRAPH_KEYS : key === "shading" ? SHADING_KEYS : key === "borders" || key === "edges" || BORDER_EDGE_KEYS.has(key) ? BORDER_KEYS : key === "padding" || key === "cellPadding" ? DIMENSION_KEYS : key === "headerRowStyle" || key === "bodyRowStyle" ? TABLE_KEYS : null;
+      const nestedAllowed = key === "font" ? FONT_KEYS : key === "paragraph" ? PARAGRAPH_KEYS : key === "shading" ? SHADING_KEYS : key === "borders" || key === "edges" || ["top", "left", "bottom", "right", "insideH", "insideV", "start", "end"].includes(key) ? BORDER_KEYS : key === "padding" || key === "cellPadding" ? DIMENSION_KEYS : key === "headerRowStyle" || key === "bodyRowStyle" ? TABLE_KEYS : null;
       output[key] = nestedAllowed ? normalizeObject(raw, nestedAllowed, `${context}.${key}`) : normalizeFormatValue(raw, `${context}.${key}`);
       if (!Object.keys(output[key] || {}).length) delete output[key];
       continue;
@@ -149,7 +154,7 @@ function normalizeObject(value, allowed, context = "") {
 function normalizeFormatValue(value, key = "") {
   if (Array.isArray(value)) return value.map((item) => normalizeFormatValue(item, key));
   if (!value || typeof value !== "object") return normalizeLeaf(value, key);
-  const allowed = key === "table" ? TABLE_KEYS : key === "cells[]" ? CELL_KEYS : key === "font" ? FONT_KEYS : key === "paragraph" ? PARAGRAPH_KEYS : key === "shading" ? SHADING_KEYS : key === "borders" ? BORDER_KEYS : key === "padding" ? DIMENSION_KEYS : TABLE_KEYS;
+  const allowed = key === "table" ? TABLE_KEYS : key === "cells[]" ? CELL_KEYS : key === "font" ? FONT_KEYS : key === "paragraph" ? PARAGRAPH_KEYS : key === "shading" ? SHADING_KEYS : key === "borders" || key === "edges" || ["top", "left", "bottom", "right", "insideH", "insideV", "start", "end"].includes(key) ? BORDER_KEYS : key === "padding" ? DIMENSION_KEYS : TABLE_KEYS;
   return normalizeObject(value, allowed, key);
 }
 function normalizeDimensionArray(value, kind) {
@@ -242,17 +247,117 @@ export function tableFormatForApply(template = {}, options = {}) {
 
 function pathLabel(path) { return path || "format"; }
 function comparablePrimitive(value) { return typeof value === "string" ? value.trim().toLowerCase() : value; }
+const BORDER_EDGE_PATH = /(?:^|\.)borders\.edges\.[A-Za-z]+$/;
+const BORDER_EDGE_LINE_STYLES = new Map([
+  ["none", 0], ["nil", 0], ["single", 1], ["solid", 1],
+]);
+function isBorderEdgePath(path) {
+  return BORDER_EDGE_PATH.test(String(path || ""));
+}
+/** Collapse the dual border-edge spellings into one comparable view. */
+function canonicalBorderEdge(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const output = {};
+  const lineStyle = value.lineStyle ?? value.type;
+  const widthPoints = value.lineWidthPoints ?? value.width;
+  if (lineStyle !== undefined && lineStyle !== null && lineStyle !== "") {
+    const numeric = Number(lineStyle);
+    output.type = Number.isFinite(numeric) && String(lineStyle).trim() !== ""
+      ? (numeric === 0 ? "nil" : numeric === 1 ? "single" : String(lineStyle))
+      : String(lineStyle).trim().toLowerCase();
+  }
+  if (widthPoints !== undefined && widthPoints !== null) output.width = Number(widthPoints);
+  // A `nil` edge has no visible line: hosts legitimately omit its color, and
+  // the aggregate tri-state can flip it, so color is only meaningful when the
+  // edge actually draws something.
+  if (output.type !== "nil" && value.color !== undefined && value.color !== null && value.color !== "") {
+    output.color = canonicalColor(String(value.color));
+  }
+  if (value.rawSize !== undefined) output.rawSize = value.rawSize;
+  if (value.space !== undefined) output.space = value.space;
+  return output;
+}
+function canonicalAutoFit(value) {
+  if (value === true) return "enabled";
+  if (value === false) return "disabled";
+  const text = typeof value === "string" ? value.trim().toLowerCase() : value;
+  if (["true", "enabled", "window"].includes(text)) return "enabled";
+  if (["false", "disabled", "none"].includes(text)) return "disabled";
+  return text;
+}
 function numericEqual(expected, actual, options) {
   if (typeof expected !== "number" || typeof actual !== "number") return false;
   const tolerance = Number(options.numericTolerance ?? 0.01);
   return Number.isFinite(expected) && Number.isFinite(actual) && Math.abs(expected - actual) <= tolerance;
 }
+function canonicalRowHeightRule(value) {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && String(value ?? "").trim() !== "") {
+    if (numeric === 0) return "auto";
+    if (numeric === 1 || numeric === 3) return "atLeast";
+    if (numeric === 2 || numeric === 4) return "exactly";
+  }
+  const text = String(value ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (["atleast", "minimum", "min"].includes(text)) return "atLeast";
+  if (["exactly", "exact", "fixed"].includes(text)) return "exactly";
+  if (["auto", "automatic"].includes(text)) return "auto";
+  return text;
+}
+function compareRowHeightItem(expected, actual, path, mismatches, options = {}) {
+  const expectedRule = expected?.heightRule === undefined || expected?.heightRule === null
+    ? undefined
+    : canonicalRowHeightRule(expected.heightRule);
+  const expectedHeight = Number(expected?.height);
+  const actualHeight = Number(actual?.height);
+  if (Number.isFinite(expectedHeight)) {
+    const tolerance = Number(options.rowHeightTolerance ?? Math.max(Number(options.numericTolerance ?? 0.01), 0.2));
+    const heightMatches = expectedRule === "atLeast"
+      ? Number.isFinite(actualHeight) && actualHeight + tolerance >= expectedHeight
+      : Number.isFinite(actualHeight) && Math.abs(actualHeight - expectedHeight) <= tolerance;
+    if (!heightMatches) mismatches.push({ path: `${path}.height`, expected: expected.height, actual: actual?.height ?? null });
+  }
+  for (const [key, value] of Object.entries(expected || {})) {
+    if (key === "row" || key === "index" || key === "height") continue;
+    if (key === "heightRule") {
+      const actualRule = actual?.heightRule === undefined || actual?.heightRule === null
+        ? undefined
+        : canonicalRowHeightRule(actual.heightRule);
+      if (expectedRule !== actualRule) mismatches.push({ path: `${path}.heightRule`, expected: value, actual: actual?.heightRule ?? null });
+      continue;
+    }
+    compareValue(value, actual?.[key], `${path}.${key}`, mismatches, options);
+  }
+}
 function compareValue(expected, actual, path, mismatches, options = {}) {
   if (!defined(expected) && typeof expected !== "boolean" && typeof expected !== "number") return;
   if (expected && typeof expected === "object" && !Array.isArray(expected)) {
+    // Border edges can legitimately appear in two spellings: the semantic
+    // `type`/`width`/`color` form saved in existing documents and applied by
+    // the shipped adapters, and the host-neutral `lineStyle`/`lineWidthPoints`
+    // hints the shared preset carries. Hosts echo back only the spelling they
+    // natively produce, so before descending, collapse both spellings of the
+    // same edge into one canonical view; otherwise every real verification
+    // would fail on fields the host never reports.
+    if (isBorderEdgePath(path) && !options.edgeCanonicalized) {
+      const canonicalExpected = canonicalBorderEdge(expected);
+      const canonicalActual = canonicalBorderEdge(actual);
+      if (canonicalExpected && canonicalActual) {
+        compareValue(canonicalExpected, canonicalActual, path, mismatches, { ...options, edgeCanonicalized: true });
+        return;
+      }
+    }
     if (!actual || typeof actual !== "object") { mismatches.push({ path: pathLabel(path), expected, actual: null }); return; }
+    // Border `enable` is an aggregate/tri-state host property on both WPS and
+    // Word. When explicit edge geometry is present, a host may legitimately
+    // report it as false or mixed even though the requested visible edges are
+    // correct (in particular, no outer side borders plus visible inside
+    // rules). The edge entries below are the authoritative verification in
+    // that case; do not let the aggregate flag trigger a destructive rollback.
+    const explicitBorderGeometry = (path.endsWith("borders") || path.endsWith("edges"))
+      && (Object.keys(expected.edges || {}).length > 0 || (Array.isArray(expected.items) && expected.items.length > 0));
     for (const [key, value] of Object.entries(expected)) {
       if (META_KEYS.has(key)) continue;
+      if (explicitBorderGeometry && key === "enable") continue;
       if (options.ignoreShape && ["rowCount", "columnCount"].includes(key)) continue;
       if (options.ignoreLayout && ["rowHeights", "columnWidths", "mergedCells"].includes(key)) continue;
       compareValue(value, actual[key], path ? `${path}.${key}` : key, mismatches, options);
@@ -260,6 +365,11 @@ function compareValue(expected, actual, path, mismatches, options = {}) {
     return;
   }
   if (Array.isArray(expected)) {
+    // An empty keyed collection means that the caller did not request this
+    // dimension/merge set. Default table settings intentionally leave column
+    // widths and merged cells untouched, so an existing host collection must
+    // not turn a verified write into a false mismatch.
+    if (!expected.length) return;
     if (!Array.isArray(actual)) { mismatches.push({ path: pathLabel(path), expected, actual: null }); return; }
     const keyed = path.endsWith("cells") || path.endsWith("rowHeights") || path.endsWith("columnWidths") || path.endsWith("mergedCells");
     if (keyed) {
@@ -267,6 +377,7 @@ function compareValue(expected, actual, path, mismatches, options = {}) {
       for (const item of expected) {
         const found = actual.find((candidate) => keys.every((key) => candidate?.[key] === item?.[key]));
         if (!found) mismatches.push({ path: `${path}[${keys.map((key) => item?.[key]).join(":")}]`, expected: item, actual: null });
+        else if (path.endsWith("rowHeights")) compareRowHeightItem(item, found, `${path}[${keys.map((key) => item?.[key]).join(":")}]`, mismatches, options);
         else compareValue(item, found, `${path}[${keys.map((key) => item?.[key]).join(":")}]`, mismatches, options);
       }
       return;
@@ -276,8 +387,16 @@ function compareValue(expected, actual, path, mismatches, options = {}) {
     return;
   }
   if (numericEqual(expected, actual, options)) return;
-  const expectedComparable = /alignment/i.test(path) ? canonicalAlignment(expected) : comparablePrimitive(expected);
-  const actualComparable = /alignment/i.test(path) ? canonicalAlignment(actual) : comparablePrimitive(actual);
+  const expectedComparable = /alignment/i.test(path)
+    ? canonicalAlignment(expected)
+    : /(?:^|\.)autoFit$/i.test(path)
+      ? canonicalAutoFit(expected)
+      : comparablePrimitive(expected);
+  const actualComparable = /alignment/i.test(path)
+    ? canonicalAlignment(actual)
+    : /(?:^|\.)autoFit$/i.test(path)
+      ? canonicalAutoFit(actual)
+      : comparablePrimitive(actual);
   if (expectedComparable !== actualComparable) mismatches.push({ path: pathLabel(path), expected, actual: actual ?? null });
 }
 export function compareTableFormat(expected = {}, actual = {}, options = {}) {
@@ -365,7 +484,11 @@ export function buildDefaultTableSettingsFormat({ rowCount = 0, columnCount = 0,
   return {
     table: {
       repeatHeaderRows: rows > 0 ? Boolean(preset.repeatHeaderRows) : false,
-      autoFit: preset.autoFit,
+      // Both adapters already ship `autoFit: "window"` semantics (WPS maps
+      // true/"window"/2 to fit-to-window, Office treats true and "window"
+      // identically). Keep the canonical string form so verification and the
+      // saved format stay identical across hosts.
+      autoFit: preset.autoFit || "window",
       borders: clone(preset.borders),
     },
     rowHeights,
@@ -466,13 +589,72 @@ function filterAppliedFields(fields, excluded) {
   return [...new Set(fields || [])].filter((field) => !(excluded || []).some((status) => fieldMatchesStatus(field, status)));
 }
 
+function tableFormatVerificationSubset(format, verifyCells = []) {
+  const normalized = normalizeTableFormatSnapshot(format).format;
+  const positions = new Set((verifyCells || []).map((cell) => `${Number(cell.row)}:${Number(cell.column)}`));
+  return {
+    ...clone(normalized),
+    table: clone(normalized.table || {}),
+    cells: (normalized.cells || []).filter((cell) => positions.has(`${Number(cell.row)}:${Number(cell.column)}`)),
+    // Row heights are cheap compared with cell formatting and are part of the
+    // default preset's contract, so verify the complete height vector.
+    rowHeights: clone(normalized.rowHeights || []),
+    // The sample-readback path is only used when the caller explicitly opts
+    // into it. Layout collections remain untouched unless they were requested.
+    columnWidths: (normalized.columnWidths || []).length ? clone(normalized.columnWidths) : [],
+    mergedCells: (normalized.mergedCells || []).length ? clone(normalized.mergedCells) : [],
+  };
+}
+
 /** Shared transaction runner. Only callback implementations touch host APIs. */
-export async function applyTableFormatTransactions({ targets = [], format = {}, host = "", read, apply, restore, options = {} }) {
+export async function applyTableFormatTransactions({ targets = [], format = {}, host = "", read, apply, execute, executeBatch, restore, options = {} }) {
   const started = Date.now();
   const results = [];
   const beforeByTable = new Map();
+  const reportProgress = (phase, details = {}) => {
+    try { options.onProgress?.({ phase, ...details }); } catch {}
+  };
 
-  const restoreOne = async (tableIndex, before, verify = options.verifyRestore !== false) => {
+  // A host adapter may collapse a multi-table operation into one native
+  // command. The command must return one real before/after snapshot per
+  // target; this runner still performs the authoritative comparison below.
+  // If the command is unavailable, the adapter may throw before changing the
+  // document and the runner falls back to the established per-target path.
+  const preparedTargets = targets.map((target) => {
+    const tableIndex = typeof target === "object" ? target.tableIndex : target;
+    const targetShape = typeof target === "object" ? target.shape || {} : {};
+    const targetFormat = typeof format === "function" ? format(target) : format;
+    const plan = buildTableFormatApplyPlan(fitTableFormatToShape(targetFormat, targetShape), options);
+    return { target, tableIndex, plan, requested: tableFormatForApply({ format: plan.format, host }, { host }) };
+  });
+  let batchTransactions = null;
+  if (typeof executeBatch === "function" && preparedTargets.length > 1) {
+    try {
+      reportProgress("batch_start", { targetCount: preparedTargets.length });
+      const batchResult = await executeBatch(preparedTargets);
+      const batchItems = Array.isArray(batchResult) ? batchResult : batchResult?.results;
+      if (!Array.isArray(batchItems) || batchItems.length !== preparedTargets.length) {
+        throw Object.assign(new Error("Batch host command returned an incomplete target result."), { code: "TABLE_FORMAT_BATCH_INCOMPLETE" });
+      }
+      batchTransactions = new Map(batchItems.map((item, index) => [
+        Number.isInteger(Number(item?.tableIndex)) ? Number(item.tableIndex) : preparedTargets[index].tableIndex,
+        item,
+      ]));
+      if (batchTransactions.size !== preparedTargets.length) {
+        throw Object.assign(new Error("Batch host command returned duplicate table indexes."), { code: "TABLE_FORMAT_BATCH_DUPLICATE_TARGET" });
+      }
+      reportProgress("batch_ready", { targetCount: preparedTargets.length });
+    } catch (error) {
+      // An unsupported/new command is safe to retry one target at a time. A
+      // host adapter that may have mutated the document must return a complete
+      // result instead of throwing, so this fallback never knowingly retries a
+      // partially applied batch.
+      batchTransactions = null;
+      reportProgress("batch_fallback", { targetCount: preparedTargets.length, error: { code: error?.code || "TABLE_FORMAT_BATCH_UNAVAILABLE", message: error?.message || String(error) } });
+    }
+  }
+
+  const restoreOne = async (tableIndex, before, plan, verify = options.verifyRestore !== false) => {
     if (!before) return null;
     let rollback;
     try {
@@ -482,8 +664,11 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
     }
     if (rollback && verify) {
       try {
-        const restored = await read(tableIndex, { phase: "restore" });
-        rollback.verification = compareTableFormat(before?.format || before || {}, restored?.format || restored || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
+        const restored = await read(tableIndex, { phase: "restore", plan });
+        const expectedRestore = options.verifyRestoreSample === true
+          ? tableFormatVerificationSubset(before?.format || before || {}, plan?.verifyCells || [])
+          : (before?.format || before || {});
+        rollback.verification = compareTableFormat(expectedRestore, restored?.format || restored || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
         rollback.ok = rollback.ok !== false && rollback.verification.matched;
       } catch (error) {
         rollback.ok = false;
@@ -493,13 +678,25 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
     return rollback;
   };
 
+  // A verification mismatch is different from a host-command exception. The
+  // adapter has already performed the real write and any bounded field-level
+  // retries by this point. Restoring a light snapshot here can be harmful for
+  // the fixed WPS preset: WPS may expose an aggregate border or row-height
+  // readback that is stale/tri-state even though the visible geometry was just
+  // written. Replaying that snapshot can turn the requested no-side-border /
+  // 0.6cm result back into the user's old full-grid / 0.55cm layout. Callers
+  // may preserve the attempted result on a pure verification failure while
+  // still using restoreOne for thrown write errors and prior successful targets
+  // in an atomic batch.
+  const shouldRestoreVerificationFailure = options.rollbackOnVerificationFailure !== false;
+
   const rollbackSuccessfulBatch = async () => {
     if (options.atomic !== true) return [];
     const rolledBack = [];
     for (const item of results) {
       if (item?.ok !== true) continue;
       const before = beforeByTable.get(item.tableIndex);
-      const rollback = await restoreOne(item.tableIndex, before);
+      const rollback = await restoreOne(item.tableIndex, before, item.plan);
       item.rollback = rollback;
       item.batchRolledBack = true;
       item.ok = false;
@@ -510,21 +707,51 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
     return rolledBack;
   };
 
-  for (const target of targets) {
-    const tableIndex = typeof target === "object" ? target.tableIndex : target;
-    const targetShape = typeof target === "object" ? target.shape || {} : {};
-    const targetFormat = typeof format === "function" ? format(target) : format;
-    const plan = buildTableFormatApplyPlan(fitTableFormatToShape(targetFormat, targetShape), options);
-    const requested = tableFormatForApply({ format: plan.format, host }, { host });
+  for (const [targetPosition, target] of targets.entries()) {
+    const prepared = preparedTargets[targetPosition];
+    const tableIndex = prepared.tableIndex;
+    const plan = prepared.plan;
+    const requested = prepared.requested;
     let before;
+    let transactionResult = null;
+    let after = null;
     try {
-      before = await read(tableIndex, { phase: "before", plan });
+      reportProgress("before_read", { tableIndex, targetIndex: targetPosition, targetCount: targets.length, plan: performanceStats(plan) });
+      const batchedTransaction = batchTransactions?.get(tableIndex);
+      if (batchedTransaction) {
+        reportProgress("apply", { tableIndex, targetIndex: targetPosition, targetCount: targets.length, plan: performanceStats(plan), batch: true });
+        transactionResult = batchedTransaction;
+        before = transactionResult?.before || null;
+        after = transactionResult?.after || null;
+        if (!before) before = await read(tableIndex, { phase: "before", plan });
+        if (!after) after = await read(tableIndex, { phase: "after", plan });
+      } else if (typeof execute === "function") {
+        // Host adapters may execute read-before -> write -> read-after inside
+        // one host command. This preserves the shared transaction contract
+        // while avoiding multiple command-pump round trips for slow WPS/Word
+        // documents. The adapter must return actual snapshots, never a
+        // synthetic verification result.
+        reportProgress("apply", { tableIndex, targetIndex: targetPosition, targetCount: targets.length, plan: performanceStats(plan) });
+        transactionResult = await execute(tableIndex, requested, plan);
+        before = transactionResult?.before || null;
+        after = transactionResult?.after || null;
+        if (!before) before = await read(tableIndex, { phase: "before", plan });
+        if (!after) after = await read(tableIndex, { phase: "after", plan });
+      } else {
+        before = await read(tableIndex, { phase: "before", plan });
+        reportProgress("apply", { tableIndex, targetIndex: targetPosition, targetCount: targets.length, plan: performanceStats(plan) });
+        transactionResult = { write: await apply(tableIndex, requested, plan) };
+        after = await read(tableIndex, { phase: "after", plan });
+      }
       beforeByTable.set(tableIndex, before);
-      const writeResult = await apply(tableIndex, requested, plan);
-      const after = await read(tableIndex, { phase: "after", plan });
+      reportProgress("after_read", { tableIndex, targetIndex: targetPosition, targetCount: targets.length, plan: performanceStats(plan) });
+      const writeResult = transactionResult?.write || transactionResult || {};
+      const expectedAfter = options.verifySample === true
+        ? tableFormatVerificationSubset(plan.format, plan.verifyCells)
+        : plan.format;
       const verification = writeResult?.verification?.authoritative === true && typeof writeResult.verification.matched === "boolean"
         ? writeResult.verification
-        : compareTableFormat(plan.format, after?.format || after || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
+        : compareTableFormat(expectedAfter, after?.format || after || {}, { ignoreShape: true, numericTolerance: options.numericTolerance });
       const attemptedFields = collectTableFormatFields(plan.format);
       const statusFields = (values) => [...new Set(values || [])].filter((field) => attemptedFields.some((attempted) => fieldMatchesStatus(attempted, field)));
       const unsupported = statusFields([
@@ -559,8 +786,16 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
         ? candidateAppliedFields.filter((field) => adapterVerifiedFields.has(field) || [...adapterVerifiedFields].some((verifiedField) => fieldMatchesStatus(field, verifiedField)))
         : candidateAppliedFields;
       let rollback = null;
-      if (!verification.matched) {
-        rollback = await restoreOne(tableIndex, before);
+      if (!verification.matched && shouldRestoreVerificationFailure) {
+        reportProgress("restore", { tableIndex, targetIndex: results.length, targetCount: targets.length, plan: performanceStats(plan) });
+        rollback = await restoreOne(tableIndex, before, plan);
+      } else if (!verification.matched) {
+        rollback = {
+          ok: false,
+          skipped: true,
+          reason: "verification-failure-preserved",
+          warning: "写入后回读存在未确认字段，保留宿主已写入结果，未用旧快照覆盖目标表格。",
+        };
       }
       results.push({
         tableIndex,
@@ -572,7 +807,9 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
           ? undefined
           : verification.matched
             ? "部分格式字段未被宿主接受或无法确认，未计入成功字段。"
-            : "写入后回读不一致，已尝试恢复原格式。"),
+            : shouldRestoreVerificationFailure
+              ? "写入后回读不一致，已尝试恢复原格式。"
+              : "写入后回读存在未确认字段，已保留宿主已写入结果；未确认字段未计入成功。"),
         write: writeResult,
         verification,
         rollback,
@@ -582,12 +819,14 @@ export async function applyTableFormatTransactions({ targets = [], format = {}, 
     } catch (error) {
       let rollback = null;
       if (before) {
-        rollback = await restoreOne(tableIndex, before);
+        reportProgress("restore", { tableIndex, targetIndex: results.length, targetCount: targets.length, plan: performanceStats(plan) });
+        rollback = await restoreOne(tableIndex, before, plan);
       }
       results.push({ tableIndex, ok: false, warning: "应用表格格式失败，已尝试恢复原格式。", error: { code: error.code || "TABLE_FORMAT_APPLY_FAILED", message: error.message || String(error) }, rollback, plan: performanceStats(plan) });
       await rollbackSuccessfulBatch();
     }
   }
+  reportProgress("complete", { targetCount: targets.length, completedCount: results.length });
   const summary = summarizeTemplateApplication(results);
   return {
     summary,

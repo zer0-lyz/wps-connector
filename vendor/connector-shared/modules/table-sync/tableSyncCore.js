@@ -48,16 +48,13 @@ export function asMatrix(value) {
 
 const DISPLAY_PLACEHOLDER_DASHES = "-‐‑‒–—−－";
 
-/**
- * Normalize text copied from a spreadsheet without changing meaningful spaces
- * inside a text value. Spreadsheet hosts commonly pad a dash placeholder with
- * spaces, so treat that shape as a single dash before transferring it.
- */
+/** Normalize spreadsheet display text without changing meaningful inner spaces. */
 export function normalizeDisplayText(value, display) {
   const source = display === undefined || display === null ? value : display;
   if (source === undefined || source === null) return "";
+  if (typeof source !== "string") return source;
   const raw = String(source);
-  const trimmed = raw.replace(/\r?\n/g, " ").trim();
+  const trimmed = raw.replace(/\r?\n/g, " " ).trim();
   if (!trimmed) return "";
   if (new RegExp(`^\\s*[${DISPLAY_PLACEHOLDER_DASHES}]\\s*$`, "u").test(raw)) return "-";
   return trimmed;

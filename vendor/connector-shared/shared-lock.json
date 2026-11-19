@@ -1,7 +1,7 @@
 {
-  "productVersion": "0.2.1",
+  "productVersion": "0.2.2",
   "sharedVersion": "0.2.0",
-  "source": "@connector-platform/shared",
+  "source": "@connector-suite/shared",
   "modules": [
     {
       "id": "connection-binding",
@@ -46,7 +46,7 @@
         },
         {
           "file": "tableSyncCore.js",
-          "sha256": "b1ae2b79617b86ac2bccd0ef0fed80d6a40276b6a044c14955b7b6630ce32d95"
+          "sha256": "a49ddbdff26ef702bc707f1bb269dc18451c5ddc98a0a562294b4fc57ec6c8e2"
         }
       ]
     },
@@ -63,7 +63,7 @@
         },
         {
           "file": "templateCore.js",
-          "sha256": "e0bbb38855a49027fe20bac0f169388b32048df4d4c1431aa3964badf4657221"
+          "sha256": "7c391c9363099945c5da75508a5385c59eaf2d3509fed48d4eab542139131710"
         },
         {
           "file": "tableFormatPanel.js",
@@ -92,7 +92,7 @@
   "files": [
     {
       "file": "browserUiModel.js",
-      "sha256": "4e55c1d60d6d6ab0660eb6b97c4a1eb98d1fcb2b27e4a937afb82382831b28ad"
+      "sha256": "4bebc51f2fdedbf292db2b2a6c61c34c58fa8d4a5498dc99210db1ddd4f09f80"
     },
     {
       "file": "connectorStateClient.js",
@@ -100,7 +100,7 @@
     },
     {
       "file": "featureRegistry.js",
-      "sha256": "d637de8392631f34ed8777e7d0b4358df4977fefa2bf5bc3bc0688d114858d45"
+      "sha256": "1ca13ddb0ffe199bb62493d5de7df33fce62e67950117a14e8e9e1ff4b4594ab"
     },
     {
       "file": "moduleCatalog.js",
@@ -140,7 +140,7 @@
     },
     {
       "file": "modules/table-sync/tableSyncCore.js",
-      "sha256": "b1ae2b79617b86ac2bccd0ef0fed80d6a40276b6a044c14955b7b6630ce32d95"
+      "sha256": "a49ddbdff26ef702bc707f1bb269dc18451c5ddc98a0a562294b4fc57ec6c8e2"
     },
     {
       "file": "modules/table-format-template/state.js",
@@ -148,7 +148,7 @@
     },
     {
       "file": "modules/table-format-template/templateCore.js",
-      "sha256": "e0bbb38855a49027fe20bac0f169388b32048df4d4c1431aa3964badf4657221"
+      "sha256": "7c391c9363099945c5da75508a5385c59eaf2d3509fed48d4eab542139131710"
     },
     {
       "file": "modules/table-format-template/tableFormatPanel.js",

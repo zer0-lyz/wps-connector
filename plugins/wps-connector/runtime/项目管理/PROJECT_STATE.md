@@ -204,5 +204,7 @@
 
 ## 2026-09-03 表格设置支线已推送 GitHub
 
-- 源码支线 `codex/table-format-module-debug-0.2.1` 已提交 `1da63b2` 并推送；未创建 PR、未合并主线、未生成安装包。
-- 真实 WPS/Office 宿主表格清单验收继续保持 `PENDING_REAL_HOST_ACCEPTANCE`。
+- 已提交并推送独立 WPS 支线 `codex/table-format-module-debug-0.2.1`，提交 `1da63b2`（`fix: stabilize table format list loading`）。
+- 推送前 `npm run check`、`npm test`、表格格式/源文件匹配/显示文本专项回归和 `git diff --check` 均通过；远端未发现同名支线分叉。
+- 清理提交阻塞时仅将无进程占用、创建于 2026-09-01 的 0 字节 Git 锁移动至 `/var/tmp/wps-index-lock-backup.xn0KWz/index.lock` 备份，未删除成果。
+- 未创建 PR、未合并主线、未创建 tag/release、未生成安装包；真实 Word/WPS 宿主验收仍为 `PENDING_REAL_HOST_ACCEPTANCE`。

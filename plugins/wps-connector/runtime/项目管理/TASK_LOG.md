@@ -163,4 +163,7 @@
 
 ## 2026-09-03 表格设置 WPS 支线推送
 
-- 源码支线 `codex/table-format-module-debug-0.2.1` 已提交 `1da63b2` 并推送；未创建 PR、未合并主线、未上传安装包。
+- 提交 `1da63b2`：`fix: stabilize table format list loading`。
+- 已推送 `origin/codex/table-format-module-debug-0.2.1`；无远端分叉。
+- 推送前 `npm run check`、`npm test`、专项回归和 `git diff --check` 通过；为解除遗留锁仅移动无占用的 0 字节 `index.lock` 至临时备份路径，未删除用户或源码成果。
+- 未创建 PR、未合并主线、未上传安装包。
