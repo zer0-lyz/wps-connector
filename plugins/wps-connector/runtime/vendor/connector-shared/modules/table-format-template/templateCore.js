@@ -76,10 +76,17 @@ export const TABLE_SETTINGS_DEFAULT_PRESET = Object.freeze({
   numberAlignment: "right",
   textAlignment: "left",
   verticalAlignment: "center",
-  borderLineStyle: 1,
-  borderInnerWidthPoints: 0.5,
-  borderOuterWidthPoints: 1.5,
-  borderColor: "#000000",
+  borders: {
+    enable: true,
+    edges: {
+      top: { type: "single", width: 1.5, color: "#000000" },
+      bottom: { type: "single", width: 1.5, color: "#000000" },
+      left: { type: "nil", width: 0, color: "#000000" },
+      right: { type: "nil", width: 0, color: "#000000" },
+      insideH: { type: "single", width: 0.5, color: "#000000" },
+      insideV: { type: "single", width: 0.5, color: "#000000" },
+    },
+  },
 });
 
 function clone(value) {
@@ -474,17 +481,6 @@ export function buildDefaultTableSettingsFormat({ rowCount = 0, columnCount = 0,
       });
     }
   }
-  const borderStyle = Number(preset.borderLineStyle);
-  const outerWidth = Number(preset.borderOuterWidthPoints);
-  const innerWidth = Number(preset.borderInnerWidthPoints);
-  const borderColor = preset.borderColor ?? "#000000";
-  // Border edges use exactly the semantic shape (`type`/`width`/`color`) that
-  // the shipped WPS/Office adapters already apply, verify against and persist
-  // in saved documents. The point-based preset values above stay host-neutral;
-  // adapter converters translate them to native enums at apply time.
-  const edge = (lineStyle, widthPoints) => lineStyle === 0
-    ? { type: "nil", width: 0, color: borderColor }
-    : { type: "single", width: widthPoints, color: borderColor };
   return {
     table: {
       repeatHeaderRows: rows > 0 ? Boolean(preset.repeatHeaderRows) : false,
@@ -493,17 +489,7 @@ export function buildDefaultTableSettingsFormat({ rowCount = 0, columnCount = 0,
       // identically). Keep the canonical string form so verification and the
       // saved format stay identical across hosts.
       autoFit: preset.autoFit || "window",
-      borders: {
-        enable: true,
-        edges: {
-          top: edge(borderStyle, outerWidth),
-          bottom: edge(borderStyle, outerWidth),
-          left: edge(0, 0),
-          right: edge(0, 0),
-          insideH: edge(borderStyle, innerWidth),
-          insideV: edge(borderStyle, innerWidth),
-        },
-      },
+      borders: clone(preset.borders),
     },
     rowHeights,
     columnWidths: [],

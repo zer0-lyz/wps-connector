@@ -63,7 +63,7 @@
         },
         {
           "file": "templateCore.js",
-          "sha256": "7c04ba246bb17b011804187576f9a980de2231ac175587a3f45b1e7292d0053c"
+          "sha256": "7c391c9363099945c5da75508a5385c59eaf2d3509fed48d4eab542139131710"
         },
         {
           "file": "tableFormatPanel.js",
@@ -148,7 +148,7 @@
     },
     {
       "file": "modules/table-format-template/templateCore.js",
-      "sha256": "7c04ba246bb17b011804187576f9a980de2231ac175587a3f45b1e7292d0053c"
+      "sha256": "7c391c9363099945c5da75508a5385c59eaf2d3509fed48d4eab542139131710"
     },
     {
       "file": "modules/table-format-template/tableFormatPanel.js",
